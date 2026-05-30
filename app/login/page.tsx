@@ -5,35 +5,49 @@ import Link from "next/link";
 import { GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut, User } from "firebase/auth";
 import { auth } from "../../lib/firebase";
 
+function getErrorMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback;
+}
+
 export default function LoginPage() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(false);
 
   // Mantiene el estado del usuario sincronizado (mejor que auth.currentUser directo)
   useEffect(() => {
+    if (!auth) return;
     const unsub = onAuthStateChanged(auth, (u) => setUser(u));
     return () => unsub();
   }, []);
 
   async function loginWithGoogle() {
+    if (!auth) {
+      alert("Firebase no esta configurado.");
+      return;
+    }
+
     setLoading(true);
     try {
       const provider = new GoogleAuthProvider();
       await signInWithPopup(auth, provider);
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(e);
-      alert(e?.message ?? "Error al iniciar sesión con Google");
+      alert(getErrorMessage(e, "Error al iniciar sesión con Google"));
     } finally {
       setLoading(false);
     }
   }
 
   async function logout() {
+    if (!auth) {
+      return;
+    }
+
     try {
       await signOut(auth);
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(e);
-      alert(e?.message ?? "Error al cerrar sesión");
+      alert(getErrorMessage(e, "Error al cerrar sesión"));
     }
   }
 
@@ -46,7 +60,7 @@ export default function LoginPage() {
 
         <h1 className="login-card__title">Login</h1>
         <p className="login-card__subtitle">
-          Entra con Google para guardar favoritos, realizar reseñas y comprar entradas.
+          Entra con Google para acceder a la biblioteca privada de Farreo.
         </p>
 
         <div className="login-card__box">

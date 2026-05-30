@@ -5,21 +5,12 @@
 @use "../styles/layout/global-layout";
 @use "../styles/layout/header";
 @use "../styles/pages/home";
-@use "../styles/components/cards";
 @use "../styles/components/avatar";
-@use "../styles/components/map";
 @use "../styles/pages/login";
-@use "../styles/pages/admin";
-@use "../styles/pages/explore";
-@use "../styles/pages/buscar";
 @use "../styles/pages/profile";
-@use "../styles/pages/admin-dashboard";
 @use "../styles/pages/playlist";
 
-// 2. Plugins externos (después de los @use)
-@import "mapbox-gl/dist/mapbox-gl.css";
-
-// 3. Utilidades finales
+// 2. Utilidades finales
 .scrollbar-hide {
   &::-webkit-scrollbar {
     display: none;
