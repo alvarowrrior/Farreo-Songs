@@ -17,6 +17,11 @@ export default function EditProfilePage() {
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   useEffect(() => {
+    if (!auth) {
+      router.push("/");
+      return;
+    }
+
     const unsub = onAuthStateChanged(auth, (u) => {
       if (!u) {
         router.push("/");
@@ -34,7 +39,7 @@ export default function EditProfilePage() {
     e.preventDefault();
     setMessage(null);
 
-    const current = auth.currentUser;
+    const current = auth?.currentUser;
     if (!current) return;
 
     const nextName = displayName.trim();
@@ -49,7 +54,7 @@ export default function EditProfilePage() {
     try {
       await updateProfile(current, { displayName: nextName });
 
-      // Refrescamos estado local para UI inmediata
+      // Refrescamos el estado de React para que la UI responda al instante.
       setUser({ ...current });
 
       setMessage({ type: "success", text: "Perfil actualizado." });
@@ -68,7 +73,7 @@ export default function EditProfilePage() {
 
   async function handleSignOut() {
     try {
-      await auth.signOut();
+      await auth?.signOut();
       router.push("/");
     } catch (err) {
       console.error(err);
@@ -95,12 +100,13 @@ export default function EditProfilePage() {
       <section>
         <h1 className="profile-page__title">Mi perfil</h1>
         <p className="profile-page__subtitle">
-          Actualiza tu nombre público.
+          Actualiza tu nombre visible.
         </p>
 
         <div className="profile-page__card">
           <div className="profile-page__user-info">
             {user?.photoURL ? (
+              // eslint-disable-next-line @next/next/no-img-element
               <img
                 src={user.photoURL}
                 alt="Foto de perfil"
@@ -123,7 +129,7 @@ export default function EditProfilePage() {
           <form onSubmit={handleUpdate} className="profile-page__form">
             <fieldset>
               <legend className="profile-page__form-legend">
-                Datos públicos
+                Datos visibles
               </legend>
 
               <div className="profile-page__form-group">

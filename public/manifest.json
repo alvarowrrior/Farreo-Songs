@@ -1,7 +1,7 @@
 {
     "name": "Farreo",
     "short_name": "Farreo",
-    "description": "Encuentra y explora los mejores lugares.",
+    "description": "Biblioteca privada de canciones y playlists.",
     "start_url": "/",
     "display": "standalone",
     "background_color": "#ffffff",
