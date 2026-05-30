@@ -1,7 +1,7 @@
 "use client";
 
-import { createContext, useContext, useRef, useState, type ReactNode } from "react";
-import { ArrowRightIcon, DicesIcon, ShuffleIcon, Volume2Icon, VolumeXIcon } from "lucide-react";
+import { createContext, useContext, useRef, useState, useEffect, type ReactNode } from "react";
+import { ArrowRightIcon, DicesIcon, PauseIcon, PlayIcon, ShuffleIcon, SkipBackIcon, SkipForwardIcon, Volume2Icon, VolumeXIcon } from "lucide-react";
 import { usePathname } from "next/navigation";
 
 export interface MusicTrack {
@@ -14,8 +14,23 @@ export interface MusicTrack {
 interface MusicPlayerContextValue {
   currentTrack: MusicTrack | null;
   isPlaying: boolean;
+  playbackPitch: number;
+  volume: number;
+  currentTime: number;
+  duration: number;
+  isShuffle: boolean;
+  autoRandomPitch: boolean;
   playQueue: (tracks: MusicTrack[], index: number) => void;
   toggleTrack: (track: MusicTrack, tracks?: MusicTrack[]) => void;
+  playNext: () => void;
+  playPrev: () => void;
+  togglePlayPause: () => void;
+  handleVolumeChange: (val: number) => void;
+  handlePitchChange: (val: number) => void;
+  handleSeek: (val: number) => void;
+  setAutoRandomPitch: (val: boolean | ((prev: boolean) => boolean)) => void;
+  setIsShuffle: (val: boolean | ((prev: boolean) => boolean)) => void;
+  stop: () => void;
 }
 
 const MusicPlayerContext = createContext<MusicPlayerContextValue | null>(null);
@@ -46,6 +61,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   const [duration, setDuration] = useState(0);
   const [isShuffle, setIsShuffle] = useState(true);
   const [autoRandomPitch, setAutoRandomPitch] = useState(true);
+  const [history, setHistory] = useState<MusicTrack[]>([]);
 
   const startTrack = (track: MusicTrack) => {
     if (!track.url) return;
@@ -71,6 +87,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     const track = tracks[index];
     if (!track) return;
     setQueue(tracks);
+    setHistory([]);
     startTrack(track);
   };
 
@@ -88,11 +105,17 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       return;
     }
 
+    setHistory([]);
     startTrack(track);
   };
 
   const playNext = () => {
     if (queue.length === 0) return;
+    
+    if (currentTrack) {
+      setHistory((prev) => [...prev, currentTrack]);
+    }
+
     if (isShuffle) {
       let nextIndex = Math.floor(Math.random() * queue.length);
       if (queue.length > 1 && currentTrack) {
@@ -115,8 +138,11 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
 
   const playPrev = () => {
     if (queue.length === 0) return;
-    if (isShuffle) {
-      playNext();
+
+    if (history.length > 0) {
+      const prevTrack = history[history.length - 1];
+      setHistory((prev) => prev.slice(0, -1));
+      startTrack(prevTrack);
       return;
     }
 
@@ -164,8 +190,127 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     }
   };
 
+  const stop = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.src = "";
+    }
+    setCurrentTrack(null);
+    setIsPlaying(false);
+    setCurrentTime(0);
+    setDuration(0);
+  };
+
+  // Media Session API Sync
+  useEffect(() => {
+    if (typeof window === "undefined" || !("mediaSession" in navigator)) return;
+
+    if (currentTrack) {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: currentTrack.name,
+        artist: "Farreo",
+        album: "Farreo Player",
+        artwork: [
+          { src: "/favicon.ico", sizes: "32x32", type: "image/x-icon" }
+        ],
+      });
+    } else {
+      navigator.mediaSession.metadata = null;
+    }
+  }, [currentTrack]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !("mediaSession" in navigator)) return;
+    navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused";
+  }, [isPlaying]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !("mediaSession" in navigator) || !audioRef.current) return;
+    if ("setPositionState" in navigator.mediaSession && duration > 0) {
+      try {
+        navigator.mediaSession.setPositionState({
+          duration: duration,
+          playbackRate: playbackPitch,
+          position: currentTime,
+        });
+      } catch (e) {
+        console.error("Error setting media session position state:", e);
+      }
+    }
+  }, [currentTime, duration, playbackPitch]);
+
+  // Use refs to avoid re-binding handlers on state change
+  const playPrevRef = useRef(playPrev);
+  const playNextRef = useRef(playNext);
+  const togglePlayPauseRef = useRef(togglePlayPause);
+  const handleSeekRef = useRef(handleSeek);
+
+  useEffect(() => {
+    playPrevRef.current = playPrev;
+    playNextRef.current = playNext;
+    togglePlayPauseRef.current = togglePlayPause;
+    handleSeekRef.current = handleSeek;
+  });
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !("mediaSession" in navigator)) return;
+
+    try {
+      navigator.mediaSession.setActionHandler("play", () => {
+        togglePlayPauseRef.current();
+      });
+      navigator.mediaSession.setActionHandler("pause", () => {
+        togglePlayPauseRef.current();
+      });
+      navigator.mediaSession.setActionHandler("previoustrack", () => {
+        playPrevRef.current();
+      });
+      navigator.mediaSession.setActionHandler("nexttrack", () => {
+        playNextRef.current();
+      });
+      navigator.mediaSession.setActionHandler("seekto", (details) => {
+        if (details.seekTime !== undefined) {
+          handleSeekRef.current(details.seekTime);
+        }
+      });
+    } catch (error) {
+      console.error("Error setting media session action handlers:", error);
+    }
+
+    return () => {
+      if (typeof window === "undefined" || !("mediaSession" in navigator)) return;
+      navigator.mediaSession.setActionHandler("play", null);
+      navigator.mediaSession.setActionHandler("pause", null);
+      navigator.mediaSession.setActionHandler("previoustrack", null);
+      navigator.mediaSession.setActionHandler("nexttrack", null);
+      navigator.mediaSession.setActionHandler("seekto", null);
+    };
+  }, []);
+
   return (
-    <MusicPlayerContext.Provider value={{ currentTrack, isPlaying, playQueue, toggleTrack }}>
+    <MusicPlayerContext.Provider
+      value={{
+        currentTrack,
+        isPlaying,
+        playbackPitch,
+        volume,
+        currentTime,
+        duration,
+        isShuffle,
+        autoRandomPitch,
+        playQueue,
+        toggleTrack,
+        playNext,
+        playPrev,
+        togglePlayPause,
+        handleVolumeChange,
+        handlePitchChange,
+        handleSeek,
+        setAutoRandomPitch,
+        setIsShuffle,
+        stop,
+      }}
+    >
       {children}
 
       {!pathname.startsWith("/admin") && (
@@ -190,11 +335,11 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
             >
               {isShuffle ? <ShuffleIcon size={16} /> : <ArrowRightIcon size={16} />}
             </button>
-            <button className="playlist-admin__control-btn" onClick={playPrev}>⏮</button>
-            <button className="playlist-admin__control-btn playlist-admin__control-btn--play" onClick={togglePlayPause}>
-              {isPlaying ? "⏸" : "▶"}
+            <button className="playlist-admin__control-btn" onClick={playPrev} title="Anterior"><SkipBackIcon size={16} /></button>
+            <button className="playlist-admin__control-btn playlist-admin__control-btn--play" onClick={togglePlayPause} title={isPlaying ? "Pausar" : "Reproducir"}>
+              {isPlaying ? <PauseIcon size={16} /> : <PlayIcon size={16} />}
             </button>
-            <button className="playlist-admin__control-btn" onClick={playNext}>⏭</button>
+            <button className="playlist-admin__control-btn" onClick={playNext} title="Siguiente"><SkipForwardIcon size={16} /></button>
           </div>
 
           <div className="playlist-admin__progress">
