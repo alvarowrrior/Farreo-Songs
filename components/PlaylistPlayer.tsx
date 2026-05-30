@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { ShareIcon } from "lucide-react";
+import { PlayIcon, ShareIcon } from "lucide-react";
 import { useMusicPlayer, type MusicTrack } from "@/components/MusicPlayerProvider";
 
 const TUNNEL_URL = "https://welite.ddns.net:3001";
@@ -33,13 +33,18 @@ interface PlaylistPlayerProps {
 }
 
 export default function PlaylistPlayer({ playlistId, songId }: PlaylistPlayerProps) {
-  const { currentTrack, playQueue, toggleTrack } = useMusicPlayer();
+  const { currentTrack, toggleTrack } = useMusicPlayer();
   const [playlist, setPlaylist] = useState<MusicTrack[]>([]);
   const [playlistTitle, setPlaylistTitle] = useState("");
   const [playlistIcon, setPlaylistIcon] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [shareModalOpen, setShareModalOpen] = useState(false);
+  const [shareSongTitle, setShareSongTitle] = useState("");
+  const [shareSongLink, setShareSongLink] = useState("");
+  const [shareInternalLink, setShareInternalLink] = useState("");
+  const [copiedLink, setCopiedLink] = useState<'normal' | 'internal' | null>(null);
 
   useEffect(() => {
     if (!message) return;
@@ -99,13 +104,23 @@ export default function PlaylistPlayer({ playlistId, songId }: PlaylistPlayerPro
   }, [playlistId, songId]);
 
   const handleShare = (type: "song" | "playlist", identifier: string) => {
-    const url = type === "playlist"
-      ? `${window.location.origin}/playlist/${encodeURIComponent(identifier)}`
-      : `${window.location.origin}/play?song=${encodeURIComponent(identifier)}`;
+    if (type === "playlist") {
+      const url = `${window.location.origin}/playlist/${encodeURIComponent(identifier)}`;
+      navigator.clipboard.writeText(url)
+        .then(() => setMessage("Enlace copiado al portapapeles."))
+        .catch(() => setMessage("No se pudo copiar el enlace."));
+    } else {
+      const song = playlist.find(s => s.id === identifier);
+      if (!song) return;
 
-    navigator.clipboard.writeText(url)
-      .then(() => setMessage("Enlace copiado al portapapeles."))
-      .catch(() => setMessage("No se pudo copiar el enlace."));
+      const normalLink = `${window.location.origin}/play?song=${encodeURIComponent(song.id)}`;
+      const internalLink = getMediaUrl(song.url);
+
+      setShareSongTitle(song.name);
+      setShareSongLink(normalLink);
+      setShareInternalLink(internalLink);
+      setShareModalOpen(true);
+    }
   };
 
   if (error) {
@@ -167,11 +182,11 @@ export default function PlaylistPlayer({ playlistId, songId }: PlaylistPlayerPro
               <div
                 key={track.id}
                 className={`playlist-admin__item ${currentTrack?.id === track.id ? "playlist-admin__item--active" : ""}`}
-                onClick={() => playQueue(playlist, i)}
+                onClick={() => toggleTrack(track, playlist)}
                 style={{ gridTemplateColumns: "50px 1fr 80px" }}
               >
                 <div className="playlist-admin__item-index">
-                  <span className="playlist-admin__item-play-icon">▶</span>
+                  <span className="playlist-admin__item-play-icon"><PlayIcon size={14} /></span>
                   <span className="playlist-admin__item-num">{i + 1}</span>
                 </div>
                 <div className="playlist-admin__item-info">
@@ -208,6 +223,72 @@ export default function PlaylistPlayer({ playlistId, songId }: PlaylistPlayerPro
           )}
         </section>
       </div>
+      {shareModalOpen && (
+        <div className="playlist-admin__modal-overlay" onClick={() => setShareModalOpen(false)}>
+          <div className="playlist-admin__modal" onClick={(e) => e.stopPropagation()}>
+            <div className="playlist-admin__modal-header">
+              <h3>Compartir Canción</h3>
+              <button onClick={() => setShareModalOpen(false)} className="playlist-admin__btn-cancel-small">✕</button>
+            </div>
+            
+            <p style={{ fontSize: "0.95rem", color: "#b3b3b3", marginBottom: "1.5rem" }}>
+              Canción: <strong style={{ color: "#fff" }}>{shareSongTitle}</strong>
+            </p>
+
+            <div className="playlist-admin__upload-form-group" style={{ marginBottom: "1.2rem" }}>
+              <label className="playlist-admin__upload-form-label">Link de la canción</label>
+              <div className="playlist-admin__upload-form-row">
+                <input
+                  type="text"
+                  readOnly
+                  value={shareSongLink}
+                  className="playlist-admin__upload-form-input"
+                  style={{ background: "rgba(255, 255, 255, 0.05)" }}
+                />
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(shareSongLink)
+                      .then(() => {
+                        setCopiedLink('normal');
+                        setTimeout(() => setCopiedLink(null), 2000);
+                      });
+                  }}
+                  className="playlist-admin__upload-form-add"
+                  style={{ background: copiedLink === 'normal' ? '#fff' : '#1ed760', color: '#000', fontWeight: "bold", minWidth: "80px" }}
+                >
+                  {copiedLink === 'normal' ? 'Copiado!' : 'Copiar'}
+                </button>
+              </div>
+            </div>
+
+            <div className="playlist-admin__upload-form-group" style={{ marginBottom: "1.5rem" }}>
+              <label className="playlist-admin__upload-form-label">Link interno (MP3 real)</label>
+              <div className="playlist-admin__upload-form-row">
+                <input
+                  type="text"
+                  readOnly
+                  value={shareInternalLink}
+                  className="playlist-admin__upload-form-input"
+                  style={{ background: "rgba(255, 255, 255, 0.05)" }}
+                />
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(shareInternalLink)
+                      .then(() => {
+                        setCopiedLink('internal');
+                        setTimeout(() => setCopiedLink(null), 2000);
+                      });
+                  }}
+                  className="playlist-admin__upload-form-add"
+                  style={{ background: copiedLink === 'internal' ? '#fff' : '#1ed760', color: '#000', fontWeight: "bold", minWidth: "80px" }}
+                >
+                  {copiedLink === 'internal' ? 'Copiado!' : 'Copiar'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

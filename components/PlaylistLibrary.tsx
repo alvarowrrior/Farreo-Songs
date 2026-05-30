@@ -4,8 +4,9 @@ import { useEffect, useState, useRef } from "react";
 import { onAuthStateChanged } from "firebase/auth";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { TrashIcon, PlusIcon, ListMusicIcon, ArrowLeftIcon, LibraryIcon, SearchIcon, ShuffleIcon, ArrowRightIcon, Volume2Icon, VolumeXIcon, DicesIcon, PencilIcon, XIcon, ShareIcon } from "lucide-react";
+import { TrashIcon, PlusIcon, ListMusicIcon, ArrowLeftIcon, LibraryIcon, SearchIcon, ShuffleIcon, ArrowRightIcon, Volume2Icon, VolumeXIcon, DicesIcon, PencilIcon, XIcon, ShareIcon, PlayIcon, PauseIcon, SkipBackIcon, SkipForwardIcon } from "lucide-react";
 import { auth, isFirebaseConfigured } from "@/lib/firebase";
+import { useMusicPlayer } from "@/components/MusicPlayerProvider";
 
 const ADMIN_EMAILS = (process.env.NEXT_PUBLIC_ADMIN_EMAILS || "").split(",");
 
@@ -81,15 +82,27 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
   const [etiquetasExistentes, setEtiquetasExistentes] = useState<Record<string, string>>({});
 
   // Reproductor
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const [currentTrack, setCurrentTrack] = useState<PlaylistItem | null>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [playbackPitch, setPlaybackPitch] = useState(1);
-  const [volume, setVolume] = useState(0.8);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const [isShuffle, setIsShuffle] = useState(true);
-  const [autoRandomPitch, setAutoRandomPitch] = useState(true);
+  const {
+    currentTrack,
+    isPlaying,
+    playbackPitch,
+    volume,
+    currentTime,
+    duration,
+    isShuffle,
+    autoRandomPitch,
+    playQueue,
+    toggleTrack,
+    playNext,
+    playPrev,
+    togglePlayPause,
+    handleVolumeChange,
+    handlePitchChange,
+    handleSeek,
+    setAutoRandomPitch,
+    setIsShuffle,
+    stop,
+  } = useMusicPlayer();
   const [dragActive, setDragActive] = useState(false);
 
   // Picker de canciones para añadir a playlist
@@ -107,6 +120,13 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
   const [editVariantes, setEditVariantes] = useState<string[]>([]);
   const [editNuevaVariante, setEditNuevaVariante] = useState("");
   const [isSaving, setIsSaving] = useState(false);
+
+  // Share modal
+  const [shareModalOpen, setShareModalOpen] = useState(false);
+  const [shareSongTitle, setShareSongTitle] = useState("");
+  const [shareSongLink, setShareSongLink] = useState("");
+  const [shareInternalLink, setShareInternalLink] = useState("");
+  const [copiedLink, setCopiedLink] = useState<'normal' | 'internal' | null>(null);
 
   useEffect(() => {
     if (!adminMode) {
@@ -222,9 +242,7 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
     setVista("playlists");
     setPlaylistActual(null);
     setPlaylist([]);
-    setCurrentTrack(null);
-    setIsPlaying(false);
-    audioRef.current?.pause();
+
     loadPlaylists();
     loadAllCanciones();
   };
@@ -456,101 +474,8 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
   };
 
   // ==========================================
-  // REPRODUCTOR
+  // REPRODUCTOR (Usando context global)
   // ==========================================
-
-  const playSong = (track: PlaylistItem) => {
-    if (!track.url) return;
-
-    // Si es la misma canción, toggle pause/play
-    if (currentTrack?.id === track.id) {
-      if (audioRef.current) {
-        if (isPlaying) {
-          audioRef.current.pause();
-        } else {
-          audioRef.current.play();
-        }
-        setIsPlaying(!isPlaying);
-      }
-      return;
-    }
-
-    // Canción nueva
-    let pitch = playbackPitch;
-    if (autoRandomPitch) {
-      pitch = Math.random() * (1.2 - 0.8) + 0.8;
-      setPlaybackPitch(pitch);
-    }
-
-    setCurrentTrack(track);
-    setIsPlaying(true);
-    setTimeout(() => {
-      if (audioRef.current) {
-        audioRef.current.preservesPitch = false;
-        audioRef.current.playbackRate = pitch;
-        audioRef.current.volume = volume;
-        audioRef.current.play().catch(e => console.error("Auto-play prevented", e));
-      }
-    }, 50);
-  };
-
-  const playNext = () => {
-    if (playlist.length === 0) return;
-    if (isShuffle) {
-      let nextIndex = Math.floor(Math.random() * playlist.length);
-      if (playlist.length > 1 && currentTrack) {
-        while (playlist[nextIndex].id === currentTrack.id) {
-          nextIndex = Math.floor(Math.random() * playlist.length);
-        }
-      }
-      playSong(playlist[nextIndex]);
-    } else {
-      if (!currentTrack) { playSong(playlist[0]); return; }
-      const idx = playlist.findIndex(t => t.id === currentTrack.id);
-      const nextIdx = (idx + 1) % playlist.length;
-      playSong(playlist[nextIdx]);
-    }
-  };
-
-  const playPrev = () => {
-    if (playlist.length === 0) return;
-    if (isShuffle) {
-      playNext();
-    } else {
-      if (!currentTrack) { playSong(playlist[playlist.length - 1]); return; }
-      const idx = playlist.findIndex(t => t.id === currentTrack.id);
-      const prevIdx = (idx - 1 + playlist.length) % playlist.length;
-      playSong(playlist[prevIdx]);
-    }
-  };
-
-  const togglePlayPause = () => {
-    if (!currentTrack && playlist.length > 0) { playNext(); return; }
-    if (audioRef.current) {
-      if (isPlaying) audioRef.current.pause(); else audioRef.current.play();
-      setIsPlaying(!isPlaying);
-    }
-  };
-
-  const handleVolumeChange = (val: number) => {
-    setVolume(val);
-    if (audioRef.current) audioRef.current.volume = val;
-  };
-
-  const handlePitchChange = (val: number) => {
-    setPlaybackPitch(val);
-    if (audioRef.current) {
-      audioRef.current.preservesPitch = false;
-      audioRef.current.playbackRate = val;
-    }
-  };
-
-  const handleSeek = (val: number) => {
-    if (audioRef.current) {
-      audioRef.current.currentTime = val;
-      setCurrentTime(val);
-    }
-  };
 
   const formatTime = (s: number) => {
     const m = Math.floor(s / 60);
@@ -562,12 +487,20 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
   // COMPARTIR
   // ==========================================
   const handleShare = (type: 'song' | 'playlist', identifier: string) => {
-    const url = type === "playlist"
-      ? `${window.location.origin}/playlist/${encodeURIComponent(identifier)}`
-      : `${window.location.origin}/play?song=${encodeURIComponent(identifier)}`;
-    navigator.clipboard.writeText(url)
-      .then(() => setMessage({ type: "success", text: "Enlace copiado al portapapeles." }))
-      .catch(() => setMessage({ type: "error", text: "Error copiando el enlace." }));
+    if (type === "playlist") {
+      const url = `${window.location.origin}/playlist/${encodeURIComponent(identifier)}`;
+      navigator.clipboard.writeText(url)
+        .then(() => setMessage({ type: "success", text: "Enlace copiado al portapapeles." }))
+        .catch(() => setMessage({ type: "error", text: "Error copiando el enlace." }));
+    } else {
+      const song = allSongs.find(s => s.id === identifier) || playlist.find(s => s.id === identifier) || allCanciones.find(s => s.id === identifier);
+      if (!song) return;
+      setShareSongTitle(song.name);
+      setShareSongLink(`${window.location.origin}/play?song=${encodeURIComponent(song.id)}`);
+      setShareInternalLink(getMediaUrl(song.url));
+      setCopiedLink(null);
+      setShareModalOpen(true);
+    }
   };
 
   // ==========================================
@@ -643,9 +576,7 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
       if (res.ok) {
         setMessage({ type: "success", text: "Canción eliminada de la base de datos." });
         if (currentTrack?.id === item.id) {
-          audioRef.current?.pause();
-          setCurrentTrack(null);
-          setIsPlaying(false);
+          stop();
         }
         loadAllCanciones();
         loadEtiquetas();
@@ -667,9 +598,7 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
       if (res.ok) {
         setMessage({ type: "success", text: `"${item.name}" quitada de la playlist.` });
         if (currentTrack?.id === item.id) {
-          audioRef.current?.pause();
-          setCurrentTrack(null);
-          setIsPlaying(false);
+          stop();
         }
         loadPlaylistCanciones(playlistActual);
       }
@@ -1190,10 +1119,10 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
               <div
                 key={track.id}
                 className={`playlist-admin__item ${currentTrack?.id === track.id ? "playlist-admin__item--active" : ""}`}
-                onClick={() => playSong(track)}
+                onClick={() => toggleTrack(track, playlist)}
               >
                 <div className="playlist-admin__item-index">
-                  <span className="playlist-admin__item-play-icon">▶</span>
+                  <span className="playlist-admin__item-play-icon"><PlayIcon size={14} /></span>
                   <span className="playlist-admin__item-num">{i + 1}</span>
                 </div>
                 <div className="playlist-admin__item-info">
@@ -1250,11 +1179,11 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
             >
               {isShuffle ? <ShuffleIcon size={16} /> : <ArrowRightIcon size={16} />}
             </button>
-            <button className="playlist-admin__control-btn" onClick={playPrev}>⏮</button>
-            <button className="playlist-admin__control-btn playlist-admin__control-btn--play" onClick={togglePlayPause}>
-              {isPlaying ? "⏸" : "▶"}
+            <button className="playlist-admin__control-btn" onClick={playPrev} title="Anterior"><SkipBackIcon size={16} /></button>
+            <button className="playlist-admin__control-btn playlist-admin__control-btn--play" onClick={togglePlayPause} title={isPlaying ? 'Pausar' : 'Reproducir'}>
+              {isPlaying ? <PauseIcon size={16} /> : <PlayIcon size={16} />}
             </button>
-            <button className="playlist-admin__control-btn" onClick={playNext}>⏭</button>
+            <button className="playlist-admin__control-btn" onClick={playNext} title="Siguiente"><SkipForwardIcon size={16} /></button>
           </div>
 
           {/* Barra de progreso */}
@@ -1317,26 +1246,74 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
           </div>
         </div>
 
-        <audio
-          ref={audioRef}
-          src={currentTrack?.url || undefined}
-          onEnded={playNext}
-          onPause={() => setIsPlaying(false)}
-          onPlay={() => setIsPlaying(true)}
-          onTimeUpdate={() => {
-            if (audioRef.current) setCurrentTime(audioRef.current.currentTime);
-          }}
-          onLoadedMetadata={() => {
-            if (audioRef.current) {
-              setDuration(audioRef.current.duration);
-              audioRef.current.volume = volume;
-              audioRef.current.preservesPitch = false;
-              audioRef.current.playbackRate = playbackPitch;
-            }
-          }}
-          style={{ display: "none" }}
-        />
+
       </div>
+      {shareModalOpen && (
+        <div className="playlist-admin__modal-overlay" onClick={() => setShareModalOpen(false)}>
+          <div className="playlist-admin__modal" onClick={(e) => e.stopPropagation()}>
+            <div className="playlist-admin__modal-header">
+              <h3>Compartir Canción</h3>
+              <button onClick={() => setShareModalOpen(false)} className="playlist-admin__btn-cancel-small">✕</button>
+            </div>
+            
+            <p style={{ fontSize: "0.95rem", color: "#b3b3b3", marginBottom: "1.5rem" }}>
+              Canción: <strong style={{ color: "#fff" }}>{shareSongTitle}</strong>
+            </p>
+
+            <div className="playlist-admin__upload-form-group" style={{ marginBottom: "1.2rem" }}>
+              <label className="playlist-admin__upload-form-label">Link de la canción</label>
+              <div className="playlist-admin__upload-form-row">
+                <input
+                  type="text"
+                  readOnly
+                  value={shareSongLink}
+                  className="playlist-admin__upload-form-input"
+                  style={{ background: "rgba(255, 255, 255, 0.05)" }}
+                />
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(shareSongLink)
+                      .then(() => {
+                        setCopiedLink('normal');
+                        setTimeout(() => setCopiedLink(null), 2000);
+                      });
+                  }}
+                  className="playlist-admin__upload-form-add"
+                  style={{ background: copiedLink === 'normal' ? '#fff' : '#1ed760', color: '#000', fontWeight: "bold", minWidth: "80px" }}
+                >
+                  {copiedLink === 'normal' ? 'Copiado!' : 'Copiar'}
+                </button>
+              </div>
+            </div>
+
+            <div className="playlist-admin__upload-form-group" style={{ marginBottom: "1.5rem" }}>
+              <label className="playlist-admin__upload-form-label">Link interno (MP3 real)</label>
+              <div className="playlist-admin__upload-form-row">
+                <input
+                  type="text"
+                  readOnly
+                  value={shareInternalLink}
+                  className="playlist-admin__upload-form-input"
+                  style={{ background: "rgba(255, 255, 255, 0.05)" }}
+                />
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(shareInternalLink)
+                      .then(() => {
+                        setCopiedLink('internal');
+                        setTimeout(() => setCopiedLink(null), 2000);
+                      });
+                  }}
+                  className="playlist-admin__upload-form-add"
+                  style={{ background: copiedLink === 'internal' ? '#fff' : '#1ed760', color: '#000', fontWeight: "bold", minWidth: "80px" }}
+                >
+                  {copiedLink === 'internal' ? 'Copiado!' : 'Copiar'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
