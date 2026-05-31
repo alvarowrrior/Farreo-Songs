@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useRef, useState, useEffect, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useRef, useState, useEffect, type ReactNode } from "react";
 import { ArrowRightIcon, DicesIcon, PauseIcon, PlayIcon, ShuffleIcon, SkipBackIcon, SkipForwardIcon, Volume2Icon, VolumeXIcon } from "lucide-react";
 import { usePathname } from "next/navigation";
 
@@ -11,8 +11,15 @@ export interface MusicTrack {
   variantes?: string[];
 }
 
+export interface MusicPlaylistSource {
+  id: string;
+  name: string;
+  type: "global" | "private" | "song" | "admin";
+}
+
 interface MusicPlayerContextValue {
   currentTrack: MusicTrack | null;
+  currentSource: MusicPlaylistSource | null;
   isPlaying: boolean;
   playbackPitch: number;
   volume: number;
@@ -20,8 +27,9 @@ interface MusicPlayerContextValue {
   duration: number;
   isShuffle: boolean;
   autoRandomPitch: boolean;
-  playQueue: (tracks: MusicTrack[], index: number) => void;
-  toggleTrack: (track: MusicTrack, tracks?: MusicTrack[]) => void;
+  loadQueue: (tracks: MusicTrack[], source?: MusicPlaylistSource | null) => void;
+  playQueue: (tracks: MusicTrack[], index: number, source?: MusicPlaylistSource | null) => void;
+  toggleTrack: (track: MusicTrack, tracks?: MusicTrack[], source?: MusicPlaylistSource | null) => void;
   playNext: () => void;
   playPrev: () => void;
   togglePlayPause: () => void;
@@ -34,6 +42,19 @@ interface MusicPlayerContextValue {
 }
 
 const MusicPlayerContext = createContext<MusicPlayerContextValue | null>(null);
+const STORAGE_KEY = "farreo-player-state";
+
+interface StoredPlayerState {
+  currentTrack: MusicTrack | null;
+  queue: MusicTrack[];
+  queueSource: MusicPlaylistSource | null;
+  currentSource: MusicPlaylistSource | null;
+  currentTime: number;
+  playbackPitch: number;
+  volume: number;
+  isShuffle: boolean;
+  autoRandomPitch: boolean;
+}
 
 export function useMusicPlayer() {
   const context = useContext(MusicPlayerContext);
@@ -52,8 +73,12 @@ const formatTime = (s: number) => {
 export default function MusicPlayerProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const hasRestoredRef = useRef(false);
+  const [storageReady, setStorageReady] = useState(false);
   const [queue, setQueue] = useState<MusicTrack[]>([]);
+  const [queueSource, setQueueSource] = useState<MusicPlaylistSource | null>(null);
   const [currentTrack, setCurrentTrack] = useState<MusicTrack | null>(null);
+  const [currentSource, setCurrentSource] = useState<MusicPlaylistSource | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackPitch, setPlaybackPitch] = useState(1);
   const [volume, setVolume] = useState(0.8);
@@ -63,7 +88,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   const [autoRandomPitch, setAutoRandomPitch] = useState(true);
   const [history, setHistory] = useState<MusicTrack[]>([]);
 
-  const startTrack = (track: MusicTrack) => {
+  const startTrack = (track: MusicTrack, source = queueSource) => {
     if (!track.url) return;
 
     let pitch = playbackPitch;
@@ -73,6 +98,9 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     }
 
     setCurrentTrack(track);
+    setCurrentSource(source);
+    setCurrentTime(0);
+    setDuration(0);
     setIsPlaying(true);
     setTimeout(() => {
       if (!audioRef.current) return;
@@ -83,16 +111,26 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     }, 50);
   };
 
-  const playQueue = (tracks: MusicTrack[], index: number) => {
+  const playQueue = (tracks: MusicTrack[], index: number, source?: MusicPlaylistSource | null) => {
     const track = tracks[index];
     if (!track) return;
     setQueue(tracks);
+    setQueueSource(source ?? null);
     setHistory([]);
-    startTrack(track);
+    startTrack(track, source ?? null);
   };
 
-  const toggleTrack = (track: MusicTrack, tracks?: MusicTrack[]) => {
-    if (tracks) setQueue(tracks);
+  const loadQueue = useCallback((tracks: MusicTrack[], source?: MusicPlaylistSource | null) => {
+    setQueue(tracks);
+    setQueueSource(source ?? null);
+    setHistory([]);
+  }, []);
+
+  const toggleTrack = (track: MusicTrack, tracks?: MusicTrack[], source?: MusicPlaylistSource | null) => {
+    if (tracks) {
+      setQueue(tracks);
+      setQueueSource(source ?? null);
+    }
 
     if (currentTrack?.id === track.id) {
       if (!audioRef.current) return;
@@ -106,7 +144,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     }
 
     setHistory([]);
-    startTrack(track);
+    startTrack(track, source ?? queueSource);
   };
 
   const playNext = () => {
@@ -123,17 +161,17 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
           nextIndex = Math.floor(Math.random() * queue.length);
         }
       }
-      startTrack(queue[nextIndex]);
+      startTrack(queue[nextIndex], queueSource);
       return;
     }
 
     if (!currentTrack) {
-      startTrack(queue[0]);
+      startTrack(queue[0], queueSource);
       return;
     }
 
     const idx = queue.findIndex((track) => track.id === currentTrack.id);
-    startTrack(queue[(idx + 1) % queue.length]);
+    startTrack(queue[(idx + 1) % queue.length], queueSource);
   };
 
   const playPrev = () => {
@@ -142,22 +180,23 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     if (history.length > 0) {
       const prevTrack = history[history.length - 1];
       setHistory((prev) => prev.slice(0, -1));
-      startTrack(prevTrack);
+      startTrack(prevTrack, currentSource);
       return;
     }
 
     if (!currentTrack) {
-      startTrack(queue[queue.length - 1]);
+      startTrack(queue[queue.length - 1], queueSource);
       return;
     }
 
     const idx = queue.findIndex((track) => track.id === currentTrack.id);
-    startTrack(queue[(idx - 1 + queue.length) % queue.length]);
+    startTrack(queue[(idx - 1 + queue.length) % queue.length], queueSource);
   };
 
   const togglePlayPause = () => {
     if (!currentTrack && queue.length > 0) {
-      startTrack(queue[0]);
+      const startIndex = isShuffle ? Math.floor(Math.random() * queue.length) : 0;
+      startTrack(queue[startIndex], queueSource);
       return;
     }
 
@@ -196,10 +235,58 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       audioRef.current.src = "";
     }
     setCurrentTrack(null);
+    setCurrentSource(null);
     setIsPlaying(false);
     setCurrentTime(0);
     setDuration(0);
   };
+
+  useEffect(() => {
+    if (typeof window === "undefined" || hasRestoredRef.current) return;
+    hasRestoredRef.current = true;
+
+    try {
+      const rawState = window.localStorage.getItem(STORAGE_KEY);
+      if (!rawState) {
+        setStorageReady(true);
+        return;
+      }
+      const state = JSON.parse(rawState) as Partial<StoredPlayerState>;
+
+      setQueue(Array.isArray(state.queue) ? state.queue : []);
+      setQueueSource(state.queueSource ?? null);
+      setCurrentTrack(state.currentTrack ?? null);
+      setCurrentSource(state.currentSource ?? null);
+      setCurrentTime(typeof state.currentTime === "number" ? state.currentTime : 0);
+      setPlaybackPitch(typeof state.playbackPitch === "number" ? state.playbackPitch : 1);
+      setVolume(typeof state.volume === "number" ? state.volume : 0.8);
+      setIsShuffle(typeof state.isShuffle === "boolean" ? state.isShuffle : true);
+      setAutoRandomPitch(typeof state.autoRandomPitch === "boolean" ? state.autoRandomPitch : true);
+      setIsPlaying(false);
+    } catch {
+      window.localStorage.removeItem(STORAGE_KEY);
+    } finally {
+      setStorageReady(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !storageReady) return;
+
+    const state: StoredPlayerState = {
+      currentTrack,
+      queue,
+      queueSource,
+      currentSource,
+      currentTime,
+      playbackPitch,
+      volume,
+      isShuffle,
+      autoRandomPitch,
+    };
+
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  }, [autoRandomPitch, currentSource, currentTime, currentTrack, isShuffle, playbackPitch, queue, queueSource, storageReady, volume]);
 
   // Media Session API Sync
   useEffect(() => {
@@ -209,7 +296,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       navigator.mediaSession.metadata = new MediaMetadata({
         title: currentTrack.name,
         artist: "Farreo",
-        album: "Farreo Player",
+        album: currentSource?.name || "Farreo Player",
         artwork: [
           { src: "/favicon.ico", sizes: "32x32", type: "image/x-icon" }
         ],
@@ -217,7 +304,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     } else {
       navigator.mediaSession.metadata = null;
     }
-  }, [currentTrack]);
+  }, [currentSource, currentTrack]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !("mediaSession" in navigator)) return;
@@ -291,6 +378,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     <MusicPlayerContext.Provider
       value={{
         currentTrack,
+        currentSource,
         isPlaying,
         playbackPitch,
         volume,
@@ -298,6 +386,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
         duration,
         isShuffle,
         autoRandomPitch,
+        loadQueue,
         playQueue,
         toggleTrack,
         playNext,
@@ -319,6 +408,9 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
           {currentTrack ? (
             <>
               <span className="playlist-admin__now-playing-title">{currentTrack.name}</span>
+              {currentSource && (
+                <span className="playlist-admin__now-playing-source">{currentSource.name}</span>
+              )}
               <span className="playlist-admin__now-playing-pitch">Pitch: {playbackPitch.toFixed(2)}x</span>
             </>
           ) : (
@@ -416,6 +508,9 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
           audioRef.current.volume = volume;
           audioRef.current.preservesPitch = false;
           audioRef.current.playbackRate = playbackPitch;
+          if (!isPlaying && currentTime > 0 && audioRef.current.currentTime !== currentTime) {
+            audioRef.current.currentTime = currentTime;
+          }
         }}
         style={{ display: "none" }}
       />
