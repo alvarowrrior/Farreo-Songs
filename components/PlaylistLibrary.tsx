@@ -1,12 +1,23 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
-import { onAuthStateChanged } from "firebase/auth";
+import { useEffect, useState } from "react";
+import { onAuthStateChanged, type User } from "firebase/auth";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { TrashIcon, PlusIcon, ListMusicIcon, ArrowLeftIcon, LibraryIcon, SearchIcon, ShuffleIcon, ArrowRightIcon, Volume2Icon, VolumeXIcon, DicesIcon, PencilIcon, XIcon, ShareIcon, PlayIcon, PauseIcon, SkipBackIcon, SkipForwardIcon } from "lucide-react";
+import { TrashIcon, PlusIcon, ListMusicIcon, ArrowLeftIcon, LibraryIcon, SearchIcon, ShuffleIcon, ArrowRightIcon, Volume2Icon, VolumeXIcon, DicesIcon, PencilIcon, XIcon, ShareIcon, PlayIcon, PauseIcon, SkipBackIcon, SkipForwardIcon, LockIcon, GlobeIcon, Mic2Icon, RotateCcwIcon } from "lucide-react";
 import { auth, isFirebaseConfigured } from "@/lib/firebase";
-import { useMusicPlayer } from "@/components/MusicPlayerProvider";
+import { MusicLyricsBar, useMusicPlayer } from "@/components/MusicPlayerProvider";
+import {
+  addSongToPrivatePlaylist,
+  createPrivatePlaylist,
+  deletePrivatePlaylist,
+  listOwnPrivatePlaylists,
+  removeSongFromPrivatePlaylist,
+  updatePrivatePlaylist,
+  type PrivatePlaylist,
+  type PrivatePlaylistVisibility,
+} from "@/lib/privatePlaylists";
+import { listFollowedGlobalPlaylistIds } from "@/lib/globalPlaylistFollows";
 
 const ADMIN_EMAILS = (process.env.NEXT_PUBLIC_ADMIN_EMAILS || "").split(",");
 
@@ -24,6 +35,9 @@ interface PlaylistItem {
   name: string;
   url: string;
   variantes?: string[];
+  lyricsSrt?: string | null;
+  lyricsUrl?: string | null;
+  lyricsFileName?: string | null;
   createdAt: { seconds: number; nanoseconds: number } | Date | null;
 }
 
@@ -39,6 +53,7 @@ interface ApiPlaylistInfo extends PlaylistInfo {
 }
 
 type Vista = "playlists" | "canciones";
+type PlaylistScope = "global" | "private";
 
 interface PlaylistLibraryProps {
   adminMode?: boolean;
@@ -46,21 +61,29 @@ interface PlaylistLibraryProps {
 
 export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryProps) {
   const router = useRouter();
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isCheckingAuth, setIsCheckingAuth] = useState(adminMode);
   const [isAuthorized, setIsAuthorized] = useState(!adminMode);
 
   // Vista actual
   const [vista, setVista] = useState<Vista>("playlists");
   const [playlistActual, setPlaylistActual] = useState<string | null>(null);
+  const [playlistScope, setPlaylistScope] = useState<PlaylistScope>("global");
 
   // Playlists
   const [playlists, setPlaylists] = useState<PlaylistInfo[]>([]);
+  const [privatePlaylists, setPrivatePlaylists] = useState<PrivatePlaylist[]>([]);
+  const [followedGlobalPlaylistIds, setFollowedGlobalPlaylistIds] = useState<string[]>([]);
+  const [loadingPrivatePlaylists, setLoadingPrivatePlaylists] = useState(false);
   const [loadingPlaylists, setLoadingPlaylists] = useState(false);
   const [playlistEditorOpen, setPlaylistEditorOpen] = useState(false);
   const [editingPlaylist, setEditingPlaylist] = useState<PlaylistInfo | null>(null);
+  const [editingPrivatePlaylist, setEditingPrivatePlaylist] = useState<PrivatePlaylist | null>(null);
   const [playlistEditorName, setPlaylistEditorName] = useState("");
   const [playlistEditorIconFile, setPlaylistEditorIconFile] = useState<File | null>(null);
   const [playlistEditorIconPreview, setPlaylistEditorIconPreview] = useState("");
+  const [playlistEditorVisibility, setPlaylistEditorVisibility] = useState<PrivatePlaylistVisibility>("private");
+  const [playlistEditorKind, setPlaylistEditorKind] = useState<PlaylistScope>("global");
   const [savingPlaylist, setSavingPlaylist] = useState(false);
 
   // Todas las canciones de la BD (vista principal)
@@ -76,6 +99,7 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
   const [pendingUpload, setPendingUpload] = useState<File | null>(null);
   const [uploadNombre, setUploadNombre] = useState("");
   const [uploadVariantes, setUploadVariantes] = useState<string[]>([]);
+  const [uploadLyricsFile, setUploadLyricsFile] = useState<File | null>(null);
   const [nuevaVarianteInput, setNuevaVarianteInput] = useState("");
   const [varianteError, setVarianteError] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -84,14 +108,16 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
   // Reproductor
   const {
     currentTrack,
+    currentSource,
     isPlaying,
     playbackPitch,
     volume,
     currentTime,
+    visualCurrentTime,
     duration,
     isShuffle,
     autoRandomPitch,
-    playQueue,
+    lyricsEnabled,
     toggleTrack,
     playNext,
     playPrev,
@@ -101,6 +127,7 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
     handleSeek,
     setAutoRandomPitch,
     setIsShuffle,
+    setLyricsEnabled,
     stop,
   } = useMusicPlayer();
   const [dragActive, setDragActive] = useState(false);
@@ -118,6 +145,8 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
   const [editingTrack, setEditingTrack] = useState<PlaylistItem | null>(null);
   const [editNombre, setEditNombre] = useState("");
   const [editVariantes, setEditVariantes] = useState<string[]>([]);
+  const [editLyricsFile, setEditLyricsFile] = useState<File | null>(null);
+  const [editRemoveLyrics, setEditRemoveLyrics] = useState(false);
   const [editNuevaVariante, setEditNuevaVariante] = useState("");
   const [isSaving, setIsSaving] = useState(false);
 
@@ -129,24 +158,28 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
   const [copiedLink, setCopiedLink] = useState<'normal' | 'internal' | null>(null);
 
   useEffect(() => {
-    if (!adminMode) {
-      loadPlaylists();
-      setIsCheckingAuth(false);
-      return;
-    }
-
     if (!auth) {
-      setIsAuthorized(false);
+      loadPlaylists();
+      if (adminMode) setIsAuthorized(false);
       setIsCheckingAuth(false);
       return;
     }
 
     const unsub = onAuthStateChanged(auth, (u) => {
+      setCurrentUser(u);
       const authorized = Boolean(u?.email && ADMIN_EMAILS.includes(u.email));
-      setIsAuthorized(authorized);
+      if (adminMode) setIsAuthorized(authorized);
 
-      if (authorized) {
-        loadPlaylists();
+      loadPlaylists();
+      if (u) {
+        loadPrivatePlaylists(u.uid);
+        loadFollowedGlobalPlaylists(u.uid);
+      } else {
+        setPrivatePlaylists([]);
+        setFollowedGlobalPlaylistIds([]);
+      }
+
+      if (adminMode && authorized) {
         loadEtiquetas();
         loadAllCanciones();
       }
@@ -155,6 +188,8 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
     });
 
     return () => unsub();
+    // loadPlaylists/loadPrivatePlaylists are intentionally triggered from auth state changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [adminMode]);
 
   // Ocultar mensajes automáticamente después de 3 segundos
@@ -184,6 +219,35 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
       setMessage({ type: "error", text: "No se pudo conectar con el servidor de música." });
     } finally {
       setLoadingPlaylists(false);
+    }
+  };
+
+  const loadPrivatePlaylists = async (ownerId = currentUser?.uid) => {
+    if (!ownerId) {
+      setPrivatePlaylists([]);
+      return;
+    }
+
+    try {
+      setLoadingPrivatePlaylists(true);
+      setPrivatePlaylists(await listOwnPrivatePlaylists(ownerId));
+    } catch {
+      setMessage({ type: "error", text: "No se pudieron cargar tus playlists propias." });
+    } finally {
+      setLoadingPrivatePlaylists(false);
+    }
+  };
+
+  const loadFollowedGlobalPlaylists = async (ownerId = currentUser?.uid) => {
+    if (!ownerId) {
+      setFollowedGlobalPlaylistIds([]);
+      return;
+    }
+
+    try {
+      setFollowedGlobalPlaylistIds(await listFollowedGlobalPlaylistIds(ownerId));
+    } catch {
+      setFollowedGlobalPlaylistIds([]);
     }
   };
 
@@ -241,22 +305,75 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
   const volverAPlaylists = () => {
     setVista("playlists");
     setPlaylistActual(null);
+    setPlaylistScope("global");
     setPlaylist([]);
 
     loadPlaylists();
     loadAllCanciones();
+    loadPrivatePlaylists();
+    loadFollowedGlobalPlaylists();
+  };
+
+  const loadPrivatePlaylistCanciones = async (songIds: string[]) => {
+    try {
+      setLoading(true);
+      const res = await fetch(`${TUNNEL_URL}/canciones`);
+      if (res.ok) {
+        const data = (await res.json()) as PlaylistItem[];
+        const songSet = new Set(songIds);
+        const absoluteData = data
+          .filter((item) => songSet.has(item.id))
+          .map((item) => ({
+            ...item,
+            url: getMediaUrl(item.url),
+          }));
+        setPlaylist(absoluteData);
+      }
+    } catch {
+      setMessage({ type: "error", text: "No se pudo cargar esta playlist." });
+    } finally {
+      setLoading(false);
+    }
   };
 
   const openAdminPlaylistSongs = (playlist: PlaylistInfo) => {
     setPlaylistActual(playlist.id);
+    setPlaylistScope("global");
     setVista("canciones");
     setSearchPlaylistCanciones("");
     setShowSongPicker(false);
     loadPlaylistCanciones(playlist.id);
   };
 
+  const openPrivatePlaylistSongs = (playlist: PrivatePlaylist) => {
+    setPlaylistActual(playlist.id);
+    setPlaylistScope("private");
+    setVista("canciones");
+    setSearchPlaylistCanciones("");
+    setShowSongPicker(false);
+    loadPrivatePlaylistCanciones(playlist.songIds);
+  };
+
   const openCreatePlaylist = () => {
     setEditingPlaylist(null);
+    setEditingPrivatePlaylist(null);
+    setPlaylistEditorKind("global");
+    setPlaylistEditorName("");
+    setPlaylistEditorIconFile(null);
+    setPlaylistEditorIconPreview("");
+    setPlaylistEditorOpen(true);
+  };
+
+  const openCreatePrivatePlaylist = () => {
+    if (!currentUser) {
+      setMessage({ type: "error", text: "Inicia sesion para crear playlists propias." });
+      return;
+    }
+
+    setEditingPlaylist(null);
+    setEditingPrivatePlaylist(null);
+    setPlaylistEditorKind("private");
+    setPlaylistEditorVisibility("private");
     setPlaylistEditorName("");
     setPlaylistEditorIconFile(null);
     setPlaylistEditorIconPreview("");
@@ -265,9 +382,22 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
 
   const openEditPlaylist = (playlist: PlaylistInfo) => {
     setEditingPlaylist(playlist);
+    setEditingPrivatePlaylist(null);
+    setPlaylistEditorKind("global");
     setPlaylistEditorName(playlist.nombre);
     setPlaylistEditorIconFile(null);
     setPlaylistEditorIconPreview(getMediaUrl(playlist.iconUrl));
+    setPlaylistEditorOpen(true);
+  };
+
+  const openEditPrivatePlaylist = (playlist: PrivatePlaylist) => {
+    setEditingPlaylist(null);
+    setEditingPrivatePlaylist(playlist);
+    setPlaylistEditorKind("private");
+    setPlaylistEditorVisibility(playlist.visibility);
+    setPlaylistEditorName(playlist.nombre);
+    setPlaylistEditorIconFile(null);
+    setPlaylistEditorIconPreview(playlist.iconUrl || "");
     setPlaylistEditorOpen(true);
   };
 
@@ -295,6 +425,36 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
 
     setSavingPlaylist(true);
     try {
+      if (playlistEditorKind === "private") {
+        if (!currentUser) throw new Error("Inicia sesion para guardar playlists propias.");
+
+        if (editingPrivatePlaylist) {
+          await updatePrivatePlaylist(editingPrivatePlaylist.id, {
+            nombre: displayName,
+            iconUrl: playlistEditorIconPreview || null,
+            visibility: playlistEditorVisibility,
+          });
+          setMessage({ type: "success", text: "Playlist propia actualizada." });
+        } else {
+          await createPrivatePlaylist({
+            ownerId: currentUser.uid,
+            ownerEmail: currentUser.email,
+            nombre: displayName,
+            iconUrl: playlistEditorIconPreview || null,
+            visibility: playlistEditorVisibility,
+          });
+          setMessage({ type: "success", text: "Playlist propia creada." });
+        }
+
+        setPlaylistEditorOpen(false);
+        setEditingPrivatePlaylist(null);
+        setPlaylistEditorName("");
+        setPlaylistEditorIconFile(null);
+        setPlaylistEditorIconPreview("");
+        loadPrivatePlaylists(currentUser.uid);
+        return;
+      }
+
       const formData = new FormData();
       formData.append("nombre", displayName);
       if (playlistEditorIconFile) {
@@ -326,6 +486,7 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
 
       setPlaylistEditorOpen(false);
       setEditingPlaylist(null);
+      setEditingPrivatePlaylist(null);
       setPlaylistEditorName("");
       setPlaylistEditorIconFile(null);
       setPlaylistEditorIconPreview("");
@@ -351,6 +512,18 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
     }
   };
 
+  const eliminarPrivatePlaylist = async (playlist: PrivatePlaylist) => {
+    if (!window.confirm(`¿Eliminar la playlist propia "${playlist.nombre}"?`)) return;
+    try {
+      await deletePrivatePlaylist(playlist.id);
+      setMessage({ type: "success", text: "Playlist propia eliminada." });
+      if (playlistActual === playlist.id) volverAPlaylists();
+      else loadPrivatePlaylists();
+    } catch {
+      setMessage({ type: "error", text: "Error eliminando playlist propia." });
+    }
+  };
+
   const openSongPicker = async () => {
     try {
       const res = await fetch(`${TUNNEL_URL}/canciones`);
@@ -367,6 +540,24 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
 
   const addSongToPlaylist = async (nombreCancion: string) => {
     if (!playlistActual) return;
+    if (playlistScope === "private") {
+      try {
+        await addSongToPrivatePlaylist(playlistActual, nombreCancion);
+        const updated = privatePlaylists.map((item) =>
+          item.id === playlistActual && !item.songIds.includes(nombreCancion)
+            ? { ...item, songIds: [...item.songIds, nombreCancion] }
+            : item
+        );
+        setPrivatePlaylists(updated);
+        const active = updated.find((item) => item.id === playlistActual);
+        if (active) loadPrivatePlaylistCanciones(active.songIds);
+        setMessage({ type: "success", text: "Canción añadida." });
+      } catch {
+        setMessage({ type: "error", text: "Error añadiendo canción." });
+      }
+      return;
+    }
+
     try {
       const res = await fetch(`${TUNNEL_URL}/playlist/${encodeURIComponent(playlistActual)}/add-song`, {
         method: 'POST',
@@ -423,8 +614,25 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
     setPendingUpload(file);
     setUploadNombre(file.name.replace(/\.[^/.]+$/, ""));
     setUploadVariantes([]);
+    setUploadLyricsFile(null);
     setNuevaVarianteInput("");
     setVarianteError(null);
+  };
+
+  const selectLyricsFile = (file: File | null, setter: (file: File | null) => void) => {
+    if (!file) {
+      setter(null);
+      return;
+    }
+
+    const lowerName = file.name.toLowerCase();
+    if (!lowerName.endsWith(".srt") && !lowerName.endsWith(".vtt")) {
+      setMessage({ type: "error", text: "Las lyrics deben ser un archivo .srt o .vtt." });
+      setter(null);
+      return;
+    }
+
+    setter(file);
   };
 
   const anadirVariante = () => {
@@ -452,6 +660,9 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
     setMessage(null);
     const formData = new FormData();
     formData.append("file", pendingUpload);
+    if (uploadLyricsFile) {
+      formData.append("lyrics", uploadLyricsFile);
+    }
     formData.append("metadata", JSON.stringify({
       nombre: uploadNombre.trim() || pendingUpload.name,
       variantes: uploadVariantes
@@ -461,6 +672,7 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
       if (res.ok) {
         setMessage({ type: "success", text: "¡Canción subida!" });
         setPendingUpload(null);
+        setUploadLyricsFile(null);
         loadEtiquetas();
         loadAllCanciones();
       } else {
@@ -503,6 +715,18 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
     }
   };
 
+  const handleSharePrivatePlaylist = (playlist: PrivatePlaylist) => {
+    if (playlist.visibility !== "public") {
+      setMessage({ type: "error", text: "No puedes compartir una playlist privada. Hazla pública primero." });
+      return;
+    }
+
+    const url = `${window.location.origin}/user-playlist/${encodeURIComponent(playlist.id)}`;
+    navigator.clipboard.writeText(url)
+      .then(() => setMessage({ type: "success", text: "Enlace copiado al portapapeles." }))
+      .catch(() => setMessage({ type: "error", text: "Error copiando el enlace." }));
+  };
+
   // ==========================================
   // EDITAR CANCIÓN
   // ==========================================
@@ -511,6 +735,8 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
     setEditingTrack(track);
     setEditNombre(track.name);
     setEditVariantes(track.variantes ? [...track.variantes] : []);
+    setEditLyricsFile(null);
+    setEditRemoveLyrics(false);
     setEditNuevaVariante("");
   };
 
@@ -518,6 +744,8 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
     setEditingTrack(null);
     setEditNombre("");
     setEditVariantes([]);
+    setEditLyricsFile(null);
+    setEditRemoveLyrics(false);
     setEditNuevaVariante("");
   };
 
@@ -525,10 +753,19 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
     if (!editingTrack) return;
     setIsSaving(true);
     try {
+      const formData = new FormData();
+      if (editLyricsFile) {
+        formData.append("lyrics", editLyricsFile);
+      }
+      formData.append("metadata", JSON.stringify({
+        nombre: editNombre.trim(),
+        variantes: editVariantes,
+        removeLyrics: editRemoveLyrics,
+      }));
+
       const res = await fetch(`${TUNNEL_URL}/cancion/${editingTrack.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nombre: editNombre.trim(), variantes: editVariantes })
+        body: formData
       });
       if (res.ok) {
         setMessage({ type: "success", text: "Canción actualizada." });
@@ -567,6 +804,86 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
   const currentPlaylist = playlistActual
     ? playlists.find((item) => item.id === playlistActual) ?? null
     : null;
+  const currentPrivatePlaylist = playlistActual
+    ? privatePlaylists.find((item) => item.id === playlistActual) ?? null
+    : null;
+  const followedGlobalPlaylists = playlists.filter((playlist) =>
+    followedGlobalPlaylistIds.includes(playlist.id)
+  );
+  const progressPercent = duration > 0
+    ? Math.min(100, Math.max(0, (visualCurrentTime / duration) * 100))
+    : 0;
+  const progressFill = progressPercent <= 0
+    ? "0%"
+    : progressPercent >= 100
+      ? "100%"
+      : `calc(${progressPercent}% + ${6 - (progressPercent * 0.12)}px)`;
+  const shareSongModal = shareModalOpen ? (
+    <div className="playlist-admin__modal-overlay" onClick={() => setShareModalOpen(false)}>
+      <div className="playlist-admin__modal" onClick={(e) => e.stopPropagation()}>
+        <div className="playlist-admin__modal-header">
+          <h3>Compartir Canción</h3>
+          <button onClick={() => setShareModalOpen(false)} className="playlist-admin__btn-cancel-small">✕</button>
+        </div>
+        
+        <p style={{ fontSize: "0.95rem", color: "#b3b3b3", marginBottom: "1.5rem" }}>
+          Canción: <strong style={{ color: "#fff" }}>{shareSongTitle}</strong>
+        </p>
+
+        <div className="playlist-admin__upload-form-group" style={{ marginBottom: "1.2rem" }}>
+          <label className="playlist-admin__upload-form-label">Link de la canción</label>
+          <div className="playlist-admin__upload-form-row">
+            <input
+              type="text"
+              readOnly
+              value={shareSongLink}
+              className="playlist-admin__upload-form-input"
+              style={{ background: "rgba(255, 255, 255, 0.05)" }}
+            />
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(shareSongLink)
+                  .then(() => {
+                    setCopiedLink('normal');
+                    setTimeout(() => setCopiedLink(null), 2000);
+                  });
+              }}
+              className="playlist-admin__upload-form-add"
+              style={{ background: copiedLink === 'normal' ? '#fff' : '#1ed760', color: '#000', fontWeight: "bold", minWidth: "80px" }}
+            >
+              {copiedLink === 'normal' ? 'Copiado!' : 'Copiar'}
+            </button>
+          </div>
+        </div>
+
+        <div className="playlist-admin__upload-form-group" style={{ marginBottom: "1.5rem" }}>
+          <label className="playlist-admin__upload-form-label">Link interno (MP3 real)</label>
+          <div className="playlist-admin__upload-form-row">
+            <input
+              type="text"
+              readOnly
+              value={shareInternalLink}
+              className="playlist-admin__upload-form-input"
+              style={{ background: "rgba(255, 255, 255, 0.05)" }}
+            />
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(shareInternalLink)
+                  .then(() => {
+                    setCopiedLink('internal');
+                    setTimeout(() => setCopiedLink(null), 2000);
+                  });
+              }}
+              className="playlist-admin__upload-form-add"
+              style={{ background: copiedLink === 'internal' ? '#fff' : '#1ed760', color: '#000', fontWeight: "bold", minWidth: "80px" }}
+            >
+              {copiedLink === 'internal' ? 'Copiado!' : 'Copiar'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  ) : null;
 
   // Borrar canción DE LA BD (mp3 + json + de todas las playlists)
   const handleDeleteFromDB = async (item: PlaylistItem) => {
@@ -590,6 +907,25 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
   // Quitar canción SOLO de la playlist actual (no borra de la BD)
   const handleRemoveFromPlaylist = async (item: PlaylistItem) => {
     if (!playlistActual) return;
+    if (playlistScope === "private") {
+      try {
+        await removeSongFromPrivatePlaylist(playlistActual, item.id);
+        const updated = privatePlaylists.map((playlistItem) =>
+          playlistItem.id === playlistActual
+            ? { ...playlistItem, songIds: playlistItem.songIds.filter((songId) => songId !== item.id) }
+            : playlistItem
+        );
+        setPrivatePlaylists(updated);
+        const active = updated.find((playlistItem) => playlistItem.id === playlistActual);
+        if (active) loadPrivatePlaylistCanciones(active.songIds);
+        if (currentTrack?.id === item.id) stop();
+        setMessage({ type: "success", text: `"${item.name}" quitada de la playlist.` });
+      } catch {
+        setMessage({ type: "error", text: "Error quitando canción de la playlist." });
+      }
+      return;
+    }
+
     try {
       const res = await fetch(
         `${TUNNEL_URL}/playlist/${encodeURIComponent(playlistActual)}/song?cancion=${encodeURIComponent(item.name)}`,
@@ -672,7 +1008,7 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
                 <div className="playlist-admin__upload-form">
                   <div className="playlist-admin__upload-form-header">
                     <span className="playlist-admin__upload-form-file">🎵 {pendingUpload.name}</span>
-                    <button onClick={() => setPendingUpload(null)} className="playlist-admin__upload-form-change">Cambiar</button>
+                    <button onClick={() => { setPendingUpload(null); setUploadLyricsFile(null); }} className="playlist-admin__upload-form-change">Cambiar</button>
                   </div>
 
                   <div className="playlist-admin__upload-form-group">
@@ -703,9 +1039,159 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
                     {varianteError && <p className="playlist-admin__upload-form-error">{varianteError}</p>}
                   </div>
 
+                  <div className="playlist-admin__upload-form-group">
+                    <label className="playlist-admin__upload-form-label">Lyrics SRT/VTT</label>
+                    <input
+                      type="file"
+                      accept=".srt,.vtt,application/x-subrip,text/vtt,text/plain"
+                      onChange={(e) => selectLyricsFile(e.target.files?.[0] ?? null, setUploadLyricsFile)}
+                      className="playlist-admin__upload-form-input"
+                    />
+                    <p className="playlist-admin__item-date">
+                      {uploadLyricsFile ? `Archivo seleccionado: ${uploadLyricsFile.name}` : "Opcional. Puedes subir SRT o VTT."}
+                    </p>
+                  </div>
+
                   <button onClick={confirmUpload} disabled={isUploading} className="playlist-admin__upload-btn">
                     {isUploading ? "Subiendo..." : "Subir Canción"}
                   </button>
+                </div>
+              )}
+            </section>
+          )}
+
+          {currentUser && !adminMode && (
+            <section className="playlist-admin__section">
+              <div className="playlist-admin__section-header">
+                <h2 className="playlist-admin__section-title">
+                  <LibraryIcon size={20} /> Playlists Propias
+                </h2>
+                <button onClick={openCreatePrivatePlaylist} className="playlist-admin__btn-create">
+                  <PlusIcon size={16} /> Nueva Propia
+                </button>
+              </div>
+
+              {loadingPrivatePlaylists ? (
+                <p className="playlist-admin__empty">Cargando tus playlists...</p>
+              ) : privatePlaylists.length === 0 && followedGlobalPlaylists.length === 0 ? (
+                <p className="playlist-admin__empty">No tienes playlists propias.</p>
+              ) : (
+                <div className={adminMode ? "playlist-admin__list" : "playlist-admin__grid"}>
+                  {adminMode && (
+                    <div className="playlist-admin__list-header playlist-admin__list-header--playlists">
+                      <div>#</div>
+                      <div>Playlist</div>
+                      <div>Canciones</div>
+                      <div style={{ textAlign: "right" }}>Acciones</div>
+                    </div>
+                  )}
+                  {privatePlaylists.map((pl) => (
+                    <div
+                      key={pl.id}
+                      className={adminMode ? "playlist-admin__item playlist-admin__item--playlist" : "playlist-admin__card"}
+                      onClick={() => {
+                        if (adminMode) openPrivatePlaylistSongs(pl);
+                        else router.push(`/user-playlist/${encodeURIComponent(pl.id)}`);
+                      }}
+                    >
+                      {adminMode ? (
+                        <>
+                          <div className="playlist-admin__item-index">
+                            {pl.iconUrl ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={pl.iconUrl} alt="" className="playlist-admin__playlist-icon" />
+                            ) : (
+                              <span className="playlist-admin__item-num"><ListMusicIcon size={16} /></span>
+                            )}
+                          </div>
+                          <div className="playlist-admin__item-info">
+                            <span className="playlist-admin__item-title">{pl.nombre}</span>
+                            <span className="playlist-admin__item-date">{pl.visibility === "public" ? "Pública" : "Privada"}</span>
+                          </div>
+                          <div className="playlist-admin__item-date">{pl.songIds.length} canciones</div>
+                          <div className="playlist-admin__item-actions">
+                            <button className="playlist-admin__item-edit" onClick={(e) => { e.stopPropagation(); handleSharePrivatePlaylist(pl); }} title="Compartir playlist">
+                              <ShareIcon size={16} />
+                            </button>
+                            <button className="playlist-admin__item-edit" onClick={(e) => { e.stopPropagation(); openEditPrivatePlaylist(pl); }} title="Editar playlist">
+                              <PencilIcon size={16} />
+                            </button>
+                            <button className="playlist-admin__item-delete" onClick={(e) => { e.stopPropagation(); eliminarPrivatePlaylist(pl); }} title="Eliminar playlist">
+                              <TrashIcon size={16} />
+                            </button>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="playlist-admin__card-icon">
+                            {pl.iconUrl ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={pl.iconUrl} alt="" className="playlist-admin__playlist-icon playlist-admin__playlist-icon--large" />
+                            ) : (
+                              <ListMusicIcon size={32} />
+                            )}
+                          </div>
+                          <div className="playlist-admin__card-info">
+                            <span className="playlist-admin__card-name">{pl.nombre}</span>
+                            <span className="playlist-admin__card-count">
+                              {pl.songIds.length} canciones · {pl.visibility === "public" ? "Pública" : "Privada"}
+                            </span>
+                          </div>
+                          <button
+                            className="playlist-admin__card-delete playlist-admin__card-share"
+                            onClick={(e) => { e.stopPropagation(); handleSharePrivatePlaylist(pl); }}
+                            title="Compartir playlist"
+                          >
+                            <ShareIcon size={16} />
+                          </button>
+                          <button
+                            className="playlist-admin__card-delete playlist-admin__card-edit"
+                            onClick={(e) => { e.stopPropagation(); openEditPrivatePlaylist(pl); }}
+                            title="Editar playlist"
+                          >
+                            <PencilIcon size={16} />
+                          </button>
+                          <button
+                            className="playlist-admin__card-delete playlist-admin__card-remove"
+                            onClick={(e) => { e.stopPropagation(); eliminarPrivatePlaylist(pl); }}
+                            title="Eliminar playlist"
+                          >
+                            <TrashIcon size={16} />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  ))}
+                  {followedGlobalPlaylists.map((pl) => (
+                    <div
+                      key={`followed-${pl.id}`}
+                      className="playlist-admin__card"
+                      onClick={() => router.push(`/playlist/${encodeURIComponent(pl.id)}`)}
+                    >
+                      <div className="playlist-admin__card-icon">
+                        {pl.iconUrl ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={getMediaUrl(pl.iconUrl)} alt="" className="playlist-admin__playlist-icon playlist-admin__playlist-icon--large" />
+                        ) : (
+                          <ListMusicIcon size={32} />
+                        )}
+                      </div>
+                      <div className="playlist-admin__card-info">
+                        <span className="playlist-admin__card-name">{pl.nombre}</span>
+                        <span className="playlist-admin__card-count">{pl.numCanciones} canciones · Siguiendo</span>
+                      </div>
+                      <button
+                        className="playlist-admin__card-delete playlist-admin__card-share"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleShare("playlist", pl.id);
+                        }}
+                        title="Compartir playlist"
+                      >
+                        <ShareIcon size={16} />
+                      </button>
+                    </div>
+                  ))}
                 </div>
               )}
             </section>
@@ -891,11 +1377,11 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
             </section>
           )}
 
-          {adminMode && playlistEditorOpen && (
+          {playlistEditorOpen && (adminMode || playlistEditorKind === "private") && (
             <div className="playlist-admin__modal-overlay" onClick={() => setPlaylistEditorOpen(false)}>
               <div className="playlist-admin__modal" onClick={(e) => e.stopPropagation()}>
                 <div className="playlist-admin__modal-header">
-                  <h3>{editingPlaylist ? "Editar Playlist" : "Crear Playlist"}</h3>
+                  <h3>{editingPlaylist || editingPrivatePlaylist ? "Editar Playlist" : "Crear Playlist"}</h3>
                   <button onClick={() => setPlaylistEditorOpen(false)} className="playlist-admin__btn-cancel-small">✕</button>
                 </div>
 
@@ -932,14 +1418,42 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
                   </div>
                 </div>
 
+                {playlistEditorKind === "private" && (
+                  <div className="playlist-admin__upload-form-group">
+                    <label className="playlist-admin__upload-form-label">Visibilidad</label>
+                    <div className="playlist-admin__chips">
+                      <button
+                        type="button"
+                        className={`playlist-admin__chip ${playlistEditorVisibility === "private" ? "" : "playlist-admin__chip--muted"}`}
+                        onClick={() => setPlaylistEditorVisibility("private")}
+                      >
+                        <LockIcon size={14} /> Privada
+                      </button>
+                      <button
+                        type="button"
+                        className={`playlist-admin__chip ${playlistEditorVisibility === "public" ? "" : "playlist-admin__chip--muted"}`}
+                        onClick={() => setPlaylistEditorVisibility("public")}
+                      >
+                        <GlobeIcon size={14} /> Pública
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {editingPlaylist && (
                   <p className="playlist-admin__item-date">
                     La URL se mantiene: /playlist/{editingPlaylist.id}
                   </p>
                 )}
 
+                {editingPrivatePlaylist && (
+                  <p className="playlist-admin__item-date">
+                    La URL se mantiene: /user-playlist/{editingPrivatePlaylist.id}
+                  </p>
+                )}
+
                 <button onClick={savePlaylist} disabled={savingPlaylist} className="playlist-admin__upload-btn">
-                  {savingPlaylist ? "Guardando..." : editingPlaylist ? "Guardar Cambios" : "Crear Playlist"}
+                  {savingPlaylist ? "Guardando..." : editingPlaylist || editingPrivatePlaylist ? "Guardar Cambios" : "Crear Playlist"}
                 </button>
               </div>
             </div>
@@ -1001,12 +1515,43 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
                   </div>
                 </div>
 
+                <div className="playlist-admin__upload-form-group">
+                  <label className="playlist-admin__upload-form-label">Lyrics SRT/VTT</label>
+                  <input
+                    type="file"
+                    accept=".srt,.vtt,application/x-subrip,text/vtt,text/plain"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0] ?? null;
+                      selectLyricsFile(file, setEditLyricsFile);
+                      if (file) setEditRemoveLyrics(false);
+                    }}
+                    className="playlist-admin__upload-form-input"
+                  />
+                  <p className="playlist-admin__item-date">
+                    {editLyricsFile
+                      ? `Nuevo archivo: ${editLyricsFile.name}`
+                      : editingTrack.lyricsSrt
+                        ? `Lyrics actuales: ${editingTrack.lyricsFileName || "archivo cargado"}`
+                        : "Sin lyrics cargadas."}
+                  </p>
+                  {editingTrack.lyricsSrt && (
+                    <button
+                      type="button"
+                      onClick={() => { setEditRemoveLyrics((value) => !value); setEditLyricsFile(null); }}
+                      className={`playlist-admin__chip ${editRemoveLyrics ? "" : "playlist-admin__chip--muted"}`}
+                    >
+                      {editRemoveLyrics ? "Se quitaran al guardar" : "Quitar lyrics"}
+                    </button>
+                  )}
+                </div>
+
                 <button onClick={saveEdit} disabled={isSaving} className="playlist-admin__upload-btn">
                   {isSaving ? "Guardando..." : "Guardar Cambios"}
                 </button>
               </div>
             </div>
           )}
+          {shareSongModal}
         </div>
       </main>
     );
@@ -1023,17 +1568,32 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
             <button onClick={volverAPlaylists} className="playlist-admin__nav-back">
               <ArrowLeftIcon size={16} /> Volver a Playlists
             </button>
-            <h1 className="playlist-admin__title">{currentPlaylist?.nombre ?? playlistActual}</h1>
+            <h1 className="playlist-admin__title">{currentPlaylist?.nombre ?? currentPrivatePlaylist?.nombre ?? playlistActual}</h1>
             <p className="playlist-admin__subtitle">{playlist.length} canciones</p>
           </div>
           <div className="playlist-admin__header-actions">
-            <button onClick={() => playlistActual && handleShare('playlist', playlistActual)} className="playlist-admin__btn-action" title="Compartir playlist completa" style={{ background: "transparent", border: "1px solid #1ed760", color: "#1ed760" }}>
+            <button
+              onClick={() => {
+                if (playlistScope === "private" && currentPrivatePlaylist) handleSharePrivatePlaylist(currentPrivatePlaylist);
+                else if (playlistActual) handleShare('playlist', playlistActual);
+              }}
+              className="playlist-admin__btn-action"
+              title="Compartir playlist completa"
+              style={{ background: "transparent", border: "1px solid #1ed760", color: "#1ed760" }}
+            >
               <ShareIcon size={16} /> Compartir Playlist
             </button>
             <button onClick={openSongPicker} className="playlist-admin__btn-action" title="Añadir canción a la playlist">
               <PlusIcon size={16} /> Añadir Canción
             </button>
-            <button onClick={() => currentPlaylist && eliminarPlaylist(currentPlaylist)} className="playlist-admin__btn-action playlist-admin__btn-action--danger" title="Eliminar playlist">
+            <button
+              onClick={() => {
+                if (playlistScope === "private" && currentPrivatePlaylist) eliminarPrivatePlaylist(currentPrivatePlaylist);
+                else if (currentPlaylist) eliminarPlaylist(currentPlaylist);
+              }}
+              className="playlist-admin__btn-action playlist-admin__btn-action--danger"
+              title="Eliminar playlist"
+            >
               <TrashIcon size={16} /> Eliminar
             </button>
           </div>
@@ -1063,7 +1623,7 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
                     <div
                       key={song.id}
                       className="playlist-admin__song-picker-item"
-                      onClick={() => { addSongToPlaylist(song.name); }}
+                      onClick={() => { addSongToPlaylist(playlistScope === "private" ? song.id : song.name); }}
                     >
                       <div className="playlist-admin__song-picker-item-info">
                         <span className="playlist-admin__song-picker-item-name">{song.name}</span>
@@ -1119,7 +1679,15 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
               <div
                 key={track.id}
                 className={`playlist-admin__item ${currentTrack?.id === track.id ? "playlist-admin__item--active" : ""}`}
-                onClick={() => toggleTrack(track, playlist)}
+                onClick={() => toggleTrack(track, playlist, playlistScope === "private" && currentPrivatePlaylist ? {
+                  id: currentPrivatePlaylist.id,
+                  name: currentPrivatePlaylist.nombre,
+                  type: "private",
+                } : currentPlaylist ? {
+                  id: currentPlaylist.id,
+                  name: currentPlaylist.nombre,
+                  type: "admin",
+                } : null)}
               >
                 <div className="playlist-admin__item-index">
                   <span className="playlist-admin__item-play-icon"><PlayIcon size={14} /></span>
@@ -1156,13 +1724,26 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
       </div>
 
       {/* Reproductor fijo */}
+      <MusicLyricsBar />
       <div className="playlist-admin__player">
         {/* Izquierda: Canción actual */}
         <div className="playlist-admin__now-playing">
           {currentTrack ? (
             <>
               <span className="playlist-admin__now-playing-title">{currentTrack.name}</span>
-              <span className="playlist-admin__now-playing-pitch">Pitch: {playbackPitch.toFixed(2)}x</span>
+              {currentSource && (
+                <span className="playlist-admin__now-playing-source">{currentSource.name}</span>
+              )}
+              <span className="playlist-admin__now-playing-pitch-row">
+                <span className="playlist-admin__now-playing-pitch">Pitch: {playbackPitch.toFixed(2)}x</span>
+                <button
+                  className="playlist-admin__pitch-reset"
+                  onClick={() => handlePitchChange(1)}
+                  title="Restaurar pitch a 1x"
+                >
+                  <RotateCcwIcon size={11} />
+                </button>
+              </span>
             </>
           ) : (
             <span className="playlist-admin__now-playing-title" style={{ color: '#666' }}>Sin canción</span>
@@ -1184,6 +1765,13 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
               {isPlaying ? <PauseIcon size={16} /> : <PlayIcon size={16} />}
             </button>
             <button className="playlist-admin__control-btn" onClick={playNext} title="Siguiente"><SkipForwardIcon size={16} /></button>
+            <button
+              className={`playlist-admin__control-btn playlist-admin__control-btn--lyrics ${lyricsEnabled ? 'playlist-admin__control-btn--active' : ''}`}
+              onClick={() => setLyricsEnabled(v => !v)}
+              title={lyricsEnabled ? 'Lyrics activadas' : 'Lyrics desactivadas'}
+            >
+              <Mic2Icon size={16} />
+            </button>
           </div>
 
           {/* Barra de progreso */}
@@ -1193,9 +1781,11 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
               type="range"
               min={0}
               max={duration || 0}
-              value={currentTime}
+              step="any"
+              value={visualCurrentTime}
               onChange={(e) => handleSeek(Number(e.target.value))}
               className="playlist-admin__progress-bar"
+              style={{ background: `linear-gradient(to right, #fff 0%, #fff ${progressFill}, #535353 ${progressFill}, #535353 100%)` }}
             />
             <span className="playlist-admin__progress-time">{formatTime(duration)}</span>
           </div>
