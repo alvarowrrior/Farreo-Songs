@@ -1,7 +1,7 @@
 "use client";
 
-import { createContext, useCallback, useContext, useRef, useState, useEffect, type ReactNode } from "react";
-import { ArrowRightIcon, DicesIcon, PauseIcon, PlayIcon, ShuffleIcon, SkipBackIcon, SkipForwardIcon, Volume2Icon, VolumeXIcon } from "lucide-react";
+import { createContext, useCallback, useContext, useMemo, useRef, useState, useEffect, type ReactNode } from "react";
+import { ArrowRightIcon, DicesIcon, Mic2Icon, PauseIcon, PlayIcon, RotateCcwIcon, ShuffleIcon, SkipBackIcon, SkipForwardIcon, Volume2Icon, VolumeXIcon } from "lucide-react";
 import { usePathname } from "next/navigation";
 
 export interface MusicTrack {
@@ -9,6 +9,9 @@ export interface MusicTrack {
   name: string;
   url?: string;
   variantes?: string[];
+  lyricsSrt?: string | null;
+  lyricsUrl?: string | null;
+  lyricsFileName?: string | null;
 }
 
 export interface MusicPlaylistSource {
@@ -20,13 +23,17 @@ export interface MusicPlaylistSource {
 interface MusicPlayerContextValue {
   currentTrack: MusicTrack | null;
   currentSource: MusicPlaylistSource | null;
+  currentLyric: CurrentLyric | null;
+  hasCurrentLyrics: boolean;
   isPlaying: boolean;
   playbackPitch: number;
   volume: number;
   currentTime: number;
+  visualCurrentTime: number;
   duration: number;
   isShuffle: boolean;
   autoRandomPitch: boolean;
+  lyricsEnabled: boolean;
   loadQueue: (tracks: MusicTrack[], source?: MusicPlaylistSource | null) => void;
   playQueue: (tracks: MusicTrack[], index: number, source?: MusicPlaylistSource | null) => void;
   toggleTrack: (track: MusicTrack, tracks?: MusicTrack[], source?: MusicPlaylistSource | null) => void;
@@ -38,6 +45,7 @@ interface MusicPlayerContextValue {
   handleSeek: (val: number) => void;
   setAutoRandomPitch: (val: boolean | ((prev: boolean) => boolean)) => void;
   setIsShuffle: (val: boolean | ((prev: boolean) => boolean)) => void;
+  setLyricsEnabled: (val: boolean | ((prev: boolean) => boolean)) => void;
   stop: () => void;
 }
 
@@ -54,6 +62,20 @@ interface StoredPlayerState {
   volume: number;
   isShuffle: boolean;
   autoRandomPitch: boolean;
+  lyricsEnabled: boolean;
+}
+
+interface LyricCue {
+  id: string;
+  start: number;
+  end: number;
+  text: string;
+}
+
+interface CurrentLyric {
+  id: string;
+  text: string;
+  state: "active" | "past" | "silence";
 }
 
 export function useMusicPlayer() {
@@ -70,6 +92,124 @@ const formatTime = (s: number) => {
   return `${m}:${sec < 10 ? "0" : ""}${sec}`;
 };
 
+const parseSrtTime = (value: string) => {
+  const normalized = value.trim().replace(",", ".");
+  const parts = normalized.split(":");
+  if (parts.length < 2) return 0;
+
+  const seconds = Number(parts.pop());
+  const minutes = Number(parts.pop());
+  const hours = parts.length > 0 ? Number(parts.pop()) : 0;
+
+  if ([hours, minutes, seconds].some((part) => Number.isNaN(part))) {
+    return 0;
+  }
+
+  return (hours * 3600) + (minutes * 60) + seconds;
+};
+
+const parseSrt = (srt?: string | null): LyricCue[] => {
+  if (!srt) return [];
+
+  return srt
+    .replace(/\r/g, "")
+    .split(/\n\s*\n/g)
+    .map((block) => {
+      const lines = block.split("\n").map((line) => line.trim()).filter(Boolean);
+      const timingIndex = lines.findIndex((line) => line.includes("-->"));
+      if (timingIndex === -1) return null;
+
+      const [rawStart, rawEnd] = lines[timingIndex].split("-->").map((part) => part.trim());
+      const text = lines
+        .slice(timingIndex + 1)
+        .join(" ")
+        .replace(/<[^>]+>/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      if (!rawStart || !rawEnd || !text) return null;
+
+      const start = parseSrtTime(rawStart.split(/\s+/)[0]);
+      const end = parseSrtTime(rawEnd.split(/\s+/)[0]);
+      if (end <= start) return null;
+
+      return {
+        id: `${start}-${end}-${text}`,
+        start,
+        end,
+        text,
+      };
+    })
+    .filter((cue): cue is LyricCue => Boolean(cue))
+    .sort((a, b) => a.start - b.start);
+};
+
+function LyricsDisplay({ lyric, visible }: { lyric: CurrentLyric | null; visible: boolean }) {
+  const [activeLyric, setActiveLyric] = useState<CurrentLyric | null>(lyric);
+  const [leavingLyric, setLeavingLyric] = useState<CurrentLyric | null>(null);
+  const lyricId = lyric?.id;
+  const lyricState = lyric?.state;
+  const lyricText = lyric?.text;
+
+  useEffect(() => {
+    const nextLyric = lyricId && lyricText && lyricState
+      ? { id: lyricId, text: lyricText, state: lyricState }
+      : null;
+
+    const frame = window.setTimeout(() => {
+      if (!visible) {
+        setActiveLyric(null);
+        setLeavingLyric(null);
+        return;
+      }
+
+      setActiveLyric((current) => {
+        if (!nextLyric) return null;
+        if (!current || current.id === nextLyric.id) return nextLyric;
+        setLeavingLyric(current);
+        return nextLyric;
+      });
+
+      if (!nextLyric) {
+        setLeavingLyric(null);
+      }
+    }, 0);
+
+    const timer = setTimeout(() => setLeavingLyric(null), 320);
+    return () => {
+      window.clearTimeout(frame);
+      clearTimeout(timer);
+    };
+  }, [lyricId, lyricState, lyricText, visible]);
+
+  if (!visible) return null;
+
+  return (
+    <div className="playlist-admin__lyrics-bar" aria-live="polite">
+      <div className="playlist-admin__lyrics-window">
+        {leavingLyric && (
+          <span className="playlist-admin__lyrics-line playlist-admin__lyrics-line--leaving">
+            {leavingLyric.text}
+          </span>
+        )}
+        {activeLyric && (
+          <span
+            key={activeLyric.id}
+            className={`playlist-admin__lyrics-line playlist-admin__lyrics-line--entering ${activeLyric.state === "past" ? "playlist-admin__lyrics-line--past" : ""} ${activeLyric.state === "silence" ? "playlist-admin__lyrics-line--silence" : ""}`}
+          >
+            {activeLyric.text}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function MusicLyricsBar() {
+  const { currentLyric, hasCurrentLyrics, lyricsEnabled } = useMusicPlayer();
+  return <LyricsDisplay lyric={currentLyric} visible={lyricsEnabled && hasCurrentLyrics} />;
+}
+
 export default function MusicPlayerProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -83,10 +223,64 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   const [playbackPitch, setPlaybackPitch] = useState(1);
   const [volume, setVolume] = useState(0.8);
   const [currentTime, setCurrentTime] = useState(0);
+  const [visualCurrentTime, setVisualCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [isShuffle, setIsShuffle] = useState(true);
   const [autoRandomPitch, setAutoRandomPitch] = useState(true);
+  const [lyricsEnabled, setLyricsEnabled] = useState(true);
   const [history, setHistory] = useState<MusicTrack[]>([]);
+  const progressPercent = duration > 0
+    ? Math.min(100, Math.max(0, (visualCurrentTime / duration) * 100))
+    : 0;
+  const progressFill = progressPercent <= 0
+    ? "0%"
+    : progressPercent >= 100
+      ? "100%"
+      : `calc(${progressPercent}% + ${6 - (progressPercent * 0.12)}px)`;
+
+  const lyricCues = useMemo(() => parseSrt(currentTrack?.lyricsSrt), [currentTrack?.lyricsSrt]);
+  const hasCurrentLyrics = lyricCues.length > 0;
+  const currentLyric = useMemo<CurrentLyric | null>(() => {
+    if (lyricCues.length === 0) return null;
+
+    const activeCue = lyricCues.find((cue) => currentTime >= cue.start && currentTime <= cue.end);
+    if (activeCue) {
+      return { id: activeCue.id, text: activeCue.text, state: "active" };
+    }
+
+    const firstCue = lyricCues[0];
+    if (currentTime < firstCue.start) {
+      if (firstCue.start > 2) {
+        return { id: `silence-start-${firstCue.id}`, text: "♫", state: "silence" };
+      }
+      return null;
+    }
+
+    let previousIndex = -1;
+    for (let i = 0; i < lyricCues.length; i += 1) {
+      if (currentTime > lyricCues[i].end) previousIndex = i;
+      else break;
+    }
+
+    const previousCue = previousIndex >= 0 ? lyricCues[previousIndex] : null;
+    if (previousCue) {
+      const nextCue = lyricCues[previousIndex + 1];
+      if (nextCue && currentTime < nextCue.start && nextCue.start - previousCue.end > 2) {
+        return { id: `silence-${previousCue.id}-${nextCue.id}`, text: "♫", state: "silence" };
+      }
+
+      const hasLongOutro = duration > 0
+        ? duration - previousCue.end > 2
+        : currentTime - previousCue.end > 2;
+      if (!nextCue && hasLongOutro) {
+        return { id: `silence-end-${previousCue.id}`, text: "♫", state: "silence" };
+      }
+
+      return { id: previousCue.id, text: previousCue.text, state: "past" };
+    }
+
+    return null;
+  }, [currentTime, duration, lyricCues]);
 
   const startTrack = (track: MusicTrack, source = queueSource) => {
     if (!track.url) return;
@@ -100,6 +294,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     setCurrentTrack(track);
     setCurrentSource(source);
     setCurrentTime(0);
+    setVisualCurrentTime(0);
     setDuration(0);
     setIsPlaying(true);
     setTimeout(() => {
@@ -226,6 +421,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     if (audioRef.current) {
       audioRef.current.currentTime = val;
       setCurrentTime(val);
+      setVisualCurrentTime(val);
     }
   };
 
@@ -238,6 +434,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     setCurrentSource(null);
     setIsPlaying(false);
     setCurrentTime(0);
+    setVisualCurrentTime(0);
     setDuration(0);
   };
 
@@ -257,11 +454,14 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       setQueueSource(state.queueSource ?? null);
       setCurrentTrack(state.currentTrack ?? null);
       setCurrentSource(state.currentSource ?? null);
-      setCurrentTime(typeof state.currentTime === "number" ? state.currentTime : 0);
+      const restoredTime = typeof state.currentTime === "number" ? state.currentTime : 0;
+      setCurrentTime(restoredTime);
+      setVisualCurrentTime(restoredTime);
       setPlaybackPitch(typeof state.playbackPitch === "number" ? state.playbackPitch : 1);
       setVolume(typeof state.volume === "number" ? state.volume : 0.8);
       setIsShuffle(typeof state.isShuffle === "boolean" ? state.isShuffle : true);
       setAutoRandomPitch(typeof state.autoRandomPitch === "boolean" ? state.autoRandomPitch : true);
+      setLyricsEnabled(typeof state.lyricsEnabled === "boolean" ? state.lyricsEnabled : true);
       setIsPlaying(false);
     } catch {
       window.localStorage.removeItem(STORAGE_KEY);
@@ -283,10 +483,26 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       volume,
       isShuffle,
       autoRandomPitch,
+      lyricsEnabled,
     };
 
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  }, [autoRandomPitch, currentSource, currentTime, currentTrack, isShuffle, playbackPitch, queue, queueSource, storageReady, volume]);
+  }, [autoRandomPitch, currentSource, currentTime, currentTrack, isShuffle, lyricsEnabled, playbackPitch, queue, queueSource, storageReady, volume]);
+
+  useEffect(() => {
+    if (!isPlaying) return;
+
+    let frameId = 0;
+    const syncVisualTime = () => {
+      if (audioRef.current) {
+        setVisualCurrentTime(audioRef.current.currentTime);
+      }
+      frameId = window.requestAnimationFrame(syncVisualTime);
+    };
+
+    frameId = window.requestAnimationFrame(syncVisualTime);
+    return () => window.cancelAnimationFrame(frameId);
+  }, [isPlaying]);
 
   // Media Session API Sync
   useEffect(() => {
@@ -315,10 +531,12 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     if (typeof window === "undefined" || !("mediaSession" in navigator) || !audioRef.current) return;
     if ("setPositionState" in navigator.mediaSession && duration > 0) {
       try {
+        const safeDuration = Math.max(0, duration);
+        const safePosition = Math.min(Math.max(0, currentTime), safeDuration);
         navigator.mediaSession.setPositionState({
-          duration: duration,
+          duration: safeDuration,
           playbackRate: playbackPitch,
-          position: currentTime,
+          position: safePosition,
         });
       } catch (e) {
         console.error("Error setting media session position state:", e);
@@ -379,13 +597,17 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       value={{
         currentTrack,
         currentSource,
+        currentLyric,
+        hasCurrentLyrics,
         isPlaying,
         playbackPitch,
         volume,
         currentTime,
+        visualCurrentTime,
         duration,
         isShuffle,
         autoRandomPitch,
+        lyricsEnabled,
         loadQueue,
         playQueue,
         toggleTrack,
@@ -397,12 +619,15 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
         handleSeek,
         setAutoRandomPitch,
         setIsShuffle,
+        setLyricsEnabled,
         stop,
       }}
     >
       {children}
 
       {!pathname.startsWith("/admin") && (
+      <>
+      <LyricsDisplay lyric={currentLyric} visible={lyricsEnabled && hasCurrentLyrics} />
       <div className="playlist-admin__player">
         <div className="playlist-admin__now-playing">
           {currentTrack ? (
@@ -411,7 +636,16 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
               {currentSource && (
                 <span className="playlist-admin__now-playing-source">{currentSource.name}</span>
               )}
-              <span className="playlist-admin__now-playing-pitch">Pitch: {playbackPitch.toFixed(2)}x</span>
+              <span className="playlist-admin__now-playing-pitch-row">
+                <span className="playlist-admin__now-playing-pitch">Pitch: {playbackPitch.toFixed(2)}x</span>
+                <button
+                  className="playlist-admin__pitch-reset"
+                  onClick={() => handlePitchChange(1)}
+                  title="Restaurar pitch a 1x"
+                >
+                  <RotateCcwIcon size={11} />
+                </button>
+              </span>
             </>
           ) : (
             <span className="playlist-admin__now-playing-title" style={{ color: "#666" }}>Sin canción</span>
@@ -432,6 +666,13 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
               {isPlaying ? <PauseIcon size={16} /> : <PlayIcon size={16} />}
             </button>
             <button className="playlist-admin__control-btn" onClick={playNext} title="Siguiente"><SkipForwardIcon size={16} /></button>
+            <button
+              className={`playlist-admin__control-btn playlist-admin__control-btn--lyrics ${lyricsEnabled ? "playlist-admin__control-btn--active" : ""}`}
+              onClick={() => setLyricsEnabled((v) => !v)}
+              title={lyricsEnabled ? "Lyrics activadas" : "Lyrics desactivadas"}
+            >
+              <Mic2Icon size={16} />
+            </button>
           </div>
 
           <div className="playlist-admin__progress">
@@ -440,9 +681,11 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
               type="range"
               min={0}
               max={duration || 0}
-              value={currentTime}
+              step="any"
+              value={visualCurrentTime}
               onChange={(e) => handleSeek(Number(e.target.value))}
               className="playlist-admin__progress-bar"
+              style={{ background: `linear-gradient(to right, #fff 0%, #fff ${progressFill}, #535353 ${progressFill}, #535353 100%)` }}
             />
             <span className="playlist-admin__progress-time">{formatTime(duration)}</span>
           </div>
@@ -491,6 +734,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
         </div>
 
       </div>
+      </>
       )}
 
       <audio
@@ -500,7 +744,10 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
         onPause={() => setIsPlaying(false)}
         onPlay={() => setIsPlaying(true)}
         onTimeUpdate={() => {
-          if (audioRef.current) setCurrentTime(audioRef.current.currentTime);
+          if (audioRef.current) {
+            setCurrentTime(audioRef.current.currentTime);
+            setVisualCurrentTime(audioRef.current.currentTime);
+          }
         }}
         onLoadedMetadata={() => {
           if (!audioRef.current) return;

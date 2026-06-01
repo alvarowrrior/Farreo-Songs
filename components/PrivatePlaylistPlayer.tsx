@@ -28,6 +28,9 @@ interface ApiSong {
   name: string;
   url: string;
   variantes?: string[];
+  lyricsSrt?: string | null;
+  lyricsUrl?: string | null;
+  lyricsFileName?: string | null;
 }
 
 type Notice = {
@@ -88,6 +91,9 @@ export default function PrivatePlaylistPlayer({ playlistId }: { playlistId: stri
       name: song.name,
       url: getMediaUrl(song.url),
       variantes: song.variantes,
+      lyricsSrt: song.lyricsSrt,
+      lyricsUrl: song.lyricsUrl,
+      lyricsFileName: song.lyricsFileName,
     }));
     const ids = new Set(songIds);
     const playlistTracks = mapped.filter((song) => ids.has(song.id));

@@ -976,6 +976,39 @@
     margin-top: 3px;
   }
 
+  &__now-playing-pitch-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    width: fit-content;
+    margin-top: 3px;
+
+    .playlist-admin__now-playing-pitch {
+      margin-top: 0;
+    }
+  }
+
+  &__pitch-reset {
+    width: 18px;
+    height: 18px;
+    border: 1px solid rgba(30, 215, 96, 0.28);
+    border-radius: 999px;
+    background: rgba(30, 215, 96, 0.08);
+    color: #1ed760;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 0;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+
+    &:hover {
+      background: #1ed760;
+      border-color: #1ed760;
+      color: #000;
+    }
+  }
+
   &__now-playing-source {
     font-size: 0.72rem;
     color: #b3b3b3;
@@ -983,6 +1016,79 @@
     overflow: hidden;
     text-overflow: ellipsis;
     margin-top: 2px;
+  }
+
+  &__lyrics-bar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 84px;
+    height: 46px;
+    z-index: 99;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(10, 10, 10, 0.76);
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    backdrop-filter: blur(14px);
+    overflow: hidden;
+    pointer-events: none;
+    animation: lyrics-panel-in 220ms ease-out both;
+
+    @include mx.render-to(vars.$bp-sm) {
+      bottom: 102px;
+      height: 42px;
+    }
+  }
+
+  &__lyrics-window {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    padding: 0 1.25rem;
+    overflow: hidden;
+  }
+
+  &__lyrics-line {
+    position: absolute;
+    inset: 0 1.25rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    font-size: 0.98rem;
+    font-weight: 650;
+    line-height: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: center;
+    text-shadow: 0 1px 12px rgba(0, 0, 0, 0.35);
+
+    &--entering {
+      animation: lyrics-line-in 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    }
+
+    &--leaving {
+      color: rgba(255, 255, 255, 0.58);
+      animation: lyrics-line-out 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    }
+
+    &--past {
+      color: rgba(255, 255, 255, 0.56);
+    }
+
+    &--silence {
+      color: rgba(255, 255, 255, 0.74);
+      font-size: 1.08rem;
+      font-weight: 700;
+    }
+
+    @include mx.render-to(vars.$bp-sm) {
+      font-size: 0.86rem;
+      inset: 0 0.75rem;
+    }
   }
 
   // -- Columna central: controles + progreso --
@@ -1075,7 +1181,7 @@
       width: 12px;
       height: 12px;
       border-radius: 50%;
-      background: #fff;
+      background: #1ed760;
       cursor: pointer;
       opacity: 0;
       transition: opacity 0.15s ease;
@@ -1089,9 +1195,15 @@
       width: 12px;
       height: 12px;
       border-radius: 50%;
-      background: #fff;
+      background: #1ed760;
       cursor: pointer;
       border: none;
+      opacity: 0;
+      transition: opacity 0.15s ease;
+    }
+
+    &:hover::-moz-range-thumb {
+      opacity: 1;
     }
 
     &::-webkit-slider-runnable-track {
@@ -1154,5 +1266,41 @@
         background: #1ed760;
       }
     }
+  }
+}
+
+@keyframes lyrics-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes lyrics-line-in {
+  from {
+    opacity: 0;
+    transform: translateY(90%);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes lyrics-line-out {
+  from {
+    opacity: 0.75;
+    transform: translateY(0);
+  }
+
+  to {
+    opacity: 0;
+    transform: translateY(-90%);
   }
 }

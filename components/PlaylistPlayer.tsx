@@ -26,6 +26,9 @@ interface ApiSong {
   name: string;
   url: string;
   variantes?: string[];
+  lyricsSrt?: string | null;
+  lyricsUrl?: string | null;
+  lyricsFileName?: string | null;
 }
 
 interface ApiPlaylist {
@@ -85,6 +88,9 @@ export default function PlaylistPlayer({ playlistId, songId }: PlaylistPlayerPro
             name: song.name,
             url: getMediaUrl(song.url),
             variantes: song.variantes,
+            lyricsSrt: song.lyricsSrt,
+            lyricsUrl: song.lyricsUrl,
+            lyricsFileName: song.lyricsFileName,
           }));
           const source: MusicPlaylistSource = {
             id: playlistId,
@@ -111,6 +117,9 @@ export default function PlaylistPlayer({ playlistId, songId }: PlaylistPlayerPro
             name: dbSong.name,
             url: getMediaUrl(dbSong.url),
             variantes: dbSong.variantes,
+            lyricsSrt: dbSong.lyricsSrt,
+            lyricsUrl: dbSong.lyricsUrl,
+            lyricsFileName: dbSong.lyricsFileName,
           }];
           const source: MusicPlaylistSource = {
             id: dbSong.id,

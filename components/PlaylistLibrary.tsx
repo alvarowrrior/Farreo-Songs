@@ -4,9 +4,9 @@ import { useEffect, useState } from "react";
 import { onAuthStateChanged, type User } from "firebase/auth";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { TrashIcon, PlusIcon, ListMusicIcon, ArrowLeftIcon, LibraryIcon, SearchIcon, ShuffleIcon, ArrowRightIcon, Volume2Icon, VolumeXIcon, DicesIcon, PencilIcon, XIcon, ShareIcon, PlayIcon, PauseIcon, SkipBackIcon, SkipForwardIcon, LockIcon, GlobeIcon } from "lucide-react";
+import { TrashIcon, PlusIcon, ListMusicIcon, ArrowLeftIcon, LibraryIcon, SearchIcon, ShuffleIcon, ArrowRightIcon, Volume2Icon, VolumeXIcon, DicesIcon, PencilIcon, XIcon, ShareIcon, PlayIcon, PauseIcon, SkipBackIcon, SkipForwardIcon, LockIcon, GlobeIcon, Mic2Icon, RotateCcwIcon } from "lucide-react";
 import { auth, isFirebaseConfigured } from "@/lib/firebase";
-import { useMusicPlayer } from "@/components/MusicPlayerProvider";
+import { MusicLyricsBar, useMusicPlayer } from "@/components/MusicPlayerProvider";
 import {
   addSongToPrivatePlaylist,
   createPrivatePlaylist,
@@ -35,6 +35,9 @@ interface PlaylistItem {
   name: string;
   url: string;
   variantes?: string[];
+  lyricsSrt?: string | null;
+  lyricsUrl?: string | null;
+  lyricsFileName?: string | null;
   createdAt: { seconds: number; nanoseconds: number } | Date | null;
 }
 
@@ -96,6 +99,7 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
   const [pendingUpload, setPendingUpload] = useState<File | null>(null);
   const [uploadNombre, setUploadNombre] = useState("");
   const [uploadVariantes, setUploadVariantes] = useState<string[]>([]);
+  const [uploadLyricsFile, setUploadLyricsFile] = useState<File | null>(null);
   const [nuevaVarianteInput, setNuevaVarianteInput] = useState("");
   const [varianteError, setVarianteError] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -109,9 +113,11 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
     playbackPitch,
     volume,
     currentTime,
+    visualCurrentTime,
     duration,
     isShuffle,
     autoRandomPitch,
+    lyricsEnabled,
     toggleTrack,
     playNext,
     playPrev,
@@ -121,6 +127,7 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
     handleSeek,
     setAutoRandomPitch,
     setIsShuffle,
+    setLyricsEnabled,
     stop,
   } = useMusicPlayer();
   const [dragActive, setDragActive] = useState(false);
@@ -138,6 +145,8 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
   const [editingTrack, setEditingTrack] = useState<PlaylistItem | null>(null);
   const [editNombre, setEditNombre] = useState("");
   const [editVariantes, setEditVariantes] = useState<string[]>([]);
+  const [editLyricsFile, setEditLyricsFile] = useState<File | null>(null);
+  const [editRemoveLyrics, setEditRemoveLyrics] = useState(false);
   const [editNuevaVariante, setEditNuevaVariante] = useState("");
   const [isSaving, setIsSaving] = useState(false);
 
@@ -605,8 +614,25 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
     setPendingUpload(file);
     setUploadNombre(file.name.replace(/\.[^/.]+$/, ""));
     setUploadVariantes([]);
+    setUploadLyricsFile(null);
     setNuevaVarianteInput("");
     setVarianteError(null);
+  };
+
+  const selectLyricsFile = (file: File | null, setter: (file: File | null) => void) => {
+    if (!file) {
+      setter(null);
+      return;
+    }
+
+    const lowerName = file.name.toLowerCase();
+    if (!lowerName.endsWith(".srt") && !lowerName.endsWith(".vtt")) {
+      setMessage({ type: "error", text: "Las lyrics deben ser un archivo .srt o .vtt." });
+      setter(null);
+      return;
+    }
+
+    setter(file);
   };
 
   const anadirVariante = () => {
@@ -634,6 +660,9 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
     setMessage(null);
     const formData = new FormData();
     formData.append("file", pendingUpload);
+    if (uploadLyricsFile) {
+      formData.append("lyrics", uploadLyricsFile);
+    }
     formData.append("metadata", JSON.stringify({
       nombre: uploadNombre.trim() || pendingUpload.name,
       variantes: uploadVariantes
@@ -643,6 +672,7 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
       if (res.ok) {
         setMessage({ type: "success", text: "¡Canción subida!" });
         setPendingUpload(null);
+        setUploadLyricsFile(null);
         loadEtiquetas();
         loadAllCanciones();
       } else {
@@ -705,6 +735,8 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
     setEditingTrack(track);
     setEditNombre(track.name);
     setEditVariantes(track.variantes ? [...track.variantes] : []);
+    setEditLyricsFile(null);
+    setEditRemoveLyrics(false);
     setEditNuevaVariante("");
   };
 
@@ -712,6 +744,8 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
     setEditingTrack(null);
     setEditNombre("");
     setEditVariantes([]);
+    setEditLyricsFile(null);
+    setEditRemoveLyrics(false);
     setEditNuevaVariante("");
   };
 
@@ -719,10 +753,19 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
     if (!editingTrack) return;
     setIsSaving(true);
     try {
+      const formData = new FormData();
+      if (editLyricsFile) {
+        formData.append("lyrics", editLyricsFile);
+      }
+      formData.append("metadata", JSON.stringify({
+        nombre: editNombre.trim(),
+        variantes: editVariantes,
+        removeLyrics: editRemoveLyrics,
+      }));
+
       const res = await fetch(`${TUNNEL_URL}/cancion/${editingTrack.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nombre: editNombre.trim(), variantes: editVariantes })
+        body: formData
       });
       if (res.ok) {
         setMessage({ type: "success", text: "Canción actualizada." });
@@ -767,6 +810,80 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
   const followedGlobalPlaylists = playlists.filter((playlist) =>
     followedGlobalPlaylistIds.includes(playlist.id)
   );
+  const progressPercent = duration > 0
+    ? Math.min(100, Math.max(0, (visualCurrentTime / duration) * 100))
+    : 0;
+  const progressFill = progressPercent <= 0
+    ? "0%"
+    : progressPercent >= 100
+      ? "100%"
+      : `calc(${progressPercent}% + ${6 - (progressPercent * 0.12)}px)`;
+  const shareSongModal = shareModalOpen ? (
+    <div className="playlist-admin__modal-overlay" onClick={() => setShareModalOpen(false)}>
+      <div className="playlist-admin__modal" onClick={(e) => e.stopPropagation()}>
+        <div className="playlist-admin__modal-header">
+          <h3>Compartir Canción</h3>
+          <button onClick={() => setShareModalOpen(false)} className="playlist-admin__btn-cancel-small">✕</button>
+        </div>
+        
+        <p style={{ fontSize: "0.95rem", color: "#b3b3b3", marginBottom: "1.5rem" }}>
+          Canción: <strong style={{ color: "#fff" }}>{shareSongTitle}</strong>
+        </p>
+
+        <div className="playlist-admin__upload-form-group" style={{ marginBottom: "1.2rem" }}>
+          <label className="playlist-admin__upload-form-label">Link de la canción</label>
+          <div className="playlist-admin__upload-form-row">
+            <input
+              type="text"
+              readOnly
+              value={shareSongLink}
+              className="playlist-admin__upload-form-input"
+              style={{ background: "rgba(255, 255, 255, 0.05)" }}
+            />
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(shareSongLink)
+                  .then(() => {
+                    setCopiedLink('normal');
+                    setTimeout(() => setCopiedLink(null), 2000);
+                  });
+              }}
+              className="playlist-admin__upload-form-add"
+              style={{ background: copiedLink === 'normal' ? '#fff' : '#1ed760', color: '#000', fontWeight: "bold", minWidth: "80px" }}
+            >
+              {copiedLink === 'normal' ? 'Copiado!' : 'Copiar'}
+            </button>
+          </div>
+        </div>
+
+        <div className="playlist-admin__upload-form-group" style={{ marginBottom: "1.5rem" }}>
+          <label className="playlist-admin__upload-form-label">Link interno (MP3 real)</label>
+          <div className="playlist-admin__upload-form-row">
+            <input
+              type="text"
+              readOnly
+              value={shareInternalLink}
+              className="playlist-admin__upload-form-input"
+              style={{ background: "rgba(255, 255, 255, 0.05)" }}
+            />
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(shareInternalLink)
+                  .then(() => {
+                    setCopiedLink('internal');
+                    setTimeout(() => setCopiedLink(null), 2000);
+                  });
+              }}
+              className="playlist-admin__upload-form-add"
+              style={{ background: copiedLink === 'internal' ? '#fff' : '#1ed760', color: '#000', fontWeight: "bold", minWidth: "80px" }}
+            >
+              {copiedLink === 'internal' ? 'Copiado!' : 'Copiar'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  ) : null;
 
   // Borrar canción DE LA BD (mp3 + json + de todas las playlists)
   const handleDeleteFromDB = async (item: PlaylistItem) => {
@@ -891,7 +1008,7 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
                 <div className="playlist-admin__upload-form">
                   <div className="playlist-admin__upload-form-header">
                     <span className="playlist-admin__upload-form-file">🎵 {pendingUpload.name}</span>
-                    <button onClick={() => setPendingUpload(null)} className="playlist-admin__upload-form-change">Cambiar</button>
+                    <button onClick={() => { setPendingUpload(null); setUploadLyricsFile(null); }} className="playlist-admin__upload-form-change">Cambiar</button>
                   </div>
 
                   <div className="playlist-admin__upload-form-group">
@@ -920,6 +1037,19 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
                       <button onClick={anadirVariante} className="playlist-admin__upload-form-add">Añadir</button>
                     </div>
                     {varianteError && <p className="playlist-admin__upload-form-error">{varianteError}</p>}
+                  </div>
+
+                  <div className="playlist-admin__upload-form-group">
+                    <label className="playlist-admin__upload-form-label">Lyrics SRT/VTT</label>
+                    <input
+                      type="file"
+                      accept=".srt,.vtt,application/x-subrip,text/vtt,text/plain"
+                      onChange={(e) => selectLyricsFile(e.target.files?.[0] ?? null, setUploadLyricsFile)}
+                      className="playlist-admin__upload-form-input"
+                    />
+                    <p className="playlist-admin__item-date">
+                      {uploadLyricsFile ? `Archivo seleccionado: ${uploadLyricsFile.name}` : "Opcional. Puedes subir SRT o VTT."}
+                    </p>
                   </div>
 
                   <button onClick={confirmUpload} disabled={isUploading} className="playlist-admin__upload-btn">
@@ -1385,12 +1515,43 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
                   </div>
                 </div>
 
+                <div className="playlist-admin__upload-form-group">
+                  <label className="playlist-admin__upload-form-label">Lyrics SRT/VTT</label>
+                  <input
+                    type="file"
+                    accept=".srt,.vtt,application/x-subrip,text/vtt,text/plain"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0] ?? null;
+                      selectLyricsFile(file, setEditLyricsFile);
+                      if (file) setEditRemoveLyrics(false);
+                    }}
+                    className="playlist-admin__upload-form-input"
+                  />
+                  <p className="playlist-admin__item-date">
+                    {editLyricsFile
+                      ? `Nuevo archivo: ${editLyricsFile.name}`
+                      : editingTrack.lyricsSrt
+                        ? `Lyrics actuales: ${editingTrack.lyricsFileName || "archivo cargado"}`
+                        : "Sin lyrics cargadas."}
+                  </p>
+                  {editingTrack.lyricsSrt && (
+                    <button
+                      type="button"
+                      onClick={() => { setEditRemoveLyrics((value) => !value); setEditLyricsFile(null); }}
+                      className={`playlist-admin__chip ${editRemoveLyrics ? "" : "playlist-admin__chip--muted"}`}
+                    >
+                      {editRemoveLyrics ? "Se quitaran al guardar" : "Quitar lyrics"}
+                    </button>
+                  )}
+                </div>
+
                 <button onClick={saveEdit} disabled={isSaving} className="playlist-admin__upload-btn">
                   {isSaving ? "Guardando..." : "Guardar Cambios"}
                 </button>
               </div>
             </div>
           )}
+          {shareSongModal}
         </div>
       </main>
     );
@@ -1563,6 +1724,7 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
       </div>
 
       {/* Reproductor fijo */}
+      <MusicLyricsBar />
       <div className="playlist-admin__player">
         {/* Izquierda: Canción actual */}
         <div className="playlist-admin__now-playing">
@@ -1572,7 +1734,16 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
               {currentSource && (
                 <span className="playlist-admin__now-playing-source">{currentSource.name}</span>
               )}
-              <span className="playlist-admin__now-playing-pitch">Pitch: {playbackPitch.toFixed(2)}x</span>
+              <span className="playlist-admin__now-playing-pitch-row">
+                <span className="playlist-admin__now-playing-pitch">Pitch: {playbackPitch.toFixed(2)}x</span>
+                <button
+                  className="playlist-admin__pitch-reset"
+                  onClick={() => handlePitchChange(1)}
+                  title="Restaurar pitch a 1x"
+                >
+                  <RotateCcwIcon size={11} />
+                </button>
+              </span>
             </>
           ) : (
             <span className="playlist-admin__now-playing-title" style={{ color: '#666' }}>Sin canción</span>
@@ -1594,6 +1765,13 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
               {isPlaying ? <PauseIcon size={16} /> : <PlayIcon size={16} />}
             </button>
             <button className="playlist-admin__control-btn" onClick={playNext} title="Siguiente"><SkipForwardIcon size={16} /></button>
+            <button
+              className={`playlist-admin__control-btn playlist-admin__control-btn--lyrics ${lyricsEnabled ? 'playlist-admin__control-btn--active' : ''}`}
+              onClick={() => setLyricsEnabled(v => !v)}
+              title={lyricsEnabled ? 'Lyrics activadas' : 'Lyrics desactivadas'}
+            >
+              <Mic2Icon size={16} />
+            </button>
           </div>
 
           {/* Barra de progreso */}
@@ -1603,9 +1781,11 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
               type="range"
               min={0}
               max={duration || 0}
-              value={currentTime}
+              step="any"
+              value={visualCurrentTime}
               onChange={(e) => handleSeek(Number(e.target.value))}
               className="playlist-admin__progress-bar"
+              style={{ background: `linear-gradient(to right, #fff 0%, #fff ${progressFill}, #535353 ${progressFill}, #535353 100%)` }}
             />
             <span className="playlist-admin__progress-time">{formatTime(duration)}</span>
           </div>
