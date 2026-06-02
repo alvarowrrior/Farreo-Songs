@@ -38,6 +38,7 @@ interface PlaylistItem {
   lyricsSrt?: string | null;
   lyricsUrl?: string | null;
   lyricsFileName?: string | null;
+  duration?: number | null;
   createdAt: { seconds: number; nanoseconds: number } | Date | null;
 }
 

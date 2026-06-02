@@ -29,6 +29,7 @@ interface ApiSong {
   lyricsSrt?: string | null;
   lyricsUrl?: string | null;
   lyricsFileName?: string | null;
+  duration?: number | null;
 }
 
 interface ApiPlaylist {
@@ -91,6 +92,7 @@ export default function PlaylistPlayer({ playlistId, songId }: PlaylistPlayerPro
             lyricsSrt: song.lyricsSrt,
             lyricsUrl: song.lyricsUrl,
             lyricsFileName: song.lyricsFileName,
+            duration: song.duration,
           }));
           const source: MusicPlaylistSource = {
             id: playlistId,
@@ -120,6 +122,7 @@ export default function PlaylistPlayer({ playlistId, songId }: PlaylistPlayerPro
             lyricsSrt: dbSong.lyricsSrt,
             lyricsUrl: dbSong.lyricsUrl,
             lyricsFileName: dbSong.lyricsFileName,
+            duration: dbSong.duration,
           }];
           const source: MusicPlaylistSource = {
             id: dbSong.id,
