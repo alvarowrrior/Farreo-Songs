@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { onAuthStateChanged, signOut, type User } from "firebase/auth";
-import { ShieldIcon } from "lucide-react";
+import { RadioIcon, ShieldIcon } from "lucide-react";
 import { auth } from "../lib/firebase";
 
 const ADMIN_EMAILS = (process.env.NEXT_PUBLIC_ADMIN_EMAILS || "").split(",");
@@ -58,6 +58,15 @@ export default function Header() {
         </Link>
 
         <nav className="header__nav">
+          <Link
+            href="/radio"
+            className="header__link header__link--music"
+            title="Radio sincronizada"
+          >
+            <RadioIcon size={18} />
+            <span>Radio</span>
+          </Link>
+
           {isAdmin && (
             <Link
               href="/admin"

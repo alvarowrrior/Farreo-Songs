@@ -31,6 +31,7 @@ interface ApiSong {
   lyricsSrt?: string | null;
   lyricsUrl?: string | null;
   lyricsFileName?: string | null;
+  duration?: number | null;
 }
 
 type Notice = {
@@ -94,6 +95,7 @@ export default function PrivatePlaylistPlayer({ playlistId }: { playlistId: stri
       lyricsSrt: song.lyricsSrt,
       lyricsUrl: song.lyricsUrl,
       lyricsFileName: song.lyricsFileName,
+      duration: song.duration,
     }));
     const ids = new Set(songIds);
     const playlistTracks = mapped.filter((song) => ids.has(song.id));
