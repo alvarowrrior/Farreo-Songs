@@ -237,6 +237,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   const radioEventsRef = useRef<EventSource | null>(null);
   const lastRadioItemRef = useRef<string | null>(null);
   const hasRestoredRef = useRef(false);
+  const pendingPlayRef = useRef(false);
   const [storageReady, setStorageReady] = useState(false);
   const [playerMode, setPlayerMode] = useState<"local" | "radio">("local");
   const [isRadioBuffering, setIsRadioBuffering] = useState(false);
@@ -593,13 +594,12 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     setVisualCurrentTime(0);
     setDuration(0);
     setIsPlaying(true);
-    setTimeout(() => {
-      if (!audioRef.current) return;
-      audioRef.current.preservesPitch = false;
-      audioRef.current.playbackRate = pitch;
-      audioRef.current.volume = volumeRef.current;
-      audioRef.current.play().catch(() => setIsPlaying(false));
-    }, 50);
+    // Disparamos la reproduccion desde los eventos del propio <audio>
+    // (loadedmetadata / canplay) en lugar de un setTimeout. Los temporizadores
+    // se ralentizan en pestanas en segundo plano, lo que rompia el avance
+    // automatico entre canciones con la pantalla bloqueada; los eventos de
+    // media no se ralentizan.
+    pendingPlayRef.current = true;
   };
 
   const playQueue = (tracks: MusicTrack[], index: number, source?: MusicPlaylistSource | null) => {
@@ -932,7 +932,8 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
         artist: "Farreo",
         album: currentSource?.name || "Farreo Player",
         artwork: [
-          { src: "/favicon.ico", sizes: "32x32", type: "image/x-icon" }
+          { src: "/icon-192.png", sizes: "192x192", type: "image/png" },
+          { src: "/icon-512.png", sizes: "512x512", type: "image/png" },
         ],
       });
     } else {
@@ -1205,6 +1206,10 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
           if (playerModeRef.current !== "radio" && !isPlaying && currentTime > 0 && audioRef.current.currentTime !== currentTime) {
             audioRef.current.currentTime = currentTime;
           }
+          if (playerModeRef.current !== "radio" && pendingPlayRef.current) {
+            pendingPlayRef.current = false;
+            audioRef.current.play().catch(() => setIsPlaying(false));
+          }
         }}
         onLoadStart={() => {
           if (playerModeRef.current === "radio" && radioStateRef.current?.status === "playing") {
@@ -1224,6 +1229,11 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
         onCanPlay={() => {
           if (playerModeRef.current === "radio" && radioStateRef.current?.status === "playing") {
             syncAudioToLiveRadio(pendingRadioJoinSyncRef.current ? 0.5 : 0.75);
+            return;
+          }
+          if (playerModeRef.current !== "radio" && pendingPlayRef.current) {
+            pendingPlayRef.current = false;
+            audioRef.current?.play().catch(() => setIsPlaying(false));
           }
         }}
         onPlaying={() => {
