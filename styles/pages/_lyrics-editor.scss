@@ -430,6 +430,17 @@
     }
   }
 
+  &__import {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+  }
+
+  &__import-btn {
+    display: inline-block;
+  }
+
   &__cue-list {
     display: flex;
     flex-direction: column;
