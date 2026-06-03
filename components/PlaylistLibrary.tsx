@@ -986,6 +986,14 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
 
           {adminMode && (
             <section className="playlist-admin__section">
+              <Link href="/admin/lyrics" className="playlist-admin__lyrics-editor-link">
+                <Mic2Icon size={18} /> Editor de Lyrics
+              </Link>
+            </section>
+          )}
+
+          {adminMode && (
+            <section className="playlist-admin__section">
               <h2 className="playlist-admin__section-title">
                 <PlusIcon size={20} /> Subir Canción
               </h2>
