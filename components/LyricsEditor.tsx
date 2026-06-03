@@ -171,6 +171,38 @@ export default function LyricsEditor() {
     [decodeWaveform],
   );
 
+  // ----- Import a .srt/.vtt file (processed locally, never uploaded as-is) -----
+  const importLyricsFile = async (file: File | null) => {
+    if (!file) return;
+    const lower = file.name.toLowerCase();
+    if (!lower.endsWith(".srt") && !lower.endsWith(".vtt")) {
+      setMessage({ type: "error", text: "El archivo debe ser .srt o .vtt." });
+      return;
+    }
+    try {
+      const text = await file.text();
+      const parsed = parseSrt(text).map<EditorCue>((cue) => ({
+        id: newId(),
+        start: cue.start,
+        end: cue.end,
+        text: cue.text,
+      }));
+      if (parsed.length === 0) {
+        setMessage({ type: "error", text: "No se encontraron líneas con tiempos en el archivo." });
+        return;
+      }
+      setCues(parsed);
+      setLyricsText(parsed.map((cue) => cue.text).join("\n"));
+      setActiveIndex(0);
+      setMessage({
+        type: "success",
+        text: `${parsed.length} nodos cargados desde ${file.name}. Revísalos y pulsa Guardar.`,
+      });
+    } catch {
+      setMessage({ type: "error", text: "No se pudo leer el archivo." });
+    }
+  };
+
   // ----- Load lyric lines from the textarea -----
   const loadLinesFromText = () => {
     const lines = lyricsText
@@ -723,6 +755,23 @@ export default function LyricsEditor() {
               <button className="lyrics-editor__secondary" onClick={loadLinesFromText}>
                 Cargar líneas (reinicia tiempos)
               </button>
+              <div className="lyrics-editor__import">
+                <label className="lyrics-editor__secondary lyrics-editor__import-btn">
+                  Importar SRT/VTT
+                  <input
+                    type="file"
+                    accept=".srt,.vtt,application/x-subrip,text/vtt,text/plain"
+                    onChange={(e) => {
+                      void importLyricsFile(e.target.files?.[0] ?? null);
+                      e.target.value = "";
+                    }}
+                    hidden
+                  />
+                </label>
+                <span className="lyrics-editor__hint">
+                  Carga tiempos y nodos de un archivo. No se guarda hasta pulsar &quot;Guardar&quot;.
+                </span>
+              </div>
             </div>
 
             <div className="lyrics-editor__cue-list">
