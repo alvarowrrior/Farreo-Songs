@@ -13,6 +13,7 @@ import {
   type PrivatePlaylist,
   type PrivatePlaylistVisibility,
 } from "@/lib/privatePlaylists";
+import { useHiddenSongs } from "@/lib/useHiddenSongs";
 import { useMusicPlayer, type MusicPlaylistSource, type MusicTrack } from "@/components/MusicPlayerProvider";
 
 const TUNNEL_URL = "https://welite.ddns.net:3001";
@@ -42,6 +43,7 @@ type Notice = {
 
 export default function PrivatePlaylistPlayer({ playlistId }: { playlistId: string }) {
   const { currentTrack, loadQueue, stop, toggleTrack } = useMusicPlayer();
+  const { isVisible, loading: hiddenLoading } = useHiddenSongs();
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [playlist, setPlaylist] = useState<PrivatePlaylist | null>(null);
@@ -87,16 +89,18 @@ export default function PrivatePlaylistPlayer({ playlistId }: { playlistId: stri
     const res = await fetch(`${TUNNEL_URL}/canciones`);
     if (!res.ok) throw new Error("No se pudieron cargar las canciones.");
     const songs = (await res.json()) as ApiSong[];
-    const mapped = songs.map((song) => ({
-      id: song.id,
-      name: song.name,
-      url: getMediaUrl(song.url),
-      variantes: song.variantes,
-      lyricsSrt: song.lyricsSrt,
-      lyricsUrl: song.lyricsUrl,
-      lyricsFileName: song.lyricsFileName,
-      duration: song.duration,
-    }));
+    const mapped = songs
+      .map((song) => ({
+        id: song.id,
+        name: song.name,
+        url: getMediaUrl(song.url),
+        variantes: song.variantes,
+        lyricsSrt: song.lyricsSrt,
+        lyricsUrl: song.lyricsUrl,
+        lyricsFileName: song.lyricsFileName,
+        duration: song.duration,
+      }))
+      .filter((song) => isVisible(song.id));
     const ids = new Set(songIds);
     const playlistTracks = mapped.filter((song) => ids.has(song.id));
     setAllSongs(mapped);
@@ -121,7 +125,7 @@ export default function PrivatePlaylistPlayer({ playlistId }: { playlistId: stri
   };
 
   useEffect(() => {
-    if (!authReady) return;
+    if (!authReady || hiddenLoading) return;
 
     const load = async () => {
       try {
@@ -137,7 +141,7 @@ export default function PrivatePlaylistPlayer({ playlistId }: { playlistId: stri
     load();
     // loadPlaylist depends on the latest auth user.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authReady, playlistId, user?.uid]);
+  }, [authReady, hiddenLoading, playlistId, user?.uid]);
 
   const filteredPickerSongs = useMemo(() => {
     const currentIds = new Set(tracks.map((track) => track.id));

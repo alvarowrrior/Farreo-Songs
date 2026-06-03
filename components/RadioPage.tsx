@@ -20,6 +20,7 @@ import {
 import { useMusicPlayer } from "@/components/MusicPlayerProvider";
 import { auth } from "@/lib/firebase";
 import { getPrivatePlaylist, listOwnPrivatePlaylists, type PrivatePlaylist } from "@/lib/privatePlaylists";
+import { useHiddenSongs } from "@/lib/useHiddenSongs";
 import {
   getLiveRadioPosition,
   radioDelete,
@@ -81,6 +82,7 @@ export default function RadioPage() {
     togglePlayPause,
     playNext,
   } = useMusicPlayer();
+  const { isVisible } = useHiddenSongs();
 
   const [user, setUser] = useState<User | null>(null);
   const [songs, setSongs] = useState<ApiSong[]>([]);
@@ -101,7 +103,7 @@ export default function RadioPage() {
   const state = radioState;
   const currentItem = state?.currentItem ?? null;
   const queue = state?.queue || [];
-  const pendingQueue = queue.slice(1);
+  const pendingQueue = queue.slice(1).filter((item) => isVisible(item.song.id));
   const livePosition = playerMode === "radio" ? currentTime : getLiveRadioPosition(state);
   const liveDuration = duration || currentItem?.song.duration || 0;
   const progress = liveDuration > 0 ? Math.min(100, Math.max(0, (livePosition / liveDuration) * 100)) : 0;
@@ -234,15 +236,16 @@ export default function RadioPage() {
   ], [globalPlaylists, privatePlaylists]);
 
   const filteredSongs = useMemo(() => {
+    const visibleSongs = songs.filter((song) => isVisible(song.id));
     const q = songQuery.trim().toLowerCase();
-    if (!q) return songs.slice(0, 12);
-    return songs
+    if (!q) return visibleSongs.slice(0, 12);
+    return visibleSongs
       .filter((song) =>
         song.name.toLowerCase().includes(q) ||
         Boolean(song.variantes?.some((variant) => variant.toLowerCase().includes(q)))
       )
       .slice(0, 18);
-  }, [songQuery, songs]);
+  }, [songQuery, songs, isVisible]);
 
   const filteredPlaylists = useMemo(() => {
     const q = playlistQuery.trim().toLowerCase();
