@@ -1,0 +1,459 @@
+@use "../variables" as vars;
+
+// Entry-point button inside the admin panel
+.playlist-admin__lyrics-editor-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.25rem;
+  border-radius: 0.75rem;
+  background: vars.$color-primary;
+  color: #09090b;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background 0.15s ease;
+
+  &:hover {
+    background: vars.$color-primary-hover;
+  }
+}
+
+.lyrics-editor {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 2rem 1rem 6rem;
+  color: vars.$text-white;
+  font-family: vars.$font-family-base;
+
+  &__gate {
+    max-width: 600px;
+    margin: 0 auto;
+    padding: 5rem 1.5rem;
+    text-align: center;
+    color: vars.$text-gray-200;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+  }
+
+  &__topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+  }
+
+  &__title {
+    font-size: vars.$font-size-2xl;
+    font-weight: 700;
+    margin: 0;
+  }
+
+  &__back {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    background: vars.$bg-dark-elevated;
+    border: 1px solid vars.$border-color;
+    color: vars.$text-gray-200;
+    padding: 0.5rem 0.9rem;
+    border-radius: 0.6rem;
+    cursor: pointer;
+    text-decoration: none;
+    font-size: vars.$font-size-sm;
+
+    &:hover {
+      border-color: vars.$border-hover;
+    }
+  }
+
+  &__message {
+    padding: 0.75rem 1rem;
+    border-radius: 0.6rem;
+    margin-bottom: 1rem;
+    font-size: vars.$font-size-sm;
+
+    &--success {
+      background: rgba(34, 197, 94, 0.15);
+      color: #86efac;
+    }
+
+    &--error {
+      background: rgba(239, 68, 68, 0.15);
+      color: #fca5a5;
+    }
+  }
+
+  &__hint {
+    color: vars.$text-gray-400;
+    font-size: vars.$font-size-sm;
+    margin: 0.5rem 0;
+
+    &--warn {
+      color: vars.$color-primary-hover;
+    }
+  }
+
+  // ----- Song picker -----
+  &__search {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    background: vars.$bg-dark-elevated;
+    border: 1px solid vars.$border-color;
+    border-radius: 0.6rem;
+    padding: 0.6rem 0.9rem;
+    margin-bottom: 1rem;
+    color: vars.$text-gray-400;
+
+    input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: vars.$text-white;
+      font-size: vars.$font-size-base;
+    }
+  }
+
+  &__song-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  &__song {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    background: vars.$bg-dark-elevated;
+    border: 1px solid vars.$border-color;
+    border-radius: 0.6rem;
+    padding: 0.75rem 1rem;
+    color: vars.$text-white;
+    cursor: pointer;
+    text-align: left;
+
+    &:hover {
+      border-color: vars.$border-hover;
+    }
+  }
+
+  &__song-name {
+    font-weight: 500;
+  }
+
+  &__song-badge {
+    font-size: vars.$font-size-xs;
+    color: vars.$text-gray-400;
+    border: 1px solid vars.$border-color;
+    border-radius: 1rem;
+    padding: 0.15rem 0.6rem;
+
+    &--has {
+      color: #86efac;
+      border-color: rgba(34, 197, 94, 0.4);
+    }
+  }
+
+  // ----- Workspace -----
+  &__workspace {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  &__now {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1rem;
+    font-size: vars.$font-size-lg;
+
+    span {
+      color: vars.$text-gray-400;
+      font-variant-numeric: tabular-nums;
+      font-size: vars.$font-size-sm;
+    }
+  }
+
+  &__transport {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+
+    button {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      background: vars.$bg-dark-elevated;
+      border: 1px solid vars.$border-color;
+      color: vars.$text-white;
+      border-radius: 0.6rem;
+      padding: 0.55rem 0.8rem;
+      cursor: pointer;
+      font-size: vars.$font-size-sm;
+
+      &:hover {
+        border-color: vars.$border-hover;
+      }
+    }
+  }
+
+  &__play {
+    background: vars.$text-white !important;
+    color: #09090b !important;
+  }
+
+  &__mark {
+    background: vars.$color-primary !important;
+    color: #09090b !important;
+    font-weight: 600;
+  }
+
+  &__shortcuts {
+    font-size: vars.$font-size-xs;
+    color: vars.$text-gray-400;
+    margin: 0;
+  }
+
+  // ----- Timeline -----
+  &__timeline {
+    position: relative;
+    width: 100%;
+    height: 120px;
+    background: vars.$bg-dark-elevated;
+    border: 1px solid vars.$border-color;
+    border-radius: 0.6rem;
+    overflow: hidden;
+    cursor: pointer;
+    touch-action: none;
+  }
+
+  &__canvas {
+    display: block;
+    width: 100%;
+    height: 120px;
+  }
+
+  &__cues-layer {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+
+  &__cue {
+    position: absolute;
+    top: 8px;
+    bottom: 8px;
+    background: rgba(245, 158, 11, 0.35);
+    border: 1px solid vars.$color-primary;
+    border-radius: 0.3rem;
+    pointer-events: auto;
+    cursor: grab;
+    display: flex;
+    align-items: center;
+    overflow: hidden;
+
+    &--active {
+      background: rgba(245, 158, 11, 0.6);
+      box-shadow: 0 0 0 2px vars.$color-primary-hover;
+    }
+  }
+
+  &__cue-label {
+    flex: 1;
+    font-size: vars.$font-size-xs;
+    color: #fff;
+    padding: 0 0.4rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: none;
+  }
+
+  &__cue-handle {
+    width: 8px;
+    align-self: stretch;
+    cursor: ew-resize;
+    background: rgba(255, 255, 255, 0.25);
+
+    &:hover {
+      background: rgba(255, 255, 255, 0.5);
+    }
+  }
+
+  &__playhead {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: #fff;
+    pointer-events: none;
+    box-shadow: 0 0 6px rgba(255, 255, 255, 0.8);
+  }
+
+  // ----- Bulk + cue list columns -----
+  &__columns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+
+    @media (max-width: vars.$bp-md) {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  &__bulk {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+
+    label {
+      font-size: vars.$font-size-sm;
+      color: vars.$text-gray-200;
+    }
+
+    textarea {
+      background: vars.$bg-dark-elevated;
+      border: 1px solid vars.$border-color;
+      border-radius: 0.6rem;
+      color: vars.$text-white;
+      padding: 0.75rem;
+      font-family: inherit;
+      font-size: vars.$font-size-sm;
+      resize: vertical;
+    }
+  }
+
+  &__secondary {
+    align-self: flex-start;
+    background: vars.$bg-dark-elevated;
+    border: 1px solid vars.$border-color;
+    color: vars.$text-gray-200;
+    border-radius: 0.6rem;
+    padding: 0.5rem 0.9rem;
+    cursor: pointer;
+    font-size: vars.$font-size-sm;
+
+    &:hover {
+      border-color: vars.$border-hover;
+    }
+  }
+
+  &__cue-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+
+    ul {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      max-height: 320px;
+      overflow-y: auto;
+    }
+
+    li {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: vars.$bg-dark-elevated;
+      border: 1px solid vars.$border-color;
+      border-radius: 0.5rem;
+      padding: 0.35rem 0.5rem;
+
+      input {
+        flex: 1;
+        background: transparent;
+        border: none;
+        outline: none;
+        color: vars.$text-white;
+        font-size: vars.$font-size-sm;
+      }
+    }
+  }
+
+  &__cue-list-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: vars.$font-size-sm;
+    color: vars.$text-gray-200;
+  }
+
+  &__row--active {
+    border-color: vars.$color-primary !important;
+  }
+
+  &__row-time {
+    background: transparent;
+    border: none;
+    color: vars.$color-primary-hover;
+    font-variant-numeric: tabular-nums;
+    font-size: vars.$font-size-xs;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  &__row-del {
+    background: transparent;
+    border: none;
+    color: vars.$text-gray-400;
+    cursor: pointer;
+
+    &:hover {
+      color: vars.$color-danger;
+    }
+  }
+
+  // ----- Actions -----
+  &__actions {
+    display: flex;
+    gap: 0.75rem;
+    margin-top: 0.5rem;
+  }
+
+  &__save {
+    background: vars.$color-primary;
+    color: #09090b;
+    border: none;
+    border-radius: 0.6rem;
+    padding: 0.7rem 1.4rem;
+    font-weight: 600;
+    cursor: pointer;
+
+    &:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    &:not(:disabled):hover {
+      background: vars.$color-primary-hover;
+    }
+  }
+
+  &__danger {
+    background: transparent;
+    color: vars.$color-danger;
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    border-radius: 0.6rem;
+    padding: 0.7rem 1.2rem;
+    cursor: pointer;
+
+    &:hover {
+      background: rgba(239, 68, 68, 0.12);
+    }
+  }
+}
