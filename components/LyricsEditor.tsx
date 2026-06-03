@@ -9,12 +9,13 @@ import {
   RotateCcwIcon,
   TrashIcon,
   Mic2Icon,
+  PlusIcon,
   SkipBackIcon,
   SkipForwardIcon,
   SearchIcon,
 } from "lucide-react";
 import { MUSIC_API_URL, getMediaUrl, type ApiSong } from "@/lib/radioApi";
-import { buildSrt, formatSrtTime, parseSrt } from "@/lib/lyrics";
+import { buildSrt, parseSrt } from "@/lib/lyrics";
 
 interface EditorCue {
   id: string;
@@ -66,6 +67,7 @@ export default function LyricsEditor() {
   const [waveformError, setWaveformError] = useState(false);
   const [waveformLoading, setWaveformLoading] = useState(false);
   const [timelineWidth, setTimelineWidth] = useState(0);
+  const [zoom, setZoom] = useState(1);
 
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
@@ -216,11 +218,28 @@ export default function LyricsEditor() {
   }, [cues.length]);
 
   // ----- Tap-to-sync -----
+  // Space marks the start of the current line (and closes the previous one).
+  // After the last line is started, one more Space closes its end too.
   const markCue = useCallback(() => {
     const audio = audioRef.current;
     if (!audio) return;
     const t = audio.currentTime;
     const idx = activeIndexRef.current;
+    const len = cuesLengthRef.current;
+    if (len === 0) return;
+
+    // Past the last line: this Space closes the final line's end.
+    if (idx >= len) {
+      setCues((prev) => {
+        if (prev.length === 0) return prev;
+        const next = [...prev];
+        const last = next[prev.length - 1];
+        next[prev.length - 1] = { ...last, end: Math.max(last.start + MIN_CUE_LENGTH, t) };
+        return next;
+      });
+      return;
+    }
+
     setCues((prev) => {
       if (idx >= prev.length) return prev;
       const next = [...prev];
@@ -231,7 +250,7 @@ export default function LyricsEditor() {
       next[idx] = { ...next[idx], start: t, end: Math.max(t + MIN_CUE_LENGTH, next[idx].end) };
       return next;
     });
-    setActiveIndex(Math.min(idx + 1, cuesLengthRef.current));
+    setActiveIndex(Math.min(idx + 1, len));
   }, []);
 
   const markEnd = () => {
@@ -251,17 +270,63 @@ export default function LyricsEditor() {
 
   const stepBack = () => setActiveIndex((idx) => Math.max(0, idx - 1));
 
+  // Drop an empty, timed node at the playhead (works with zero cues and while
+  // playing). Chains the previously started node's end to this node's start,
+  // so you can tap markers first and fill the text afterwards.
+  const addNodeAtPlayhead = useCallback(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const t = audio.currentTime;
+    const total = durationRef.current || t + MIN_CUE_LENGTH;
+    setCues((prev) => {
+      const next = [...prev];
+      let lastIdx = -1;
+      let lastStart = -Infinity;
+      for (let i = 0; i < next.length; i += 1) {
+        if (next[i].start <= t && next[i].start > lastStart) {
+          lastStart = next[i].start;
+          lastIdx = i;
+        }
+      }
+      if (lastIdx >= 0 && t > next[lastIdx].start) {
+        const prevCue = next[lastIdx];
+        next[lastIdx] = { ...prevCue, end: clamp(t, prevCue.start + MIN_CUE_LENGTH, total) };
+      }
+      next.push({ id: newId(), start: t, end: Math.min(total, t + MIN_CUE_LENGTH), text: "" });
+      return next;
+    });
+  }, []);
+
   // ----- Cue list editing -----
   const updateCueText = (id: string, text: string) =>
     setCues((prev) => prev.map((cue) => (cue.id === id ? { ...cue, text } : cue)));
 
+  const updateCueTime = (id: string, field: "start" | "end", value: number) =>
+    setCues((prev) =>
+      prev.map((cue) => {
+        if (cue.id !== id) return cue;
+        const total = durationRef.current || Infinity;
+        if (Number.isNaN(value)) return cue;
+        if (field === "start") {
+          return { ...cue, start: clamp(value, 0, Math.min(total, cue.end - MIN_CUE_LENGTH)) };
+        }
+        return { ...cue, end: clamp(value, cue.start + MIN_CUE_LENGTH, total) };
+      }),
+    );
+
   const deleteCue = (id: string) =>
     setCues((prev) => prev.filter((cue) => cue.id !== id));
 
+  // Insert a node at the current playhead. Display/export sort by start time,
+  // so it lands in the right chronological position automatically.
   const addCue = () => {
     const audio = audioRef.current;
     const t = audio ? audio.currentTime : 0;
-    setCues((prev) => [...prev, { id: newId(), start: t, end: t + 2, text: "Nueva línea" }]);
+    const total = durationRef.current || t + 2;
+    setCues((prev) => [
+      ...prev,
+      { id: newId(), start: t, end: Math.min(total, t + 2), text: "Nueva línea" },
+    ]);
   };
 
   // ----- Keyboard shortcuts -----
@@ -273,9 +338,9 @@ export default function LyricsEditor() {
       if (e.code === "Space") {
         e.preventDefault();
         markCue();
-      } else if (e.code === "Enter") {
+      } else if (e.code === "KeyN") {
         e.preventDefault();
-        markEnd();
+        addNodeAtPlayhead();
       } else if (e.code === "KeyP") {
         e.preventDefault();
         togglePlay();
@@ -308,17 +373,17 @@ export default function LyricsEditor() {
         if (drag.index < 0 || drag.index >= prev.length) return prev;
         const next = [...prev];
         const cur = { ...next[drag.index] };
-        const lowerBound = drag.index > 0 ? next[drag.index - 1].end : 0;
-        const upperBound = drag.index < next.length - 1 ? next[drag.index + 1].start : total;
+        // Free movement within [0, duration] — no neighbour clamping, so a cue
+        // can be dragged past others to reorder it by time.
         if (drag.mode === "move") {
           const len = drag.origEnd - drag.origStart;
-          const start = clamp(drag.origStart + dt, lowerBound, Math.max(lowerBound, upperBound - len));
+          const start = clamp(drag.origStart + dt, 0, Math.max(0, total - len));
           cur.start = start;
           cur.end = start + len;
         } else if (drag.mode === "left") {
-          cur.start = clamp(drag.origStart + dt, lowerBound, cur.end - MIN_CUE_LENGTH);
+          cur.start = clamp(drag.origStart + dt, 0, cur.end - MIN_CUE_LENGTH);
         } else {
-          cur.end = clamp(drag.origEnd + dt, cur.start + MIN_CUE_LENGTH, upperBound);
+          cur.end = clamp(drag.origEnd + dt, cur.start + MIN_CUE_LENGTH, total);
         }
         next[drag.index] = cur;
         return next;
@@ -465,6 +530,15 @@ export default function LyricsEditor() {
     }
   };
 
+  const activeCueId = cues[activeIndex]?.id ?? null;
+  const sortedCues = [...cues].sort((a, b) => a.start - b.start);
+
+  // Real-time karaoke preview based on the current playhead time.
+  const previewActive = sortedCues.find((c) => currentTime >= c.start && currentTime <= c.end) ?? null;
+  const previewNext = sortedCues.find((c) => c.start > currentTime) ?? null;
+  const previewPassed = sortedCues.filter((c) => c.end < currentTime);
+  const previewPrev = previewPassed.length ? previewPassed[previewPassed.length - 1] : null;
+
   const filteredSongs = songs.filter((song) => {
     if (!songSearch.trim()) return true;
     const q = songSearch.toLowerCase();
@@ -545,11 +619,14 @@ export default function LyricsEditor() {
             <button onClick={() => seekBy(2)} title="Adelante 2s (→)">
               <SkipForwardIcon size={16} />
             </button>
-            <button className="lyrics-editor__mark" onClick={markCue} title="Marcar inicio de línea (Espacio)">
+            <button className="lyrics-editor__mark" onClick={markCue} title="Marcar inicio de línea / cerrar la última (Espacio)">
               <Mic2Icon size={16} /> Marcar
             </button>
-            <button onClick={markEnd} title="Marcar fin de la última línea (Enter)">
-              Fin
+            <button className="lyrics-editor__mark" onClick={addNodeAtPlayhead} title="Crear un nodo vacío aquí (N)">
+              <PlusIcon size={16} /> Nodo aquí
+            </button>
+            <button onClick={markEnd} title="Cerrar el fin de la última línea iniciada">
+              Cerrar última
             </button>
             <button onClick={stepBack} title="Retroceder un nodo (Retroceso)">
               <RotateCcwIcon size={16} /> Atrás
@@ -557,44 +634,73 @@ export default function LyricsEditor() {
           </div>
 
           <p className="lyrics-editor__shortcuts">
-            <strong>Atajos:</strong> Espacio = marcar línea · Enter = marcar fin · P = play/pausa · ←/→ = ±2s ·
-            Retroceso = un nodo atrás
+            <strong>Atajos:</strong> Espacio = marcar línea pegada (y un toque más cierra la última) · N = crear nodo
+            vacío aquí · P = play/pausa · ←/→ = ±2s · Retroceso = un nodo atrás
           </p>
 
-          <div
-            className="lyrics-editor__timeline"
-            ref={timelineRef}
-            onPointerDown={onTimelineSeek}
-          >
-            <canvas ref={canvasRef} className="lyrics-editor__canvas" />
-            <div className="lyrics-editor__cues-layer">
-              {duration > 0 &&
-                cues.map((cue, index) => {
-                  if (cue.end <= cue.start) return null;
-                  const left = (cue.start / duration) * 100;
-                  const width = ((cue.end - cue.start) / duration) * 100;
-                  return (
-                    <div
-                      key={cue.id}
-                      className={`lyrics-editor__cue ${index === activeIndex ? "lyrics-editor__cue--active" : ""}`}
-                      style={{ left: `${left}%`, width: `${width}%` }}
-                      onPointerDown={(e) => startDrag(e, index, "move")}
-                      title={cue.text}
-                    >
-                      <span
-                        className="lyrics-editor__cue-handle lyrics-editor__cue-handle--left"
-                        onPointerDown={(e) => startDrag(e, index, "left")}
-                      />
-                      <span className="lyrics-editor__cue-label">{cue.text}</span>
-                      <span
-                        className="lyrics-editor__cue-handle lyrics-editor__cue-handle--right"
-                        onPointerDown={(e) => startDrag(e, index, "right")}
-                      />
-                    </div>
-                  );
-                })}
+          <div className="lyrics-editor__preview">
+            <span className="lyrics-editor__preview-label">Previsualización</span>
+            <span className="lyrics-editor__preview-line lyrics-editor__preview-line--prev">
+              {previewPrev?.text ?? ""}
+            </span>
+            <span className="lyrics-editor__preview-line lyrics-editor__preview-line--current">
+              {previewActive ? previewActive.text : "♫"}
+            </span>
+            <span className="lyrics-editor__preview-line lyrics-editor__preview-line--next">
+              {previewNext?.text ?? ""}
+            </span>
+          </div>
+
+          <div className="lyrics-editor__zoom">
+            <span>Zoom</span>
+            <input
+              type="range"
+              min={1}
+              max={12}
+              step={0.5}
+              value={zoom}
+              onChange={(e) => setZoom(Number(e.target.value))}
+            />
+            <span>{zoom.toFixed(1)}x</span>
+          </div>
+
+          <div className="lyrics-editor__timeline-scroll">
+            <div
+              className="lyrics-editor__timeline"
+              ref={timelineRef}
+              style={{ width: `${zoom * 100}%` }}
+              onPointerDown={onTimelineSeek}
+            >
+              <canvas ref={canvasRef} className="lyrics-editor__canvas" />
+              <div className="lyrics-editor__cues-layer">
+                {duration > 0 &&
+                  cues.map((cue, index) => {
+                    if (cue.end <= cue.start) return null;
+                    const left = (cue.start / duration) * 100;
+                    const width = ((cue.end - cue.start) / duration) * 100;
+                    return (
+                      <div
+                        key={cue.id}
+                        className={`lyrics-editor__cue ${cue.id === activeCueId ? "lyrics-editor__cue--active" : ""}`}
+                        style={{ left: `${left}%`, width: `${width}%` }}
+                        onPointerDown={(e) => startDrag(e, index, "move")}
+                        title={cue.text}
+                      >
+                        <span
+                          className="lyrics-editor__cue-handle lyrics-editor__cue-handle--left"
+                          onPointerDown={(e) => startDrag(e, index, "left")}
+                        />
+                        <span className="lyrics-editor__cue-label">{cue.text}</span>
+                        <span
+                          className="lyrics-editor__cue-handle lyrics-editor__cue-handle--right"
+                          onPointerDown={(e) => startDrag(e, index, "right")}
+                        />
+                      </div>
+                    );
+                  })}
+              </div>
+              <div ref={playheadRef} className="lyrics-editor__playhead" />
             </div>
-            <div ref={playheadRef} className="lyrics-editor__playhead" />
           </div>
 
           {waveformLoading && <p className="lyrics-editor__hint">Generando forma de onda...</p>}
@@ -627,23 +733,43 @@ export default function LyricsEditor() {
                 </button>
               </div>
               <ul>
-                {cues.map((cue, index) => (
+                {sortedCues.map((cue) => (
                   <li
                     key={cue.id}
-                    className={index === activeIndex ? "lyrics-editor__row--active" : ""}
+                    className={cue.id === activeCueId ? "lyrics-editor__row--active" : ""}
                   >
                     <button
-                      className="lyrics-editor__row-time"
+                      className="lyrics-editor__row-jump"
                       onClick={() => {
                         seekTo(cue.start);
-                        setActiveIndex(index);
+                        setActiveIndex(cues.findIndex((c) => c.id === cue.id));
                       }}
                       title="Saltar a este nodo"
                     >
-                      {formatSrtTime(cue.start).slice(3)} → {cue.end > cue.start ? formatSrtTime(cue.end).slice(3) : "—"}
+                      <PlayIcon size={12} />
                     </button>
+                    <div className="lyrics-editor__row-times">
+                      <input
+                        type="number"
+                        step={0.1}
+                        min={0}
+                        value={Number(cue.start.toFixed(2))}
+                        onChange={(e) => updateCueTime(cue.id, "start", parseFloat(e.target.value))}
+                        title="Inicio (segundos)"
+                      />
+                      <input
+                        type="number"
+                        step={0.1}
+                        min={0}
+                        value={Number(cue.end.toFixed(2))}
+                        onChange={(e) => updateCueTime(cue.id, "end", parseFloat(e.target.value))}
+                        title="Fin (segundos)"
+                      />
+                    </div>
                     <input
+                      className="lyrics-editor__row-text"
                       value={cue.text}
+                      placeholder="(escribe la letra)"
                       onChange={(e) => updateCueText(cue.id, e.target.value)}
                     />
                     <button
