@@ -369,13 +369,13 @@ export default function LyricsEditor() {
       if (!selectedSong) return;
       if (e.code === "Space") {
         e.preventDefault();
+        togglePlay();
+      } else if (e.code === "KeyM") {
+        e.preventDefault();
         markCue();
       } else if (e.code === "KeyN") {
         e.preventDefault();
         addNodeAtPlayhead();
-      } else if (e.code === "KeyP") {
-        e.preventDefault();
-        togglePlay();
       } else if (e.code === "ArrowLeft") {
         e.preventDefault();
         seekBy(-2);
@@ -645,13 +645,13 @@ export default function LyricsEditor() {
             <button onClick={() => seekBy(-2)} title="Atrás 2s (←)">
               <SkipBackIcon size={16} />
             </button>
-            <button className="lyrics-editor__play" onClick={togglePlay} title="Reproducir/Pausar (P)">
+            <button className="lyrics-editor__play" onClick={togglePlay} title="Reproducir/Pausar (Espacio)">
               {isPlaying ? <PauseIcon size={18} /> : <PlayIcon size={18} />}
             </button>
             <button onClick={() => seekBy(2)} title="Adelante 2s (→)">
               <SkipForwardIcon size={16} />
             </button>
-            <button className="lyrics-editor__mark" onClick={markCue} title="Marcar inicio de línea / cerrar la última (Espacio)">
+            <button className="lyrics-editor__mark" onClick={markCue} title="Marcar inicio de línea / cerrar la última (M)">
               <Mic2Icon size={16} /> Marcar
             </button>
             <button className="lyrics-editor__mark" onClick={addNodeAtPlayhead} title="Crear un nodo vacío aquí (N)">
@@ -666,8 +666,8 @@ export default function LyricsEditor() {
           </div>
 
           <p className="lyrics-editor__shortcuts">
-            <strong>Atajos:</strong> Espacio = marcar línea pegada (y un toque más cierra la última) · N = crear nodo
-            vacío aquí · P = play/pausa · ←/→ = ±2s · Retroceso = un nodo atrás
+            <strong>Atajos:</strong> Espacio = play/pausa · M = marcar línea pegada (y un toque más cierra la última) ·
+            N = crear nodo vacío aquí · ←/→ = ±2s · Retroceso = un nodo atrás
           </p>
 
           <div className="lyrics-editor__preview">
