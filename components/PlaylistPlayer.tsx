@@ -12,6 +12,7 @@ import {
   isFollowingGlobalPlaylist,
   unfollowGlobalPlaylist,
 } from "@/lib/globalPlaylistFollows";
+import { useHiddenSongs } from "@/lib/useHiddenSongs";
 
 const TUNNEL_URL = "https://welite.ddns.net:3001";
 
@@ -46,6 +47,7 @@ interface PlaylistPlayerProps {
 
 export default function PlaylistPlayer({ playlistId, songId }: PlaylistPlayerProps) {
   const { currentTrack, loadQueue, toggleTrack } = useMusicPlayer();
+  const { isVisible, loading: hiddenLoading } = useHiddenSongs();
   const [playlist, setPlaylist] = useState<MusicTrack[]>([]);
   const [playlistTitle, setPlaylistTitle] = useState("");
   const [playlistIcon, setPlaylistIcon] = useState<string | null>(null);
@@ -74,6 +76,9 @@ export default function PlaylistPlayer({ playlistId, songId }: PlaylistPlayerPro
   }, [message]);
 
   useEffect(() => {
+    // Wait until we know which songs are hidden (and whether the user is admin)
+    // so we never momentarily expose a hidden song.
+    if (hiddenLoading) return;
     const loadData = async () => {
       try {
         setLoading(true);
@@ -93,7 +98,7 @@ export default function PlaylistPlayer({ playlistId, songId }: PlaylistPlayerPro
             lyricsUrl: song.lyricsUrl,
             lyricsFileName: song.lyricsFileName,
             duration: song.duration,
-          }));
+          })).filter((track) => isVisible(track.id));
           const source: MusicPlaylistSource = {
             id: playlistId,
             name: plData.nombre || playlistId,
@@ -112,7 +117,7 @@ export default function PlaylistPlayer({ playlistId, songId }: PlaylistPlayerPro
           if (!songsRes.ok) throw new Error("Error cargando base de datos de canciones.");
           const songsData = (await songsRes.json()) as ApiSong[];
           const dbSong = songsData.find((song) => song.id === songId);
-          if (!dbSong) throw new Error("Cancion no encontrada.");
+          if (!dbSong || !isVisible(dbSong.id)) throw new Error("Cancion no encontrada.");
 
           const tracks = [{
             id: dbSong.id,
@@ -146,7 +151,7 @@ export default function PlaylistPlayer({ playlistId, songId }: PlaylistPlayerPro
     };
 
     loadData();
-  }, [playlistId, songId, loadQueue]);
+  }, [playlistId, songId, loadQueue, hiddenLoading, isVisible]);
 
   useEffect(() => {
     if (!playlistId) return;

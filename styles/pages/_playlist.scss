@@ -1,6 +1,19 @@
 @use "../variables" as vars;
 @use "../utils/mixins" as mx;
 
+.playlist-admin__item-hidden-badge {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 0.05rem 0.5rem;
+  border-radius: 1rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  vertical-align: middle;
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+}
+
 .playlist-admin {
   background-color: #121212;
   color: #ffffff;

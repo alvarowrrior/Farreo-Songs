@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { onAuthStateChanged, type User } from "firebase/auth";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { TrashIcon, PlusIcon, ListMusicIcon, ArrowLeftIcon, LibraryIcon, SearchIcon, ShuffleIcon, ArrowRightIcon, Volume2Icon, VolumeXIcon, DicesIcon, PencilIcon, XIcon, ShareIcon, PlayIcon, PauseIcon, SkipBackIcon, SkipForwardIcon, LockIcon, GlobeIcon, Mic2Icon, RotateCcwIcon } from "lucide-react";
+import { TrashIcon, PlusIcon, ListMusicIcon, ArrowLeftIcon, LibraryIcon, SearchIcon, ShuffleIcon, ArrowRightIcon, Volume2Icon, VolumeXIcon, DicesIcon, PencilIcon, XIcon, ShareIcon, PlayIcon, PauseIcon, SkipBackIcon, SkipForwardIcon, LockIcon, GlobeIcon, Mic2Icon, RotateCcwIcon, EyeIcon, EyeOffIcon } from "lucide-react";
 import { auth, isFirebaseConfigured } from "@/lib/firebase";
 import { MusicLyricsBar, useMusicPlayer } from "@/components/MusicPlayerProvider";
 import {
@@ -18,6 +18,7 @@ import {
   type PrivatePlaylistVisibility,
 } from "@/lib/privatePlaylists";
 import { listFollowedGlobalPlaylistIds } from "@/lib/globalPlaylistFollows";
+import { useHiddenSongs } from "@/lib/useHiddenSongs";
 
 const ADMIN_EMAILS = (process.env.NEXT_PUBLIC_ADMIN_EMAILS || "").split(",");
 
@@ -62,6 +63,7 @@ interface PlaylistLibraryProps {
 
 export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryProps) {
   const router = useRouter();
+  const { isVisible, hiddenIds, hide, unhide } = useHiddenSongs();
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isCheckingAuth, setIsCheckingAuth] = useState(adminMode);
   const [isAuthorized, setIsAuthorized] = useState(!adminMode);
@@ -784,11 +786,26 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
     }
   };
 
+  const toggleHidden = async (track: PlaylistItem) => {
+    try {
+      if (hiddenIds.has(track.id)) {
+        await unhide(track.id);
+        setMessage({ type: "success", text: `"${track.name}" ahora es visible para todos.` });
+      } else {
+        await hide(track.id);
+        setMessage({ type: "success", text: `"${track.name}" oculta: solo la verán los admins.` });
+      }
+    } catch {
+      setMessage({ type: "error", text: "No se pudo cambiar la visibilidad." });
+    }
+  };
+
   // ==========================================
   // FILTROS DE BÚSQUEDA
   // ==========================================
 
   const filteredAllCanciones = allCanciones.filter(t => {
+    if (!isVisible(t.id)) return false;
     if (!searchAllCanciones.trim()) return true;
     const q = searchAllCanciones.toLowerCase();
     return t.name.toLowerCase().includes(q) ||
@@ -796,6 +813,7 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
   });
 
   const filteredPlaylist = playlist.filter(t => {
+    if (!isVisible(t.id)) return false;
     if (!searchPlaylistCanciones.trim()) return true;
     const q = searchPlaylistCanciones.toLowerCase();
     return t.name.toLowerCase().includes(q) ||
@@ -1351,12 +1369,24 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
                       <span className="playlist-admin__item-num">{i + 1}</span>
                     </div>
                     <div className="playlist-admin__item-info">
-                      <span className="playlist-admin__item-title">{track.name}</span>
+                      <span className="playlist-admin__item-title">
+                        {track.name}
+                        {hiddenIds.has(track.id) && (
+                          <span className="playlist-admin__item-hidden-badge">Oculta</span>
+                        )}
+                      </span>
                       {track.variantes && track.variantes.length > 0 && (
                         <span className="playlist-admin__item-date">{track.variantes.join(", ")}</span>
                       )}
                     </div>
                     <div className="playlist-admin__item-actions">
+                      <button
+                        onClick={() => toggleHidden(track)}
+                        className="playlist-admin__item-edit"
+                        title={hiddenIds.has(track.id) ? "Mostrar a todos" : "Ocultar (solo admins la verán)"}
+                      >
+                        {hiddenIds.has(track.id) ? <EyeOffIcon size={16} /> : <EyeIcon size={16} />}
+                      </button>
                       <button
                         onClick={() => handleShare('song', track.id)}
                         className="playlist-admin__item-edit"
