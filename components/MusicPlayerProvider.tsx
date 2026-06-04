@@ -552,18 +552,25 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       setPlaybackPitch(pitch);
     }
 
+    pendingPlayRef.current = true;
     setCurrentTrack(track);
     setCurrentSource(source);
     setCurrentTime(0);
     setVisualCurrentTime(0);
     setDuration(0);
     setIsPlaying(true);
-    // Disparamos la reproduccion desde los eventos del propio <audio>
-    // (loadedmetadata / canplay) en lugar de un setTimeout. Los temporizadores
-    // se ralentizan en pestanas en segundo plano, lo que rompia el avance
-    // automatico entre canciones con la pantalla bloqueada; los eventos de
-    // media no se ralentizan.
-    pendingPlayRef.current = true;
+    // Cargamos el audio de forma IMPERATIVA aqui mismo (dentro del stack del
+    // evento onEnded), sin esperar al re-render de React. Chrome aplaza/congela
+    // el render de pestanas en segundo plano, asi que si dependieramos del
+    // src controlado por React el siguiente tema no llegaba a cargarse y la
+    // reproduccion se paraba al cambiar de cancion con la pantalla bloqueada.
+    // La reproduccion la disparan los eventos del propio <audio>
+    // (onLoadedMetadata / onCanPlay), que si se ejecutan en segundo plano.
+    const audio = audioRef.current;
+    if (audio) {
+      audio.src = track.url;
+      audio.load();
+    }
   };
 
   const playQueue = (tracks: MusicTrack[], index: number, source?: MusicPlaylistSource | null) => {
@@ -886,6 +893,27 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     return () => window.cancelAnimationFrame(frameId);
   }, [isPlaying]);
 
+  // Keep the <audio> src in sync with the current track for the cases that are
+  // NOT time-critical (restoring from storage, radio snapshots). The local
+  // auto-advance path already sets src imperatively inside startTrack so it
+  // works in backgrounded tabs; this effect is idempotent (only touches the
+  // element when the src actually differs) so it never reloads what startTrack
+  // already loaded.
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const url = currentTrack?.url || "";
+    if (url) {
+      if (audio.src !== url) {
+        audio.src = url;
+        audio.load();
+      }
+    } else if (audio.getAttribute("src")) {
+      audio.removeAttribute("src");
+      audio.load();
+    }
+  }, [currentTrack?.url]);
+
   // Media Session API Sync
   useEffect(() => {
     if (typeof window === "undefined" || !("mediaSession" in navigator)) return;
@@ -1134,7 +1162,6 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
 
       <audio
         ref={audioRef}
-        src={currentTrack?.url || undefined}
         onEnded={() => {
           if (playerMode === "radio") return;
           playNext();
