@@ -62,6 +62,64 @@ export const parseSrt = (srt?: string | null): LyricCue[] => {
     .sort((a, b) => a.start - b.start);
 };
 
+export interface CurrentLyric {
+  id: string;
+  text: string;
+  state: "active" | "past" | "silence";
+}
+
+/**
+ * Given cues sorted by start time and the current playback position, returns
+ * the lyric line to show, mirroring exactly how the player renders lyrics:
+ * the active line, the last line as "past", or a "♫" silence marker in gaps.
+ * Shared by the player and the lyrics editor preview so they never drift.
+ */
+export const computeCurrentLyric = (
+  cues: LyricCue[],
+  currentTime: number,
+  duration: number,
+): CurrentLyric | null => {
+  if (cues.length === 0) return null;
+
+  const activeCue = cues.find((cue) => currentTime >= cue.start && currentTime <= cue.end);
+  if (activeCue) {
+    return { id: activeCue.id, text: activeCue.text, state: "active" };
+  }
+
+  const firstCue = cues[0];
+  if (currentTime < firstCue.start) {
+    if (firstCue.start > 2) {
+      return { id: `silence-start-${firstCue.id}`, text: "♫", state: "silence" };
+    }
+    return null;
+  }
+
+  let previousIndex = -1;
+  for (let i = 0; i < cues.length; i += 1) {
+    if (currentTime > cues[i].end) previousIndex = i;
+    else break;
+  }
+
+  const previousCue = previousIndex >= 0 ? cues[previousIndex] : null;
+  if (previousCue) {
+    const nextCue = cues[previousIndex + 1];
+    if (nextCue && currentTime < nextCue.start && nextCue.start - previousCue.end > 2) {
+      return { id: `silence-${previousCue.id}-${nextCue.id}`, text: "♫", state: "silence" };
+    }
+
+    const hasLongOutro = duration > 0
+      ? duration - previousCue.end > 2
+      : currentTime - previousCue.end > 2;
+    if (!nextCue && hasLongOutro) {
+      return { id: `silence-end-${previousCue.id}`, text: "♫", state: "silence" };
+    }
+
+    return { id: previousCue.id, text: previousCue.text, state: "past" };
+  }
+
+  return null;
+};
+
 /** Formats seconds as the SRT timestamp `HH:MM:SS,mmm`. */
 export const formatSrtTime = (seconds: number): string => {
   const safe = Math.max(0, seconds);
