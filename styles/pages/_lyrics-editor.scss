@@ -229,6 +229,23 @@
     }
   }
 
+  &__pitch {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+
+    input {
+      width: 90px;
+    }
+  }
+
+  &__pitch-value {
+    font-size: vars.$font-size-xs;
+    color: vars.$text-gray-400;
+    font-variant-numeric: tabular-nums;
+    min-width: 2.6em;
+  }
+
   &__shortcuts {
     font-size: vars.$font-size-xs;
     color: vars.$text-gray-400;
