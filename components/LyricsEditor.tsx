@@ -13,9 +13,12 @@ import {
   SkipBackIcon,
   SkipForwardIcon,
   SearchIcon,
+  Volume2Icon,
+  VolumeXIcon,
 } from "lucide-react";
 import { MUSIC_API_URL, getMediaUrl, type ApiSong } from "@/lib/radioApi";
-import { buildSrt, parseSrt } from "@/lib/lyrics";
+import { buildSrt, computeCurrentLyric, parseSrt } from "@/lib/lyrics";
+import { LyricsDisplay } from "@/components/MusicPlayerProvider";
 
 interface EditorCue {
   id: string;
@@ -62,6 +65,8 @@ export default function LyricsEditor() {
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [volume, setVolume] = useState(1);
+  const lastNonZeroVolumeRef = useRef(1);
 
   const [peaks, setPeaks] = useState<number[] | null>(null);
   const [waveformError, setWaveformError] = useState(false);
@@ -238,6 +243,16 @@ export default function LyricsEditor() {
     audio.currentTime = clamp(time, 0, durationRef.current || 0);
     setCurrentTime(audio.currentTime);
   };
+
+  const handleVolume = (value: number) => {
+    const v = clamp(value, 0, 1);
+    setVolume(v);
+    if (v > 0.01) lastNonZeroVolumeRef.current = v;
+    if (audioRef.current) audioRef.current.volume = v;
+  };
+
+  const toggleMute = () =>
+    handleVolume(volume > 0 ? 0 : lastNonZeroVolumeRef.current || 1);
 
   // keep refs so the stable markCue/keyboard handlers read latest values
   const activeIndexRef = useRef(activeIndex);
@@ -565,11 +580,8 @@ export default function LyricsEditor() {
   const activeCueId = cues[activeIndex]?.id ?? null;
   const sortedCues = [...cues].sort((a, b) => a.start - b.start);
 
-  // Real-time karaoke preview based on the current playhead time.
-  const previewActive = sortedCues.find((c) => currentTime >= c.start && currentTime <= c.end) ?? null;
-  const previewNext = sortedCues.find((c) => c.start > currentTime) ?? null;
-  const previewPassed = sortedCues.filter((c) => c.end < currentTime);
-  const previewPrev = previewPassed.length ? previewPassed[previewPassed.length - 1] : null;
+  // Real-time preview using the EXACT same logic as the player's lyrics bar.
+  const previewLyric = computeCurrentLyric(sortedCues, currentTime, duration);
 
   const filteredSongs = songs.filter((song) => {
     if (!songSearch.trim()) return true;
@@ -663,6 +675,20 @@ export default function LyricsEditor() {
             <button onClick={stepBack} title="Retroceder un nodo (Retroceso)">
               <RotateCcwIcon size={16} /> Atrás
             </button>
+            <div className="lyrics-editor__volume">
+              <button onClick={toggleMute} title={volume > 0 ? "Silenciar" : "Restaurar volumen"}>
+                {volume > 0 ? <Volume2Icon size={16} /> : <VolumeXIcon size={16} />}
+              </button>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.01}
+                value={volume}
+                onChange={(e) => handleVolume(Number(e.target.value))}
+                title={`Volumen: ${Math.round(volume * 100)}%`}
+              />
+            </div>
           </div>
 
           <p className="lyrics-editor__shortcuts">
@@ -671,16 +697,8 @@ export default function LyricsEditor() {
           </p>
 
           <div className="lyrics-editor__preview">
-            <span className="lyrics-editor__preview-label">Previsualización</span>
-            <span className="lyrics-editor__preview-line lyrics-editor__preview-line--prev">
-              {previewPrev?.text ?? ""}
-            </span>
-            <span className="lyrics-editor__preview-line lyrics-editor__preview-line--current">
-              {previewActive ? previewActive.text : "♫"}
-            </span>
-            <span className="lyrics-editor__preview-line lyrics-editor__preview-line--next">
-              {previewNext?.text ?? ""}
-            </span>
+            <span className="lyrics-editor__preview-label">Previsualización (igual que el reproductor)</span>
+            <LyricsDisplay lyric={previewLyric} visible />
           </div>
 
           <div className="lyrics-editor__zoom">
@@ -862,7 +880,10 @@ export default function LyricsEditor() {
         ref={audioRef}
         onLoadedMetadata={() => {
           const audio = audioRef.current;
-          if (audio) setDuration(audio.duration || 0);
+          if (audio) {
+            setDuration(audio.duration || 0);
+            audio.volume = volume;
+          }
         }}
         onTimeUpdate={() => {
           const audio = audioRef.current;

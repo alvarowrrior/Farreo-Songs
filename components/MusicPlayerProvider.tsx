@@ -4,6 +4,7 @@ import { createContext, useCallback, useContext, useMemo, useRef, useState, useE
 import { ArrowRightIcon, DicesIcon, Mic2Icon, PauseIcon, PlayIcon, RotateCcwIcon, ShuffleIcon, SkipBackIcon, SkipForwardIcon, Volume2Icon, VolumeXIcon } from "lucide-react";
 import { usePathname } from "next/navigation";
 import { MUSIC_API_URL, calibrateRadioClock, getLiveRadioPosition, getMediaUrl, getRadioServerNow, radioPatch, radioPost, type RadioState } from "@/lib/radioApi";
+import { computeCurrentLyric } from "@/lib/lyrics";
 
 export interface MusicTrack {
   id: string;
@@ -155,7 +156,7 @@ const parseSrt = (srt?: string | null): LyricCue[] => {
     .sort((a, b) => a.start - b.start);
 };
 
-function LyricsDisplay({ lyric, visible }: { lyric: CurrentLyric | null; visible: boolean }) {
+export function LyricsDisplay({ lyric, visible }: { lyric: CurrentLyric | null; visible: boolean }) {
   const [activeLyric, setActiveLyric] = useState<CurrentLyric | null>(lyric);
   const [leavingLyric, setLeavingLyric] = useState<CurrentLyric | null>(null);
   const lyricId = lyric?.id;
@@ -269,47 +270,10 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
 
   const lyricCues = useMemo(() => parseSrt(currentTrack?.lyricsSrt), [currentTrack?.lyricsSrt]);
   const hasCurrentLyrics = lyricCues.length > 0;
-  const currentLyric = useMemo<CurrentLyric | null>(() => {
-    if (lyricCues.length === 0) return null;
-
-    const activeCue = lyricCues.find((cue) => currentTime >= cue.start && currentTime <= cue.end);
-    if (activeCue) {
-      return { id: activeCue.id, text: activeCue.text, state: "active" };
-    }
-
-    const firstCue = lyricCues[0];
-    if (currentTime < firstCue.start) {
-      if (firstCue.start > 2) {
-        return { id: `silence-start-${firstCue.id}`, text: "♫", state: "silence" };
-      }
-      return null;
-    }
-
-    let previousIndex = -1;
-    for (let i = 0; i < lyricCues.length; i += 1) {
-      if (currentTime > lyricCues[i].end) previousIndex = i;
-      else break;
-    }
-
-    const previousCue = previousIndex >= 0 ? lyricCues[previousIndex] : null;
-    if (previousCue) {
-      const nextCue = lyricCues[previousIndex + 1];
-      if (nextCue && currentTime < nextCue.start && nextCue.start - previousCue.end > 2) {
-        return { id: `silence-${previousCue.id}-${nextCue.id}`, text: "♫", state: "silence" };
-      }
-
-      const hasLongOutro = duration > 0
-        ? duration - previousCue.end > 2
-        : currentTime - previousCue.end > 2;
-      if (!nextCue && hasLongOutro) {
-        return { id: `silence-end-${previousCue.id}`, text: "♫", state: "silence" };
-      }
-
-      return { id: previousCue.id, text: previousCue.text, state: "past" };
-    }
-
-    return null;
-  }, [currentTime, duration, lyricCues]);
+  const currentLyric = useMemo<CurrentLyric | null>(
+    () => computeCurrentLyric(lyricCues, currentTime, duration),
+    [currentTime, duration, lyricCues],
+  );
 
   const closeRadioEvents = () => {
     if (radioEventsRef.current) {
