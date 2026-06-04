@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useMemo, useRef, useState, useEffect, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useMemo, useRef, useState, useEffect, type ReactNode, type SyntheticEvent } from "react";
 import { ArrowRightIcon, DicesIcon, Mic2Icon, PauseIcon, PlayIcon, RotateCcwIcon, ShuffleIcon, SkipBackIcon, SkipForwardIcon, Volume2Icon, VolumeXIcon } from "lucide-react";
 import { usePathname } from "next/navigation";
 import { MUSIC_API_URL, calibrateRadioClock, getLiveRadioPosition, getMediaUrl, getRadioServerNow, radioPatch, radioPost, type RadioState } from "@/lib/radioApi";
@@ -225,6 +225,13 @@ export function MusicLyricsBar() {
 export default function MusicPlayerProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  // Doble buffer (gapless): dos elementos fisicos de audio. audioRef.current
+  // SIEMPRE apunta al elemento activo; el otro precarga la siguiente cancion.
+  const elARef = useRef<HTMLAudioElement | null>(null);
+  const elBRef = useRef<HTMLAudioElement | null>(null);
+  const activeIdRef = useRef<"a" | "b">("a");
+  const preloadedTrackRef = useRef<MusicTrack | null>(null);
+  const preloadedPitchRef = useRef(1);
   const volumeRef = useRef(0.8);
   const lastNonZeroVolumeRef = useRef(0.8);
   const playerModeRef = useRef<"local" | "radio">("local");
@@ -648,6 +655,164 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     startTrack(queue[(idx + 1) % queue.length], queueSource);
   };
 
+  // ===== Doble buffer (reproduccion gapless en segundo plano) =====
+  const getActiveAudio = () => (activeIdRef.current === "a" ? elARef.current : elBRef.current);
+  const getPreloadAudio = () => (activeIdRef.current === "a" ? elBRef.current : elARef.current);
+
+  // Elige la siguiente pista SIN efectos secundarios (replica la logica de playNext).
+  const pickNextTrack = (): MusicTrack | null => {
+    if (queue.length === 0) return null;
+    if (isShuffle) {
+      if (queue.length === 1) return queue[0];
+      let i = Math.floor(Math.random() * queue.length);
+      let guard = 0;
+      while (currentTrack && queue[i].id === currentTrack.id && guard++ < 30) {
+        i = Math.floor(Math.random() * queue.length);
+      }
+      return queue[i];
+    }
+    if (!currentTrack) return queue[0];
+    const idx = queue.findIndex((track) => track.id === currentTrack.id);
+    return queue[(idx + 1) % queue.length];
+  };
+
+  // Precarga (bufferiza) la siguiente pista en el elemento inactivo.
+  const preloadNext = () => {
+    if (playerModeRef.current === "radio") return;
+    const preEl = getPreloadAudio();
+    const next = pickNextTrack();
+    if (!preEl || !next || !next.url) {
+      preloadedTrackRef.current = null;
+      return;
+    }
+    preloadedTrackRef.current = next;
+    preloadedPitchRef.current = autoRandomPitch ? Math.random() * (1.2 - 0.8) + 0.8 : playbackPitch;
+    if (preEl.src !== next.url) {
+      preEl.preload = "auto";
+      preEl.src = next.url;
+      preEl.load();
+    }
+  };
+
+  // Avance automatico al terminar una pista: si la siguiente ya esta precargada
+  // y lista, cambiamos a ese elemento al instante (sin hueco). Si no, fallback.
+  const advanceToPreloaded = () => {
+    const next = preloadedTrackRef.current;
+    const preEl = getPreloadAudio();
+    const oldActive = getActiveAudio();
+    const ready = Boolean(next && next.url && preEl && preEl.src === next.url && preEl.readyState >= 2);
+    if (!next || !ready || !preEl) {
+      playNext();
+      return;
+    }
+    if (currentTrack) setHistory((prev) => [...prev, currentTrack]);
+    // Intercambio activo <-> precargador
+    activeIdRef.current = activeIdRef.current === "a" ? "b" : "a";
+    audioRef.current = preEl;
+    const pitch = preloadedPitchRef.current;
+    preEl.preservesPitch = false;
+    preEl.playbackRate = pitch;
+    preEl.volume = volumeRef.current;
+    try { preEl.currentTime = 0; } catch { /* puede fallar antes de tener datos */ }
+    preloadedTrackRef.current = null;
+    setPlaybackPitch(pitch);
+    setCurrentTrack(next);
+    setCurrentSource(queueSource);
+    setCurrentTime(0);
+    setVisualCurrentTime(0);
+    setDuration(preEl.duration || 0);
+    setIsPlaying(true);
+    preEl.play().catch(() => setIsPlaying(false));
+    if (oldActive) { try { oldActive.pause(); } catch { /* no-op */ } }
+    // La precarga de la NUEVA siguiente la hace el efecto al cambiar currentTrack.
+  };
+
+  // Handlers compartidos por los dos <audio>. Solo el ELEMENTO ACTIVO controla
+  // el estado; los eventos del precargador se ignoran (guard por currentTarget).
+  const audioEventProps = {
+    onEnded: (e: SyntheticEvent<HTMLAudioElement>) => {
+      if (e.currentTarget !== audioRef.current) return;
+      if (playerModeRef.current === "radio") return;
+      advanceToPreloaded();
+    },
+    onPause: (e: SyntheticEvent<HTMLAudioElement>) => {
+      if (e.currentTarget !== audioRef.current) return;
+      if (playerModeRef.current === "radio" && radioStateRef.current?.status === "playing") {
+        setIsRadioBuffering(true);
+        return;
+      }
+      setIsPlaying(false);
+    },
+    onPlay: (e: SyntheticEvent<HTMLAudioElement>) => {
+      if (e.currentTarget !== audioRef.current) return;
+      setIsPlaying(true);
+    },
+    onTimeUpdate: (e: SyntheticEvent<HTMLAudioElement>) => {
+      if (e.currentTarget !== audioRef.current) return;
+      setCurrentTime(e.currentTarget.currentTime);
+      setVisualCurrentTime(e.currentTarget.currentTime);
+    },
+    onLoadedMetadata: (e: SyntheticEvent<HTMLAudioElement>) => {
+      if (e.currentTarget !== audioRef.current) return;
+      const el = e.currentTarget;
+      setDuration(el.duration);
+      el.volume = volumeRef.current;
+      el.preservesPitch = false;
+      el.playbackRate = playbackPitch;
+      if (playerModeRef.current === "radio" && radioStateRef.current) {
+        const livePosition = getLiveRadioPosition(radioStateRef.current);
+        if (Math.abs(el.currentTime - livePosition) > 0.5) {
+          el.currentTime = livePosition;
+        }
+        setCurrentTime(livePosition);
+        setVisualCurrentTime(livePosition);
+      }
+      if (playerModeRef.current !== "radio" && !isPlaying && currentTime > 0 && el.currentTime !== currentTime) {
+        el.currentTime = currentTime;
+      }
+      if (playerModeRef.current !== "radio" && pendingPlayRef.current) {
+        pendingPlayRef.current = false;
+        el.play().catch(() => setIsPlaying(false));
+      }
+    },
+    onLoadStart: (e: SyntheticEvent<HTMLAudioElement>) => {
+      if (e.currentTarget !== audioRef.current) return;
+      if (playerModeRef.current === "radio" && radioStateRef.current?.status === "playing") {
+        setIsRadioBuffering(true);
+      }
+    },
+    onWaiting: (e: SyntheticEvent<HTMLAudioElement>) => {
+      if (e.currentTarget !== audioRef.current) return;
+      if (playerModeRef.current === "radio" && radioStateRef.current?.status === "playing") {
+        setIsRadioBuffering(true);
+      }
+    },
+    onStalled: (e: SyntheticEvent<HTMLAudioElement>) => {
+      if (e.currentTarget !== audioRef.current) return;
+      if (playerModeRef.current === "radio" && radioStateRef.current?.status === "playing") {
+        setIsRadioBuffering(true);
+      }
+    },
+    onCanPlay: (e: SyntheticEvent<HTMLAudioElement>) => {
+      if (e.currentTarget !== audioRef.current) return;
+      if (playerModeRef.current === "radio" && radioStateRef.current?.status === "playing") {
+        syncAudioToLiveRadio(pendingRadioJoinSyncRef.current ? 0.5 : 0.75);
+        return;
+      }
+      if (playerModeRef.current !== "radio" && pendingPlayRef.current) {
+        pendingPlayRef.current = false;
+        e.currentTarget.play().catch(() => setIsPlaying(false));
+      }
+    },
+    onPlaying: (e: SyntheticEvent<HTMLAudioElement>) => {
+      if (e.currentTarget !== audioRef.current) return;
+      if (playerModeRef.current === "radio") {
+        syncAudioToLiveRadio(pendingRadioJoinSyncRef.current ? 0.5 : 0.75);
+        setIsRadioBuffering(false);
+      }
+    },
+  };
+
   const playPrev = () => {
     if (playerMode === "radio") {
       void radioPost<RadioState>("/radio/seek", { position: 0 }).then(applyRadioSnapshot).catch(() => undefined);
@@ -914,6 +1079,16 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     }
   }, [currentTrack?.url]);
 
+  // Precargar la siguiente cancion en el elemento inactivo (doble buffer) para
+  // poder encadenar sin hueco en segundo plano. Solo en modo local.
+  useEffect(() => {
+    if (playerMode === "radio") return;
+    if (!currentTrack || queue.length === 0) return;
+    preloadNext();
+    // preloadNext lee el estado actual via closure; no es una dependencia.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentTrack?.id, queue, isShuffle, autoRandomPitch, playerMode]);
+
   // Media Session API Sync
   useEffect(() => {
     if (typeof window === "undefined" || !("mediaSession" in navigator)) return;
@@ -1161,79 +1336,22 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       )}
 
       <audio
-        ref={audioRef}
-        onEnded={() => {
-          if (playerMode === "radio") return;
-          playNext();
+        ref={(el) => {
+          elARef.current = el;
+          if (activeIdRef.current === "a") audioRef.current = el;
         }}
-        onPause={() => {
-          if (playerModeRef.current === "radio" && radioStateRef.current?.status === "playing") {
-            setIsRadioBuffering(true);
-            return;
-          }
-          setIsPlaying(false);
-        }}
-        onPlay={() => setIsPlaying(true)}
-        onTimeUpdate={() => {
-          if (audioRef.current) {
-            setCurrentTime(audioRef.current.currentTime);
-            setVisualCurrentTime(audioRef.current.currentTime);
-          }
-        }}
-        onLoadedMetadata={() => {
-          if (!audioRef.current) return;
-          setDuration(audioRef.current.duration);
-          audioRef.current.volume = volumeRef.current;
-          audioRef.current.preservesPitch = false;
-          audioRef.current.playbackRate = playbackPitch;
-          if (playerModeRef.current === "radio" && radioStateRef.current) {
-            const livePosition = getLiveRadioPosition(radioStateRef.current);
-            if (Math.abs(audioRef.current.currentTime - livePosition) > 0.5) {
-              audioRef.current.currentTime = livePosition;
-            }
-            setCurrentTime(livePosition);
-            setVisualCurrentTime(livePosition);
-          }
-          if (playerModeRef.current !== "radio" && !isPlaying && currentTime > 0 && audioRef.current.currentTime !== currentTime) {
-            audioRef.current.currentTime = currentTime;
-          }
-          if (playerModeRef.current !== "radio" && pendingPlayRef.current) {
-            pendingPlayRef.current = false;
-            audioRef.current.play().catch(() => setIsPlaying(false));
-          }
-        }}
-        onLoadStart={() => {
-          if (playerModeRef.current === "radio" && radioStateRef.current?.status === "playing") {
-            setIsRadioBuffering(true);
-          }
-        }}
-        onWaiting={() => {
-          if (playerModeRef.current === "radio" && radioStateRef.current?.status === "playing") {
-            setIsRadioBuffering(true);
-          }
-        }}
-        onStalled={() => {
-          if (playerModeRef.current === "radio" && radioStateRef.current?.status === "playing") {
-            setIsRadioBuffering(true);
-          }
-        }}
-        onCanPlay={() => {
-          if (playerModeRef.current === "radio" && radioStateRef.current?.status === "playing") {
-            syncAudioToLiveRadio(pendingRadioJoinSyncRef.current ? 0.5 : 0.75);
-            return;
-          }
-          if (playerModeRef.current !== "radio" && pendingPlayRef.current) {
-            pendingPlayRef.current = false;
-            audioRef.current?.play().catch(() => setIsPlaying(false));
-          }
-        }}
-        onPlaying={() => {
-          if (playerModeRef.current === "radio") {
-            syncAudioToLiveRadio(pendingRadioJoinSyncRef.current ? 0.5 : 0.75);
-            setIsRadioBuffering(false);
-          }
-        }}
+        preload="auto"
         style={{ display: "none" }}
+        {...audioEventProps}
+      />
+      <audio
+        ref={(el) => {
+          elBRef.current = el;
+          if (activeIdRef.current === "b") audioRef.current = el;
+        }}
+        preload="auto"
+        style={{ display: "none" }}
+        {...audioEventProps}
       />
     </MusicPlayerContext.Provider>
   );
