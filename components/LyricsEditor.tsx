@@ -67,6 +67,7 @@ export default function LyricsEditor() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [volume, setVolume] = useState(1);
   const lastNonZeroVolumeRef = useRef(1);
+  const [pitch, setPitch] = useState(1);
 
   const [peaks, setPeaks] = useState<number[] | null>(null);
   const [waveformError, setWaveformError] = useState(false);
@@ -253,6 +254,15 @@ export default function LyricsEditor() {
 
   const toggleMute = () =>
     handleVolume(volume > 0 ? 0 : lastNonZeroVolumeRef.current || 1);
+
+  const handlePitch = (value: number) => {
+    const p = clamp(value, 0.5, 1.5);
+    setPitch(p);
+    if (audioRef.current) {
+      audioRef.current.preservesPitch = false;
+      audioRef.current.playbackRate = p;
+    }
+  };
 
   // keep refs so the stable markCue/keyboard handlers read latest values
   const activeIndexRef = useRef(activeIndex);
@@ -689,6 +699,21 @@ export default function LyricsEditor() {
                 title={`Volumen: ${Math.round(volume * 100)}%`}
               />
             </div>
+            <div className="lyrics-editor__pitch">
+              <button onClick={() => handlePitch(1)} title="Restaurar velocidad a 1x">
+                <RotateCcwIcon size={14} />
+              </button>
+              <input
+                type="range"
+                min={0.5}
+                max={1.5}
+                step={0.01}
+                value={pitch}
+                onChange={(e) => handlePitch(Number(e.target.value))}
+                title={`Velocidad/pitch: ${pitch.toFixed(2)}x`}
+              />
+              <span className="lyrics-editor__pitch-value">{pitch.toFixed(2)}x</span>
+            </div>
           </div>
 
           <p className="lyrics-editor__shortcuts">
@@ -883,6 +908,8 @@ export default function LyricsEditor() {
           if (audio) {
             setDuration(audio.duration || 0);
             audio.volume = volume;
+            audio.preservesPitch = false;
+            audio.playbackRate = pitch;
           }
         }}
         onTimeUpdate={() => {
