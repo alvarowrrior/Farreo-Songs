@@ -17,7 +17,7 @@ import {
   SkipForwardIcon,
   TrashIcon,
 } from "lucide-react";
-import { useMusicPlayer } from "@/components/MusicPlayerProvider";
+import { useMusicPlayer, useMusicPlayerTime } from "@/components/MusicPlayerProvider";
 import { auth } from "@/lib/firebase";
 import { getPrivatePlaylist, listOwnPrivatePlaylists, type PrivatePlaylist } from "@/lib/privatePlaylists";
 import { useHiddenSongs } from "@/lib/useHiddenSongs";
@@ -71,7 +71,6 @@ const extractUserPlaylistId = (value: string) => {
 
 export default function RadioPage() {
   const {
-    currentTime,
     duration,
     enableRadioMode,
     isRadioAwaitingUserGesture,
@@ -82,6 +81,7 @@ export default function RadioPage() {
     togglePlayPause,
     playNext,
   } = useMusicPlayer();
+  const { currentTime } = useMusicPlayerTime();
   const { isVisible } = useHiddenSongs();
 
   const [user, setUser] = useState<User | null>(null);

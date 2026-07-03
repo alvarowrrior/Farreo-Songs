@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { TrashIcon, PlusIcon, ListMusicIcon, ArrowLeftIcon, LibraryIcon, SearchIcon, ShuffleIcon, ArrowRightIcon, Volume2Icon, VolumeXIcon, DicesIcon, PencilIcon, XIcon, ShareIcon, PlayIcon, PauseIcon, SkipBackIcon, SkipForwardIcon, LockIcon, GlobeIcon, Mic2Icon, RotateCcwIcon, EyeIcon, EyeOffIcon } from "lucide-react";
 import { auth, isFirebaseConfigured } from "@/lib/firebase";
-import { MusicLyricsBar, useMusicPlayer } from "@/components/MusicPlayerProvider";
+import { MusicLyricsBar, PlayerProgressBar, useMusicPlayer } from "@/components/MusicPlayerProvider";
 import {
   addSongToPrivatePlaylist,
   createPrivatePlaylist,
@@ -23,7 +23,9 @@ import { useHiddenSongs } from "@/lib/useHiddenSongs";
 const ADMIN_EMAILS = (process.env.NEXT_PUBLIC_ADMIN_EMAILS || "").split(",");
 
 // ⚠️ URL del servidor de música en casa del amigo (DDNS con HTTPS)
-const TUNNEL_URL = "https://welite.ddns.net:3001";
+import { MUSIC_API_URL } from "@/lib/radioApi";
+
+const TUNNEL_URL = MUSIC_API_URL;
 
 const getMediaUrl = (url?: string | null) => {
   if (!url) return "";
@@ -115,9 +117,6 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
     isPlaying,
     playbackPitch,
     volume,
-    currentTime,
-    visualCurrentTime,
-    duration,
     isShuffle,
     autoRandomPitch,
     lyricsEnabled,
@@ -127,7 +126,6 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
     togglePlayPause,
     handleVolumeChange,
     handlePitchChange,
-    handleSeek,
     setAutoRandomPitch,
     setIsShuffle,
     setLyricsEnabled,
@@ -689,16 +687,6 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
   };
 
   // ==========================================
-  // REPRODUCTOR (Usando context global)
-  // ==========================================
-
-  const formatTime = (s: number) => {
-    const m = Math.floor(s / 60);
-    const sec = Math.floor(s % 60);
-    return `${m}:${sec < 10 ? '0' : ''}${sec}`;
-  };
-
-  // ==========================================
   // COMPARTIR
   // ==========================================
   const handleShare = (type: 'song' | 'playlist', identifier: string) => {
@@ -829,14 +817,6 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
   const followedGlobalPlaylists = playlists.filter((playlist) =>
     followedGlobalPlaylistIds.includes(playlist.id)
   );
-  const progressPercent = duration > 0
-    ? Math.min(100, Math.max(0, (visualCurrentTime / duration) * 100))
-    : 0;
-  const progressFill = progressPercent <= 0
-    ? "0%"
-    : progressPercent >= 100
-      ? "100%"
-      : `calc(${progressPercent}% + ${6 - (progressPercent * 0.12)}px)`;
   const shareSongModal = shareModalOpen ? (
     <div className="playlist-admin__modal-overlay" onClick={() => setShareModalOpen(false)}>
       <div className="playlist-admin__modal" onClick={(e) => e.stopPropagation()}>
@@ -1813,21 +1793,8 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
             </button>
           </div>
 
-          {/* Barra de progreso */}
-          <div className="playlist-admin__progress">
-            <span className="playlist-admin__progress-time">{formatTime(currentTime)}</span>
-            <input
-              type="range"
-              min={0}
-              max={duration || 0}
-              step="any"
-              value={visualCurrentTime}
-              onChange={(e) => handleSeek(Number(e.target.value))}
-              className="playlist-admin__progress-bar"
-              style={{ background: `linear-gradient(to right, #fff 0%, #fff ${progressFill}, #535353 ${progressFill}, #535353 100%)` }}
-            />
-            <span className="playlist-admin__progress-time">{formatTime(duration)}</span>
-          </div>
+          {/* Barra de progreso (aislada: solo ella se re-renderiza con el tick del audio) */}
+          <PlayerProgressBar />
         </div>
 
         {/* Derecha: Pitch + Volumen */}

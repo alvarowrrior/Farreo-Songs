@@ -26,13 +26,10 @@ export interface MusicPlaylistSource {
 interface MusicPlayerContextValue {
   currentTrack: MusicTrack | null;
   currentSource: MusicPlaylistSource | null;
-  currentLyric: CurrentLyric | null;
   hasCurrentLyrics: boolean;
   isPlaying: boolean;
   playbackPitch: number;
   volume: number;
-  currentTime: number;
-  visualCurrentTime: number;
   duration: number;
   isShuffle: boolean;
   autoRandomPitch: boolean;
@@ -58,7 +55,18 @@ interface MusicPlayerContextValue {
   stop: () => void;
 }
 
+// Contexto separado para los valores que cambian varias veces por segundo
+// durante la reproduccion (tiempo y lyric actual). Asi las paginas que solo
+// necesitan controles/estado (listas de canciones enteras) no se re-renderizan
+// con cada tick del audio.
+interface MusicPlayerTimeContextValue {
+  currentTime: number;
+  visualCurrentTime: number;
+  currentLyric: CurrentLyric | null;
+}
+
 const MusicPlayerContext = createContext<MusicPlayerContextValue | null>(null);
+const MusicPlayerTimeContext = createContext<MusicPlayerTimeContextValue | null>(null);
 const STORAGE_KEY = "farreo-player-state";
 
 interface StoredPlayerState {
@@ -92,6 +100,16 @@ export function useMusicPlayer() {
   const context = useContext(MusicPlayerContext);
   if (!context) {
     throw new Error("useMusicPlayer debe usarse dentro de MusicPlayerProvider");
+  }
+  return context;
+}
+
+// Solo para componentes que pintan el tiempo/lyrics: se re-renderizan con cada
+// tick del audio, asi que conviene que sean lo mas pequenos posible.
+export function useMusicPlayerTime() {
+  const context = useContext(MusicPlayerTimeContext);
+  if (!context) {
+    throw new Error("useMusicPlayerTime debe usarse dentro de MusicPlayerProvider");
   }
   return context;
 }
@@ -218,8 +236,42 @@ export function LyricsDisplay({ lyric, visible }: { lyric: CurrentLyric | null; 
 }
 
 export function MusicLyricsBar() {
-  const { currentLyric, hasCurrentLyrics, lyricsEnabled } = useMusicPlayer();
+  const { hasCurrentLyrics, lyricsEnabled } = useMusicPlayer();
+  const { currentLyric } = useMusicPlayerTime();
   return <LyricsDisplay lyric={currentLyric} visible={lyricsEnabled && hasCurrentLyrics} />;
+}
+
+// Barra de progreso compartida (reproductor global y biblioteca). Es el unico
+// trozo de UI que consume el tiempo de reproduccion, de modo que el tick del
+// audio solo re-renderiza este componente y no la pagina que lo contiene.
+export function PlayerProgressBar() {
+  const { duration, handleSeek } = useMusicPlayer();
+  const { currentTime, visualCurrentTime } = useMusicPlayerTime();
+  const progressPercent = duration > 0
+    ? Math.min(100, Math.max(0, (visualCurrentTime / duration) * 100))
+    : 0;
+  const progressFill = progressPercent <= 0
+    ? "0%"
+    : progressPercent >= 100
+      ? "100%"
+      : `calc(${progressPercent}% + ${6 - (progressPercent * 0.12)}px)`;
+
+  return (
+    <div className="playlist-admin__progress">
+      <span className="playlist-admin__progress-time">{formatTime(currentTime)}</span>
+      <input
+        type="range"
+        min={0}
+        max={duration || 0}
+        step="any"
+        value={visualCurrentTime}
+        onChange={(e) => handleSeek(Number(e.target.value))}
+        className="playlist-admin__progress-bar"
+        style={{ background: `linear-gradient(to right, #fff 0%, #fff ${progressFill}, #535353 ${progressFill}, #535353 100%)` }}
+      />
+      <span className="playlist-admin__progress-time">{formatTime(duration)}</span>
+    </div>
+  );
 }
 
 export default function MusicPlayerProvider({ children }: { children: ReactNode }) {
@@ -232,6 +284,12 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   const activeIdRef = useRef<"a" | "b">("a");
   const preloadedTrackRef = useRef<MusicTrack | null>(null);
   const preloadedPitchRef = useRef(1);
+  // URL exacta asignada al elemento de precarga. Se compara contra track.url
+  // (no contra preEl.src, que el navegador puede normalizar/re-encodear y
+  // romper la igualdad silenciosamente, desactivando el doble buffer).
+  const preloadedUrlRef = useRef("");
+  const lastPreloadRetryRef = useRef(0);
+  const lastPositionStateRef = useRef({ duration: -1, rate: -1, position: 0, at: 0 });
   const volumeRef = useRef(0.8);
   const lastNonZeroVolumeRef = useRef(0.8);
   const playerModeRef = useRef<"local" | "radio">("local");
@@ -266,14 +324,6 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   const [autoRandomPitch, setAutoRandomPitch] = useState(true);
   const [lyricsEnabled, setLyricsEnabled] = useState(true);
   const [history, setHistory] = useState<MusicTrack[]>([]);
-  const progressPercent = duration > 0
-    ? Math.min(100, Math.max(0, (visualCurrentTime / duration) * 100))
-    : 0;
-  const progressFill = progressPercent <= 0
-    ? "0%"
-    : progressPercent >= 100
-      ? "100%"
-      : `calc(${progressPercent}% + ${6 - (progressPercent * 0.12)}px)`;
 
   const lyricCues = useMemo(() => parseSrt(currentTrack?.lyricsSrt), [currentTrack?.lyricsSrt]);
   const hasCurrentLyrics = lyricCues.length > 0;
@@ -571,12 +621,24 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     // el render de pestanas en segundo plano, asi que si dependieramos del
     // src controlado por React el siguiente tema no llegaba a cargarse y la
     // reproduccion se paraba al cambiar de cancion con la pantalla bloqueada.
-    // La reproduccion la disparan los eventos del propio <audio>
-    // (onLoadedMetadata / onCanPlay), que si se ejecutan en segundo plano.
+    // CRITICO: el play() tambien debe pedirse AQUI, en el mismo stack. Con la
+    // pantalla bloqueada Chrome puede congelar la pagina en cuanto deja de
+    // sonar audio; si esperamos a onLoadedMetadata/onCanPlay para llamar a
+    // play(), ese evento puede no llegar a ejecutarse nunca y la musica se
+    // queda parada (era el fallo de "se para tras 2-3 canciones"). Un play()
+    // pendiente mantiene al elemento como "potencialmente reproduciendo" y el
+    // navegador sigue cargando y arranca solo en cuanto hay datos.
     const audio = audioRef.current;
     if (audio) {
       audio.src = track.url;
       audio.load();
+      audio.preservesPitch = false;
+      audio.defaultPlaybackRate = pitch;
+      audio.playbackRate = pitch;
+      audio.volume = volumeRef.current;
+      audio.play().catch(() => {
+        // onLoadedMetadata / onCanPlay reintentan via pendingPlayRef.
+      });
     }
   };
 
@@ -683,25 +745,43 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     const next = pickNextTrack();
     if (!preEl || !next || !next.url) {
       preloadedTrackRef.current = null;
+      preloadedUrlRef.current = "";
       return;
     }
     preloadedTrackRef.current = next;
     preloadedPitchRef.current = autoRandomPitch ? Math.random() * (1.2 - 0.8) + 0.8 : playbackPitch;
-    if (preEl.src !== next.url) {
+    if (preloadedUrlRef.current !== next.url || preEl.error) {
+      preloadedUrlRef.current = next.url;
       preEl.preload = "auto";
       preEl.src = next.url;
       preEl.load();
     }
   };
 
-  // Avance automatico al terminar una pista: si la siguiente ya esta precargada
-  // y lista, cambiamos a ese elemento al instante (sin hueco). Si no, fallback.
-  const advanceToPreloaded = () => {
+  // ¿Esta la siguiente pista precargada y con datos suficientes para arrancar?
+  const isPreloadReady = () => {
+    const next = preloadedTrackRef.current;
+    const preEl = getPreloadAudio();
+    return Boolean(
+      next?.url &&
+      preEl &&
+      preloadedUrlRef.current === next.url &&
+      !preEl.error &&
+      preEl.readyState >= 2,
+    );
+  };
+
+  // Avance automatico: si la siguiente ya esta precargada y lista, cambiamos a
+  // ese elemento al instante (sin hueco). Si no, fallback a playNext.
+  // Con letOldFinish (encadenado anticipado) NO pausamos el elemento saliente:
+  // se le deja terminar su ultima fraccion de segundo de forma natural, de modo
+  // que la pagina nunca pasa por un instante "sin audio sonando" (que es cuando
+  // Chrome puede congelarla en segundo plano).
+  const advanceToPreloaded = (opts?: { letOldFinish?: boolean }) => {
     const next = preloadedTrackRef.current;
     const preEl = getPreloadAudio();
     const oldActive = getActiveAudio();
-    const ready = Boolean(next && next.url && preEl && preEl.src === next.url && preEl.readyState >= 2);
-    if (!next || !ready || !preEl) {
+    if (!next || !preEl || !isPreloadReady()) {
       playNext();
       return;
     }
@@ -723,7 +803,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     setDuration(preEl.duration || 0);
     setIsPlaying(true);
     preEl.play().catch(() => setIsPlaying(false));
-    if (oldActive) { try { oldActive.pause(); } catch { /* no-op */ } }
+    if (oldActive && !opts?.letOldFinish) { try { oldActive.pause(); } catch { /* no-op */ } }
     // La precarga de la NUEVA siguiente la hace el efecto al cambiar currentTrack.
   };
 
@@ -749,8 +829,37 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     },
     onTimeUpdate: (e: SyntheticEvent<HTMLAudioElement>) => {
       if (e.currentTarget !== audioRef.current) return;
-      setCurrentTime(e.currentTarget.currentTime);
-      setVisualCurrentTime(e.currentTarget.currentTime);
+      const el = e.currentTarget;
+      // visualCurrentTime lo actualiza el bucle de rAF (250ms) y handleSeek;
+      // duplicarlo aqui doblaba los re-renders durante la reproduccion.
+      setCurrentTime(el.currentTime);
+
+      if (playerModeRef.current === "radio" || el.paused) return;
+
+      // Si la precarga fallo (red del servidor casero, etc.), reintentala de
+      // vez en cuando desde este evento, que sigue ejecutandose en segundo
+      // plano mientras suena la musica (los timers normales no).
+      const preEl = getPreloadAudio();
+      if (
+        preloadedTrackRef.current &&
+        preEl?.error &&
+        Date.now() - lastPreloadRetryRef.current > 5000
+      ) {
+        lastPreloadRetryRef.current = Date.now();
+        preloadNext();
+      }
+
+      // Encadenado anticipado: arrancamos la siguiente pista ~0.3s antes de que
+      // acabe la actual (dejando que esta termine sola). Asi nunca hay un
+      // instante sin audio y Chrome no puede congelar la pagina justo en el
+      // cambio de cancion con la pantalla bloqueada. onEnded queda de respaldo
+      // por si este evento no llega a ver la ventana final.
+      if (Number.isFinite(el.duration) && el.duration > 0) {
+        const remaining = el.duration - el.currentTime;
+        if (remaining <= 0.3 && isPreloadReady()) {
+          advanceToPreloaded({ letOldFinish: true });
+        }
+      }
     },
     onLoadedMetadata: (e: SyntheticEvent<HTMLAudioElement>) => {
       if (e.currentTarget !== audioRef.current) return;
@@ -980,6 +1089,11 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     };
   }, []);
 
+  // Cuantizamos el tiempo persistido a bloques de 5s: antes este efecto
+  // serializaba la cola COMPLETA a localStorage en cada tick del audio
+  // (~4 veces por segundo), un coste constante en el hilo principal.
+  const persistedTime = Math.floor(currentTime / 5) * 5;
+
   useEffect(() => {
     if (typeof window === "undefined" || !storageReady) return;
     if (playerMode === "radio") return;
@@ -989,7 +1103,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       queue,
       queueSource,
       currentSource,
-      currentTime,
+      currentTime: persistedTime,
       playbackPitch,
       volume,
       lastNonZeroVolume,
@@ -999,7 +1113,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     };
 
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  }, [autoRandomPitch, currentSource, currentTime, currentTrack, isShuffle, lastNonZeroVolume, lyricsEnabled, playbackPitch, playerMode, queue, queueSource, storageReady, volume]);
+  }, [autoRandomPitch, currentSource, persistedTime, currentTrack, isShuffle, lastNonZeroVolume, lyricsEnabled, playbackPitch, playerMode, queue, queueSource, storageReady, volume]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !storageReady) return;
@@ -1119,11 +1233,24 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       try {
         const safeDuration = Math.max(0, duration);
         const safePosition = Math.min(Math.max(0, currentTime), safeDuration);
+        // El sistema extrapola la posicion solo con playbackRate, asi que basta
+        // con reenviarla cuando cambia duracion/pitch o tras un salto (seek);
+        // llamarla en cada tick era una llamada al navegador 4 veces/segundo.
+        const last = lastPositionStateRef.current;
+        const expected = last.position + ((performance.now() - last.at) / 1000) * last.rate;
+        const drift = Math.abs(safePosition - expected);
+        if (last.duration === safeDuration && last.rate === playbackPitch && drift < 2) return;
         navigator.mediaSession.setPositionState({
           duration: safeDuration,
           playbackRate: playbackPitch,
           position: safePosition,
         });
+        lastPositionStateRef.current = {
+          duration: safeDuration,
+          rate: playbackPitch,
+          position: safePosition,
+          at: performance.now(),
+        };
       } catch (e) {
         console.error("Error setting media session position state:", e);
       }
@@ -1178,43 +1305,88 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     };
   }, []);
 
+  // Identidades estables para las funciones expuestas: los wrappers llaman
+  // siempre a la version del ultimo render via apiRef. Sin esto, el value del
+  // contexto cambiaria en cada render y todos los consumidores (paginas con
+  // listas enteras de canciones) se re-renderizarian con cada tick del audio.
+  const apiRef = useRef({
+    loadQueue,
+    playQueue,
+    toggleTrack,
+    playNext,
+    playPrev,
+    togglePlayPause,
+    handleVolumeChange,
+    handlePitchChange,
+    handleSeek,
+    updateShuffle,
+    enableRadioMode,
+    disableRadioMode,
+    stop,
+  });
+  useEffect(() => {
+    apiRef.current = {
+      loadQueue,
+      playQueue,
+      toggleTrack,
+      playNext,
+      playPrev,
+      togglePlayPause,
+      handleVolumeChange,
+      handlePitchChange,
+      handleSeek,
+      updateShuffle,
+      enableRadioMode,
+      disableRadioMode,
+      stop,
+    };
+  });
+
+  const stableApi = useMemo(() => ({
+    loadQueue: (tracks: MusicTrack[], source?: MusicPlaylistSource | null) => apiRef.current.loadQueue(tracks, source),
+    playQueue: (tracks: MusicTrack[], index: number, source?: MusicPlaylistSource | null) => apiRef.current.playQueue(tracks, index, source),
+    toggleTrack: (track: MusicTrack, tracks?: MusicTrack[], source?: MusicPlaylistSource | null) => apiRef.current.toggleTrack(track, tracks, source),
+    playNext: () => apiRef.current.playNext(),
+    playPrev: () => apiRef.current.playPrev(),
+    togglePlayPause: () => apiRef.current.togglePlayPause(),
+    handleVolumeChange: (val: number) => apiRef.current.handleVolumeChange(val),
+    handlePitchChange: (val: number) => apiRef.current.handlePitchChange(val),
+    handleSeek: (val: number) => apiRef.current.handleSeek(val),
+    setIsShuffle: (val: boolean | ((prev: boolean) => boolean)) => apiRef.current.updateShuffle(val),
+    enableRadioMode: () => apiRef.current.enableRadioMode(),
+    disableRadioMode: () => apiRef.current.disableRadioMode(),
+    stop: () => apiRef.current.stop(),
+  }), []);
+
+  const contextValue = useMemo<MusicPlayerContextValue>(() => ({
+    currentTrack,
+    currentSource,
+    hasCurrentLyrics,
+    isPlaying,
+    playbackPitch,
+    volume,
+    duration,
+    isShuffle,
+    autoRandomPitch,
+    lyricsEnabled,
+    playerMode,
+    isRadioBuffering,
+    isRadioAwaitingUserGesture,
+    radioState,
+    setAutoRandomPitch,
+    setLyricsEnabled,
+    ...stableApi,
+  }), [autoRandomPitch, currentSource, currentTrack, duration, hasCurrentLyrics, isPlaying, isRadioAwaitingUserGesture, isRadioBuffering, isShuffle, lyricsEnabled, playbackPitch, playerMode, radioState, stableApi, volume]);
+
+  const timeContextValue = useMemo<MusicPlayerTimeContextValue>(() => ({
+    currentTime,
+    visualCurrentTime,
+    currentLyric,
+  }), [currentLyric, currentTime, visualCurrentTime]);
+
   return (
-    <MusicPlayerContext.Provider
-      value={{
-        currentTrack,
-        currentSource,
-        currentLyric,
-        hasCurrentLyrics,
-        isPlaying,
-        playbackPitch,
-        volume,
-        currentTime,
-        visualCurrentTime,
-        duration,
-        isShuffle,
-        autoRandomPitch,
-        lyricsEnabled,
-        playerMode,
-        isRadioBuffering,
-        isRadioAwaitingUserGesture,
-        radioState,
-        loadQueue,
-        playQueue,
-        toggleTrack,
-        playNext,
-        playPrev,
-        togglePlayPause,
-        handleVolumeChange,
-        handlePitchChange,
-        handleSeek,
-        setAutoRandomPitch,
-        setIsShuffle: updateShuffle,
-        setLyricsEnabled,
-        enableRadioMode,
-        disableRadioMode,
-        stop,
-      }}
-    >
+    <MusicPlayerContext.Provider value={contextValue}>
+      <MusicPlayerTimeContext.Provider value={timeContextValue}>
       {children}
 
       {!pathname.startsWith("/admin") && (
@@ -1273,20 +1445,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
             </button>
           </div>
 
-          <div className="playlist-admin__progress">
-            <span className="playlist-admin__progress-time">{formatTime(currentTime)}</span>
-            <input
-              type="range"
-              min={0}
-              max={duration || 0}
-              step="any"
-              value={visualCurrentTime}
-              onChange={(e) => handleSeek(Number(e.target.value))}
-              className="playlist-admin__progress-bar"
-              style={{ background: `linear-gradient(to right, #fff 0%, #fff ${progressFill}, #535353 ${progressFill}, #535353 100%)` }}
-            />
-            <span className="playlist-admin__progress-time">{formatTime(duration)}</span>
-          </div>
+          <PlayerProgressBar />
         </div>
 
         <div className="playlist-admin__player-right">
@@ -1353,6 +1512,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
         style={{ display: "none" }}
         {...audioEventProps}
       />
+      </MusicPlayerTimeContext.Provider>
     </MusicPlayerContext.Provider>
   );
 }

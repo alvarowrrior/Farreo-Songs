@@ -15,8 +15,9 @@ import {
 } from "@/lib/privatePlaylists";
 import { useHiddenSongs } from "@/lib/useHiddenSongs";
 import { useMusicPlayer, type MusicPlaylistSource, type MusicTrack } from "@/components/MusicPlayerProvider";
+import { MUSIC_API_URL } from "@/lib/radioApi";
 
-const TUNNEL_URL = "https://welite.ddns.net:3001";
+const TUNNEL_URL = MUSIC_API_URL;
 
 const getMediaUrl = (url?: string | null) => {
   if (!url) return "";
