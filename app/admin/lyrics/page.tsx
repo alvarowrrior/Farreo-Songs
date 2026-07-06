@@ -9,15 +9,12 @@ import LyricsEditor from "@/components/LyricsEditor";
 const ADMIN_EMAILS = (process.env.NEXT_PUBLIC_ADMIN_EMAILS || "").split(",");
 
 export default function AdminLyricsPage() {
-  const [isChecking, setIsChecking] = useState(true);
+  const [isChecking, setIsChecking] = useState(Boolean(auth));
   const [isAuthorized, setIsAuthorized] = useState(false);
 
   useEffect(() => {
-    if (!auth) {
-      setIsAuthorized(false);
-      setIsChecking(false);
-      return;
-    }
+    if (!auth) return;
+
     const unsub = onAuthStateChanged(auth, (user) => {
       setIsAuthorized(Boolean(user?.email && ADMIN_EMAILS.includes(user.email)));
       setIsChecking(false);

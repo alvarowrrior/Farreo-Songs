@@ -2,9 +2,11 @@
 
 import { createContext, useCallback, useContext, useMemo, useRef, useState, useEffect, type ReactNode, type SyntheticEvent } from "react";
 import { ArrowRightIcon, DicesIcon, Mic2Icon, PauseIcon, PlayIcon, RotateCcwIcon, ShuffleIcon, SkipBackIcon, SkipForwardIcon, Volume2Icon, VolumeXIcon } from "lucide-react";
+import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { MUSIC_API_URL, calibrateRadioClock, getLiveRadioPosition, getMediaUrl, getRadioServerNow, radioPatch, radioPost, type RadioState } from "@/lib/radioApi";
 import { computeCurrentLyric } from "@/lib/lyrics";
+import SongArtwork from "@/components/SongArtwork";
 
 export interface MusicTrack {
   id: string;
@@ -14,7 +16,13 @@ export interface MusicTrack {
   lyricsSrt?: string | null;
   lyricsUrl?: string | null;
   lyricsFileName?: string | null;
+  staticLyrics?: string | null;
   duration?: number | null;
+  iconUrl?: string | null;
+  advancedCoverUrl?: string | null;
+  advancedCoverType?: string | null;
+  addedAt?: string | null;
+  createdAt?: { seconds: number; nanoseconds: number } | Date | string | null;
 }
 
 export interface MusicPlaylistSource {
@@ -52,6 +60,7 @@ interface MusicPlayerContextValue {
   setLyricsEnabled: (val: boolean | ((prev: boolean) => boolean)) => void;
   enableRadioMode: () => Promise<void>;
   disableRadioMode: () => void;
+  getAudioFrequencyData: () => Uint8Array<ArrayBuffer> | null;
   stop: () => void;
 }
 
@@ -68,6 +77,13 @@ interface MusicPlayerTimeContextValue {
 const MusicPlayerContext = createContext<MusicPlayerContextValue | null>(null);
 const MusicPlayerTimeContext = createContext<MusicPlayerTimeContextValue | null>(null);
 const STORAGE_KEY = "farreo-player-state";
+
+const getSourceHref = (source: MusicPlaylistSource | null) => {
+  if (!source) return null;
+  if (source.type === "global") return `/playlist/${encodeURIComponent(source.id)}`;
+  if (source.type === "private") return `/user-playlist/${encodeURIComponent(source.id)}`;
+  return null;
+};
 
 interface StoredPlayerState {
   currentTrack: MusicTrack | null;
@@ -94,6 +110,12 @@ interface CurrentLyric {
   id: string;
   text: string;
   state: "active" | "past" | "silence";
+}
+
+interface AudioAnalysisConnection {
+  source: MediaElementAudioSourceNode;
+  analyser: AnalyserNode;
+  data: Uint8Array<ArrayBuffer>;
 }
 
 export function useMusicPlayer() {
@@ -289,6 +311,8 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   // romper la igualdad silenciosamente, desactivando el doble buffer).
   const preloadedUrlRef = useRef("");
   const lastPreloadRetryRef = useRef(0);
+  const shuffleRemainingRef = useRef<string[]>([]);
+  const shuffleQueueSignatureRef = useRef("");
   const lastPositionStateRef = useRef({ duration: -1, rate: -1, position: 0, at: 0 });
   const volumeRef = useRef(0.8);
   const lastNonZeroVolumeRef = useRef(0.8);
@@ -301,6 +325,9 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   const lastVisualTimeUpdateRef = useRef(0);
   const visualCurrentTimeRef = useRef(0);
   const radioEventsRef = useRef<EventSource | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioAnalysisConnectionsRef = useRef<WeakMap<HTMLAudioElement, AudioAnalysisConnection>>(new WeakMap());
+  const audioAnalysisUnavailableRef = useRef<WeakSet<HTMLAudioElement>>(new WeakSet());
   const lastRadioItemRef = useRef<string | null>(null);
   const hasRestoredRef = useRef(false);
   const pendingPlayRef = useRef(false);
@@ -332,13 +359,6 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     [currentTime, duration, lyricCues],
   );
 
-  const closeRadioEvents = () => {
-    if (radioEventsRef.current) {
-      radioEventsRef.current.close();
-      radioEventsRef.current = null;
-    }
-  };
-
   const radioTrackFromItem = (item: RadioState["queue"][number]): MusicTrack => ({
     id: item.song.id,
     name: item.song.name,
@@ -347,8 +367,61 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     lyricsSrt: item.song.lyricsSrt,
     lyricsUrl: item.song.lyricsUrl,
     lyricsFileName: item.song.lyricsFileName,
+    staticLyrics: item.song.staticLyrics,
     duration: item.song.duration,
+    iconUrl: item.song.iconUrl,
+    advancedCoverUrl: item.song.advancedCoverUrl,
+    advancedCoverType: item.song.advancedCoverType,
+    createdAt: item.song.createdAt,
   });
+
+  const getQueueSignature = (tracks: MusicTrack[]) => tracks.map((track) => track.id).join("\u0001");
+
+  const resetShuffleBag = useCallback((tracks: MusicTrack[], currentId?: string | null) => {
+    const seen = new Set<string>();
+    shuffleQueueSignatureRef.current = getQueueSignature(tracks);
+    shuffleRemainingRef.current = tracks
+      .map((track) => track.id)
+      .filter((id) => {
+        if (!id || id === currentId || seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      });
+  }, []);
+
+  const ensureShuffleBagForCurrentQueue = () => {
+    const signature = getQueueSignature(queue);
+    const queueIds = new Set(queue.map((track) => track.id));
+
+    if (shuffleQueueSignatureRef.current !== signature) {
+      resetShuffleBag(queue, currentTrack?.id);
+      return;
+    }
+
+    shuffleRemainingRef.current = shuffleRemainingRef.current.filter((id) => (
+      queueIds.has(id) && id !== currentTrack?.id
+    ));
+  };
+
+  const pickShuffleTrack = (consume = false): MusicTrack | null => {
+    if (queue.length <= 1) return null;
+
+    ensureShuffleBagForCurrentQueue();
+
+    if (shuffleRemainingRef.current.length === 0) {
+      resetShuffleBag(queue, currentTrack?.id);
+    }
+
+    const candidates = shuffleRemainingRef.current;
+    if (candidates.length === 0) return null;
+
+    const nextId = candidates[Math.floor(Math.random() * candidates.length)];
+    if (consume) {
+      shuffleRemainingRef.current = shuffleRemainingRef.current.filter((id) => id !== nextId);
+    }
+
+    return queue.find((track) => track.id === nextId) || null;
+  };
 
   const syncAudioToLiveRadio = (threshold = 0.9) => {
     const audio = audioRef.current;
@@ -427,10 +500,14 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
 
   const applyRadioSnapshot = (state: RadioState, receivedAt = Date.now()) => {
     calibrateRadioClock(state, receivedAt);
-    playerModeRef.current = "radio";
     radioStateRef.current = state;
-    setPlayerMode("radio");
     setRadioState(state);
+
+    if (playerModeRef.current !== "radio") {
+      return;
+    }
+
+    setPlayerMode("radio");
     setIsShuffle(state.shuffle);
 
     const item = state.currentItem;
@@ -585,11 +662,8 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   };
 
   const disableRadioMode = () => {
-    closeRadioEvents();
     playerModeRef.current = "local";
-    radioStateRef.current = null;
     setPlayerMode("local");
-    setRadioState(null);
     setIsRadioBuffering(false);
     setRadioAwaitingGesture(false);
     pendingRadioJoinSyncRef.current = false;
@@ -603,6 +677,10 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       disableRadioMode();
     }
 
+    if (isShuffle) {
+      shuffleRemainingRef.current = shuffleRemainingRef.current.filter((id) => id !== track.id);
+    }
+
     let pitch = playbackPitch;
     if (autoRandomPitch) {
       pitch = Math.random() * (1.2 - 0.8) + 0.8;
@@ -610,6 +688,8 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     }
 
     pendingPlayRef.current = true;
+    preloadedTrackRef.current = null;
+    preloadedUrlRef.current = "";
     setCurrentTrack(track);
     setCurrentSource(source);
     setCurrentTime(0);
@@ -646,8 +726,12 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     if (playerMode === "radio") {
       disableRadioMode();
     }
-    const track = tracks[index];
+    const startIndex = isShuffle
+      ? Math.floor(Math.random() * tracks.length)
+      : index;
+    const track = tracks[startIndex];
     if (!track) return;
+    resetShuffleBag(tracks, track.id);
     setQueue(tracks);
     setQueueSource(source ?? null);
     setHistory([]);
@@ -656,16 +740,18 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
 
   const loadQueue = useCallback((tracks: MusicTrack[], source?: MusicPlaylistSource | null) => {
     if (playerMode === "radio") return;
+    resetShuffleBag(tracks, currentTrack?.id);
     setQueue(tracks);
     setQueueSource(source ?? null);
     setHistory([]);
-  }, [playerMode]);
+  }, [currentTrack?.id, playerMode, resetShuffleBag]);
 
   const toggleTrack = (track: MusicTrack, tracks?: MusicTrack[], source?: MusicPlaylistSource | null) => {
     if (playerMode === "radio") {
       disableRadioMode();
     }
     if (tracks) {
+      resetShuffleBag(tracks, track.id);
       setQueue(tracks);
       setQueueSource(source ?? null);
     }
@@ -698,13 +784,8 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     }
 
     if (isShuffle) {
-      let nextIndex = Math.floor(Math.random() * queue.length);
-      if (queue.length > 1 && currentTrack) {
-        while (queue[nextIndex].id === currentTrack.id) {
-          nextIndex = Math.floor(Math.random() * queue.length);
-        }
-      }
-      startTrack(queue[nextIndex], queueSource);
+      const nextTrack = pickShuffleTrack(true);
+      if (nextTrack) startTrack(nextTrack, queueSource);
       return;
     }
 
@@ -721,19 +802,65 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   const getActiveAudio = () => (activeIdRef.current === "a" ? elARef.current : elBRef.current);
   const getPreloadAudio = () => (activeIdRef.current === "a" ? elBRef.current : elARef.current);
 
+  const getAudioFrequencyData = useCallback(() => {
+    if (typeof window === "undefined") return null;
+
+    const audio = activeIdRef.current === "a" ? elARef.current : elBRef.current;
+    if (!audio || audio.paused || audio.readyState < 2 || audioAnalysisUnavailableRef.current.has(audio)) {
+      return null;
+    }
+
+    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) return null;
+
+    let context = audioContextRef.current;
+    if (!context) {
+      context = new AudioCtx();
+      audioContextRef.current = context;
+    }
+
+    if (context.state === "suspended") {
+      void context.resume().catch(() => undefined);
+      return null;
+    }
+
+    if (context.state === "closed") {
+      return null;
+    }
+
+    let connection = audioAnalysisConnectionsRef.current.get(audio);
+    if (!connection) {
+      try {
+        const source = context.createMediaElementSource(audio);
+        const analyser = context.createAnalyser();
+        analyser.fftSize = 1024;
+        analyser.smoothingTimeConstant = 0.72;
+        source.connect(analyser);
+        analyser.connect(context.destination);
+        connection = {
+          source,
+          analyser,
+          data: new Uint8Array(analyser.frequencyBinCount),
+        };
+        audioAnalysisConnectionsRef.current.set(audio, connection);
+      } catch {
+        audioAnalysisUnavailableRef.current.add(audio);
+        return null;
+      }
+    }
+
+    connection.analyser.getByteFrequencyData(connection.data);
+    return connection.data;
+  }, []);
+
   // Elige la siguiente pista SIN efectos secundarios (replica la logica de playNext).
   const pickNextTrack = (): MusicTrack | null => {
     if (queue.length === 0) return null;
     if (isShuffle) {
-      if (queue.length === 1) return queue[0];
-      let i = Math.floor(Math.random() * queue.length);
-      let guard = 0;
-      while (currentTrack && queue[i].id === currentTrack.id && guard++ < 30) {
-        i = Math.floor(Math.random() * queue.length);
-      }
-      return queue[i];
+      return pickShuffleTrack(false);
     }
     if (!currentTrack) return queue[0];
+    if (queue.length === 1) return null;
     const idx = queue.findIndex((track) => track.id === currentTrack.id);
     return queue[(idx + 1) % queue.length];
   };
@@ -777,7 +904,27 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   // se le deja terminar su ultima fraccion de segundo de forma natural, de modo
   // que la pagina nunca pasa por un instante "sin audio sonando" (que es cuando
   // Chrome puede congelarla en segundo plano).
+  const finishSingleTrackQueue = () => {
+    const audio = audioRef.current;
+    if (audio) {
+      try { audio.pause(); } catch { /* no-op */ }
+      const endTime = Number.isFinite(audio.duration) ? audio.duration : duration;
+      if (Number.isFinite(endTime) && endTime > 0) {
+        setCurrentTime(endTime);
+        setVisualCurrentTime(endTime);
+      }
+    }
+    preloadedTrackRef.current = null;
+    preloadedUrlRef.current = "";
+    setIsPlaying(false);
+  };
+
   const advanceToPreloaded = (opts?: { letOldFinish?: boolean }) => {
+    if (queue.length <= 1 && currentTrack) {
+      finishSingleTrackQueue();
+      return;
+    }
+
     const next = preloadedTrackRef.current;
     const preEl = getPreloadAudio();
     const oldActive = getActiveAudio();
@@ -786,6 +933,9 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       return;
     }
     if (currentTrack) setHistory((prev) => [...prev, currentTrack]);
+    if (isShuffle) {
+      shuffleRemainingRef.current = shuffleRemainingRef.current.filter((id) => id !== next.id);
+    }
     // Intercambio activo <-> precargador
     activeIdRef.current = activeIdRef.current === "a" ? "b" : "a";
     audioRef.current = preEl;
@@ -856,7 +1006,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       // por si este evento no llega a ver la ventana final.
       if (Number.isFinite(el.duration) && el.duration > 0) {
         const remaining = el.duration - el.currentTime;
-        if (remaining <= 0.3 && isPreloadReady()) {
+        if (queue.length > 1 && remaining <= 0.3 && isPreloadReady()) {
           advanceToPreloaded({ letOldFinish: true });
         }
       }
@@ -958,8 +1108,8 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     }
 
     if (!currentTrack && queue.length > 0) {
-      const startIndex = isShuffle ? Math.floor(Math.random() * queue.length) : 0;
-      startTrack(queue[startIndex], queueSource);
+      const nextTrack = isShuffle ? pickShuffleTrack(true) : queue[0];
+      if (nextTrack) startTrack(nextTrack, queueSource);
       return;
     }
 
@@ -1016,6 +1166,9 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   const updateShuffle = (val: boolean | ((prev: boolean) => boolean)) => {
     const next = typeof val === "function" ? val(isShuffle) : val;
     setIsShuffle(next);
+    if (next && playerMode !== "radio") {
+      resetShuffleBag(queue, currentTrack?.id);
+    }
     if (playerMode === "radio") {
       void radioPatch<RadioState>("/radio/settings", { shuffle: next }).then(applyRadioSnapshot).catch(() => undefined);
     }
@@ -1208,14 +1361,17 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     if (typeof window === "undefined" || !("mediaSession" in navigator)) return;
 
     if (currentTrack) {
+      const artwork = currentTrack.iconUrl
+        ? [{ src: getMediaUrl(currentTrack.iconUrl), sizes: "512x512", type: "image/png" }]
+        : [
+            { src: "/brand/farreo-f.png", sizes: "192x192", type: "image/png" },
+            { src: "/brand/farreo.png", sizes: "512x512", type: "image/png" },
+          ];
       navigator.mediaSession.metadata = new MediaMetadata({
         title: currentTrack.name,
         artist: "Farreo",
         album: currentSource?.name || "Farreo Player",
-        artwork: [
-          { src: "/icon-192.png", sizes: "192x192", type: "image/png" },
-          { src: "/icon-512.png", sizes: "512x512", type: "image/png" },
-        ],
+        artwork,
       });
     } else {
       navigator.mediaSession.metadata = null;
@@ -1373,16 +1529,18 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     isRadioBuffering,
     isRadioAwaitingUserGesture,
     radioState,
+    getAudioFrequencyData,
     setAutoRandomPitch,
     setLyricsEnabled,
     ...stableApi,
-  }), [autoRandomPitch, currentSource, currentTrack, duration, hasCurrentLyrics, isPlaying, isRadioAwaitingUserGesture, isRadioBuffering, isShuffle, lyricsEnabled, playbackPitch, playerMode, radioState, stableApi, volume]);
+  }), [autoRandomPitch, currentSource, currentTrack, duration, getAudioFrequencyData, hasCurrentLyrics, isPlaying, isRadioAwaitingUserGesture, isRadioBuffering, isShuffle, lyricsEnabled, playbackPitch, playerMode, radioState, stableApi, volume]);
 
   const timeContextValue = useMemo<MusicPlayerTimeContextValue>(() => ({
     currentTime,
     visualCurrentTime,
     currentLyric,
   }), [currentLyric, currentTime, visualCurrentTime]);
+  const currentSourceHref = getSourceHref(currentSource);
 
   return (
     <MusicPlayerContext.Provider value={contextValue}>
@@ -1395,28 +1553,37 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       <div className="playlist-admin__player">
         <div className="playlist-admin__now-playing">
           {currentTrack ? (
-            <>
-              <span className="playlist-admin__now-playing-title">{currentTrack.name}</span>
-              {currentSource && (
-                <span className="playlist-admin__now-playing-source">{currentSource.name}</span>
-              )}
-              {playerMode === "radio" && isRadioBuffering && (
-                <span className="playlist-admin__now-playing-sync">Sincronizando radio...</span>
-              )}
-              {playerMode === "radio" && isRadioAwaitingUserGesture && (
-                <span className="playlist-admin__now-playing-sync">Pulsa play para unirte</span>
-              )}
-              <span className="playlist-admin__now-playing-pitch-row">
-                <span className="playlist-admin__now-playing-pitch">Pitch: {playbackPitch.toFixed(2)}x</span>
-                <button
-                  className="playlist-admin__pitch-reset"
-                  onClick={() => handlePitchChange(1)}
-                  title="Restaurar pitch a 1x"
-                >
-                  <RotateCcwIcon size={11} />
-                </button>
-              </span>
-            </>
+            <div className="playlist-admin__now-playing-inner">
+              <SongArtwork src={currentTrack.iconUrl} alt={currentTrack.name} className="playlist-admin__now-playing-artwork" />
+              <div className="playlist-admin__now-playing-text">
+                <span className="playlist-admin__now-playing-title">{currentTrack.name}</span>
+                {currentSource && (
+                  currentSourceHref ? (
+                    <Link href={currentSourceHref} className="playlist-admin__now-playing-source playlist-admin__now-playing-source--link">
+                      {currentSource.name}
+                    </Link>
+                  ) : (
+                    <span className="playlist-admin__now-playing-source">{currentSource.name}</span>
+                  )
+                )}
+                {playerMode === "radio" && isRadioBuffering && (
+                  <span className="playlist-admin__now-playing-sync">Sincronizando radio...</span>
+                )}
+                {playerMode === "radio" && isRadioAwaitingUserGesture && (
+                  <span className="playlist-admin__now-playing-sync">Pulsa play para unirte</span>
+                )}
+                <span className="playlist-admin__now-playing-pitch-row">
+                  <span className="playlist-admin__now-playing-pitch">Pitch: {playbackPitch.toFixed(2)}x</span>
+                  <button
+                    className="playlist-admin__pitch-reset"
+                    onClick={() => handlePitchChange(1)}
+                    title="Restaurar pitch a 1x"
+                  >
+                    <RotateCcwIcon size={11} />
+                  </button>
+                </span>
+              </div>
+            </div>
           ) : (
             <span className="playlist-admin__now-playing-title" style={{ color: "#666" }}>Sin canción</span>
           )}
@@ -1499,6 +1666,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
           elARef.current = el;
           if (activeIdRef.current === "a") audioRef.current = el;
         }}
+        crossOrigin="anonymous"
         preload="auto"
         style={{ display: "none" }}
         {...audioEventProps}
@@ -1508,6 +1676,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
           elBRef.current = el;
           if (activeIdRef.current === "b") audioRef.current = el;
         }}
+        crossOrigin="anonymous"
         preload="auto"
         style={{ display: "none" }}
         {...audioEventProps}

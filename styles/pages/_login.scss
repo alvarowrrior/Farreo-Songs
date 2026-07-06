@@ -23,8 +23,19 @@
         }
     }
 
+    &__brand {
+        margin-top: 2rem;
+        width: 190px;
+
+        img {
+            display: block;
+            width: 100%;
+            height: auto;
+        }
+    }
+
     &__title {
-        margin-top: 1.5rem;
+        margin-top: 1.25rem;
         font-size: 1.875rem; // 3xl
         font-weight: 800;
 

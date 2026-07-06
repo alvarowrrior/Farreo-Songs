@@ -4,8 +4,11 @@
 @use "../styles/base/reset";
 @use "../styles/layout/global-layout";
 @use "../styles/layout/header";
+@use "../styles/layout/app-sidebar";
 @use "../styles/pages/home";
 @use "../styles/components/avatar";
+@use "../styles/components/music-wave-header";
+@use "../styles/components/song-info-sidebar";
 @use "../styles/pages/login";
 @use "../styles/pages/profile";
 @use "../styles/pages/playlist";
