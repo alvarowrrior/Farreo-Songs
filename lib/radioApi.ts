@@ -15,7 +15,13 @@ export interface ApiSong {
   lyricsSrt?: string | null;
   lyricsUrl?: string | null;
   lyricsFileName?: string | null;
+  staticLyrics?: string | null;
   duration?: number | null;
+  iconUrl?: string | null;
+  advancedCoverUrl?: string | null;
+  advancedCoverType?: string | null;
+  addedAt?: string | null;
+  createdAt?: { seconds: number; nanoseconds: number } | string | null;
 }
 
 export interface ApiPlaylistInfo {

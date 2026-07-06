@@ -39,12 +39,19 @@ export function useHiddenSongs(): UseHiddenSongs {
 
   useEffect(() => {
     let active = true;
-    refresh().finally(() => {
-      if (active) setLoading(false);
-    });
+
+    listHiddenSongIds()
+      .then((ids) => {
+        if (active) setHiddenIds(new Set(ids));
+      })
+      .catch(() => {
+        // Keep whatever we had; absence of data shouldn't hide everything.
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
 
     if (!auth) {
-      setIsAdmin(false);
       return () => {
         active = false;
       };

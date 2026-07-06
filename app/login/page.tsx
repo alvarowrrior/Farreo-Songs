@@ -58,6 +58,11 @@ export default function LoginPage() {
           ← Volver
         </Link>
 
+        <div className="login-card__brand">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/brand/farreo.png" alt="Farreo" />
+        </div>
+
         <h1 className="login-card__title">Login</h1>
         <p className="login-card__subtitle">
           Entra con Google para acceder a la biblioteca privada de Farreo.

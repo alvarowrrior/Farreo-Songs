@@ -105,8 +105,21 @@ export default function RadioPage() {
   const queue = state?.queue || [];
   const pendingQueue = queue.slice(1).filter((item) => isVisible(item.song.id));
   const livePosition = playerMode === "radio" ? currentTime : getLiveRadioPosition(state);
-  const liveDuration = duration || currentItem?.song.duration || 0;
+  const liveDuration = playerMode === "radio"
+    ? duration || currentItem?.song.duration || 0
+    : currentItem?.song.duration || 0;
   const progress = liveDuration > 0 ? Math.min(100, Math.max(0, (livePosition / liveDuration) * 100)) : 0;
+  const radioButtonPlaying = playerMode === "radio" ? isPlaying : state?.status === "playing";
+  const handleRadioPlayPause = () => {
+    if (playerMode !== "radio") {
+      enableRadioMode().catch(() => {
+        setMessage({ type: "error", text: "No se pudo conectar con la radio." });
+      });
+      return;
+    }
+
+    togglePlayPause();
+  };
 
   useEffect(() => {
     enableRadioMode().catch(() => {
@@ -324,7 +337,7 @@ export default function RadioPage() {
   const removeQueueItem = (item: RadioQueueItem) => {
     runRadioAction(
       () => radioDelete<RadioState>(`/radio/queue/${encodeURIComponent(item.itemId)}`),
-      "Cancion quitada de la cola."
+      "Canción quitada de la cola."
     );
   };
 
@@ -385,19 +398,19 @@ export default function RadioPage() {
                     ? "Listo para unirte"
                     : isRadioBuffering ? "Sincronizando" : state?.status === "playing" ? "En directo" : "Pausada"}
                 </span>
-                <h2>{currentItem?.song.name || "Sin cancion en radio"}</h2>
+                <h2>{currentItem?.song.name || "Sin canción en radio"}</h2>
                 <p>
                   {isRadioAwaitingUserGesture
                     ? "La radio sigue sonando. Pulsa play para entrar exactamente al directo."
                     : isRadioBuffering
                     ? "Cargando audio y ajustando el punto exacto de la radio..."
-                    : currentItem ? `${currentItem.source.name} - Pitch ${currentItem.pitch.toFixed(2)}x` : "Anade canciones para empezar la estacion."}
+                    : currentItem ? `${currentItem.source.name} - Pitch ${currentItem.pitch.toFixed(2)}x` : "Añade canciones para empezar la estación."}
                 </p>
               </div>
 
               <div className="radio-page__controls">
-                <button className="playlist-admin__control-btn playlist-admin__control-btn--play" onClick={togglePlayPause} title={isPlaying ? "Pausar radio" : "Reproducir radio"}>
-                  {isPlaying ? <PauseIcon size={18} /> : <PlayIcon size={18} />}
+                <button className="playlist-admin__control-btn playlist-admin__control-btn--play" onClick={handleRadioPlayPause} title={radioButtonPlaying ? "Pausar radio" : "Reproducir radio"}>
+                  {radioButtonPlaying ? <PauseIcon size={18} /> : <PlayIcon size={18} />}
                 </button>
                 <button className="playlist-admin__control-btn" onClick={playNext} title="Siguiente">
                   <SkipForwardIcon size={18} />
@@ -475,7 +488,7 @@ export default function RadioPage() {
             <div className="radio-page__add-grid">
               <div className="radio-page__add-panel">
                 <h2 className="playlist-admin__section-title">
-                  <SearchIcon size={18} /> Anadir canciones
+                  <SearchIcon size={18} /> Añadir canciones
                 </h2>
                 <div className="radio-page__form-row">
                   <input
@@ -497,7 +510,7 @@ export default function RadioPage() {
                     >
                       <div>
                         <strong>{song.name}</strong>
-                        <span>{song.duration ? formatTime(song.duration) : "Sin duracion"}</span>
+                        <span>{song.duration ? formatTime(song.duration) : "Sin duración"}</span>
                       </div>
                     </button>
                   ))}
@@ -506,14 +519,14 @@ export default function RadioPage() {
 
               <div className="radio-page__add-panel">
                 <h2 className="playlist-admin__section-title">
-                  <SearchIcon size={18} /> Anadir playlists
+                  <SearchIcon size={18} /> Añadir playlists
                 </h2>
                 <div className="radio-page__form-row">
                   <input
                     value={playlistQuery}
                     onChange={(e) => setPlaylistQuery(e.target.value)}
                     className="playlist-admin__upload-form-input"
-                    placeholder="Buscar playlist o pegar URL publica"
+                    placeholder="Buscar playlist o pegar URL pública"
                   />
                 </div>
                 <div className="radio-page__playlist-results">
@@ -530,13 +543,13 @@ export default function RadioPage() {
                       <div>
                         <strong>{playlist.name}</strong>
                         <span>
-                          {playlist.kind === "private" ? "Propia publica" : playlist.kind === "external" ? "URL publica" : "Global"} - {playlist.count} canciones
+                          {playlist.kind === "private" ? "Propia pública" : playlist.kind === "external" ? "URL pública" : "Global"} - {playlist.count} canciones
                         </span>
                       </div>
                     </button>
                   ))}
                   {isResolvingUrl && (
-                    <p className="playlist-admin__empty">Buscando playlist publica...</p>
+                    <p className="playlist-admin__empty">Buscando playlist pública...</p>
                   )}
                   {!isResolvingUrl && filteredPlaylists.length === 0 && (
                     <p className="playlist-admin__empty">No hay playlists disponibles.</p>
@@ -549,7 +562,7 @@ export default function RadioPage() {
               <div className="radio-page__option-group">
                 <span>Posicion</span>
                 <div className="radio-page__position-buttons">
-                  <button className={insertChoice === "last" ? "radio-page__option-icon radio-page__option-icon--active" : "radio-page__option-icon"} onClick={() => setInsertChoice("last")} title="Anadir ultima">
+                  <button className={insertChoice === "last" ? "radio-page__option-icon radio-page__option-icon--active" : "radio-page__option-icon"} onClick={() => setInsertChoice("last")} title="Añadir última">
                     <ListPlusIcon size={16} />
                   </button>
                   <button className={insertChoice === "next" ? "radio-page__option-icon radio-page__option-icon--active" : "radio-page__option-icon"} onClick={() => setInsertChoice("next")} title="Siguiente">
@@ -597,7 +610,7 @@ export default function RadioPage() {
                 onClick={addSelectedItem}
                 disabled={!selectedItem}
               >
-                Anadir
+                Añadir
               </button>
             </div>
           </section>
@@ -647,7 +660,7 @@ function QueueRow({
           onKeyDown={(e) => {
             if (e.key === "Enter") onPitch(item, Number(e.currentTarget.value));
           }}
-          title="Pitch de esta cancion"
+          title="Pitch de esta canción"
         />
         <span>x</span>
       </div>
@@ -662,7 +675,7 @@ function QueueRow({
             </button>
           </>
         )}
-        <button onClick={() => onRemove(item)} title={current ? "Saltar cancion actual" : "Quitar"}>
+        <button onClick={() => onRemove(item)} title={current ? "Saltar canción actual" : "Quitar"}>
           <TrashIcon size={15} />
         </button>
       </div>
