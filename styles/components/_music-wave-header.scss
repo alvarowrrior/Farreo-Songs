@@ -23,6 +23,9 @@
     gap: 1px;
     padding: 0 2px;
     box-sizing: border-box;
+    // Aisla el layout/paint de las 420 barras animadas: sus cambios de altura
+    // no pueden invalidar el layout del resto de la pagina.
+    contain: layout style paint;
   }
 
   &__bar {

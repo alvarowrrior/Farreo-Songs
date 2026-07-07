@@ -975,6 +975,13 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     },
     onPlay: (e: SyntheticEvent<HTMLAudioElement>) => {
       if (e.currentTarget !== audioRef.current) return;
+      // El visualizador enruta el audio por un AudioContext: si el sistema lo
+      // suspende (pantalla bloqueada, cambio de foco), el elemento "reproduce"
+      // pero no suena nada. Reanudarlo en cada arranque/encadenado lo cubre.
+      const ctx = audioContextRef.current;
+      if (ctx && ctx.state === "suspended") {
+        void ctx.resume().catch(() => undefined);
+      }
       setIsPlaying(true);
     },
     onTimeUpdate: (e: SyntheticEvent<HTMLAudioElement>) => {

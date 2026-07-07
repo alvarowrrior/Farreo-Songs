@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { ChevronLeftIcon, ChevronRightIcon, ListMusicIcon, Maximize2Icon, Minimize2Icon, PauseIcon, PlayIcon } from "lucide-react";
 import SongArtwork from "@/components/SongArtwork";
@@ -43,6 +43,67 @@ const formatCreatedAt = (value: unknown) => {
   return date.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "2-digit" });
 };
 
+type LyricCueList = ReturnType<typeof parseSrt>;
+
+// Ventana de lyrics memoizada: el panel se re-renderiza con cada tick del
+// audio (~4 veces/segundo), pero esta lista (que puede tener cientos de
+// nodos) solo debe repintarse cuando cambia la linea activa o la cancion.
+const LyricsWindow = memo(function LyricsWindow({
+  trackId,
+  dynamicLyrics,
+  staticLyrics,
+  activeLyricIndex,
+  autoFollow,
+  onSeek,
+}: {
+  trackId: string;
+  dynamicLyrics: LyricCueList;
+  staticLyrics: string[];
+  activeLyricIndex: number;
+  autoFollow: boolean;
+  onSeek: (val: number) => void;
+}) {
+  const activeLyricRef = useRef<HTMLButtonElement | null>(null);
+  const lyricsWindowRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!autoFollow || activeLyricIndex < 0) return;
+    activeLyricRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [activeLyricIndex, autoFollow]);
+
+  useEffect(() => {
+    lyricsWindowRef.current?.scrollTo({ top: 0 });
+  }, [trackId]);
+
+  return (
+    <div ref={lyricsWindowRef} className="song-info-sidebar__lyrics-window">
+      {dynamicLyrics.length > 0 ? (
+        dynamicLyrics.map((cue, index) => (
+          <button
+            type="button"
+            key={cue.id}
+            ref={index === activeLyricIndex ? activeLyricRef : null}
+            className={`song-info-sidebar__lyric-line ${index === activeLyricIndex ? "song-info-sidebar__lyric-line--active" : ""}`}
+            onClick={() => onSeek(cue.start)}
+            title={`Ir a ${formatTime(cue.start)}`}
+          >
+            <small>{formatTime(cue.start)}</small>
+            <span>{cue.text}</span>
+          </button>
+        ))
+      ) : staticLyrics.length > 0 ? (
+        <div className="song-info-sidebar__static-lyrics">
+          {staticLyrics.map((line, index) => (
+            <p key={`${line}-${index}`}>{line}</p>
+          ))}
+        </div>
+      ) : (
+        <p className="song-info-sidebar__empty">Sin lyrics disponibles para esta cancion.</p>
+      )}
+    </div>
+  );
+});
+
 export default function SongInfoSidebar() {
   const { currentTrack, currentSource, duration, handleSeek, isPlaying, togglePlayPause } = useMusicPlayer();
   const { visualCurrentTime } = useMusicPlayerTime();
@@ -53,8 +114,6 @@ export default function SongInfoSidebar() {
   ));
   const [lyricsExpanded, setLyricsExpanded] = useState(false);
   const [autoFollow, setAutoFollow] = useState(true);
-  const activeLyricRef = useRef<HTMLButtonElement | null>(null);
-  const lyricsWindowRef = useRef<HTMLDivElement | null>(null);
   const dynamicLyrics = useMemo(() => parseSrt(currentTrack?.lyricsSrt), [currentTrack?.lyricsSrt]);
   const staticLyrics = useMemo(() => (
     currentTrack?.staticLyrics
@@ -77,15 +136,6 @@ export default function SongInfoSidebar() {
     window.localStorage.setItem(SIDEBAR_VISIBILITY_KEY, "open");
     setOpen(true);
   };
-
-  useEffect(() => {
-    if (!open || !autoFollow || activeLyricIndex < 0) return;
-    activeLyricRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
-  }, [activeLyricIndex, autoFollow, open]);
-
-  useEffect(() => {
-    lyricsWindowRef.current?.scrollTo({ top: 0 });
-  }, [currentTrack?.id]);
 
   if (!currentTrack) return null;
 
@@ -185,31 +235,14 @@ export default function SongInfoSidebar() {
             </div>
           </div>
 
-          <div ref={lyricsWindowRef} className="song-info-sidebar__lyrics-window">
-            {dynamicLyrics.length > 0 ? (
-              dynamicLyrics.map((cue, index) => (
-                <button
-                  type="button"
-                  key={cue.id}
-                  ref={index === activeLyricIndex ? activeLyricRef : null}
-                  className={`song-info-sidebar__lyric-line ${index === activeLyricIndex ? "song-info-sidebar__lyric-line--active" : ""}`}
-                  onClick={() => handleSeek(cue.start)}
-                  title={`Ir a ${formatTime(cue.start)}`}
-                >
-                  <small>{formatTime(cue.start)}</small>
-                  <span>{cue.text}</span>
-                </button>
-              ))
-            ) : staticLyrics.length > 0 ? (
-              <div className="song-info-sidebar__static-lyrics">
-                {staticLyrics.map((line, index) => (
-                  <p key={`${line}-${index}`}>{line}</p>
-                ))}
-              </div>
-            ) : (
-              <p className="song-info-sidebar__empty">Sin lyrics disponibles para esta cancion.</p>
-            )}
-          </div>
+          <LyricsWindow
+            trackId={currentTrack.id}
+            dynamicLyrics={dynamicLyrics}
+            staticLyrics={staticLyrics}
+            activeLyricIndex={activeLyricIndex}
+            autoFollow={autoFollow}
+            onSeek={handleSeek}
+          />
         </section>
 
         <section className="song-info-sidebar__meta">

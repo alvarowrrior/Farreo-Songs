@@ -50,6 +50,30 @@ type SelectedRadioItem =
   | { type: "song"; song: ApiSong }
   | { type: "playlist"; playlist: PlaylistChoice };
 
+// Barra de progreso de la radio aislada: es lo unico que necesita el tiempo
+// de reproduccion, asi el tick del audio (~4/seg) solo re-renderiza esto y no
+// la pagina entera de la radio con todo el catalogo.
+function RadioProgress() {
+  const { duration, playerMode, radioState } = useMusicPlayer();
+  const { currentTime } = useMusicPlayerTime();
+  const currentItem = radioState?.currentItem ?? null;
+  const livePosition = playerMode === "radio" ? currentTime : getLiveRadioPosition(radioState);
+  const liveDuration = playerMode === "radio"
+    ? duration || currentItem?.song.duration || 0
+    : currentItem?.song.duration || 0;
+  const progress = liveDuration > 0 ? Math.min(100, Math.max(0, (livePosition / liveDuration) * 100)) : 0;
+
+  return (
+    <div className="radio-page__progress">
+      <span>{formatTime(livePosition)}</span>
+      <div className="radio-page__progress-track">
+        <span style={{ width: `${progress}%` }} />
+      </div>
+      <span>{formatTime(liveDuration)}</span>
+    </div>
+  );
+}
+
 const extractUserPlaylistId = (value: string) => {
   const raw = value.trim();
   if (!raw) return "";
@@ -71,7 +95,6 @@ const extractUserPlaylistId = (value: string) => {
 
 export default function RadioPage() {
   const {
-    duration,
     enableRadioMode,
     isRadioAwaitingUserGesture,
     isRadioBuffering,
@@ -81,7 +104,6 @@ export default function RadioPage() {
     togglePlayPause,
     playNext,
   } = useMusicPlayer();
-  const { currentTime } = useMusicPlayerTime();
   const { isVisible } = useHiddenSongs();
 
   const [user, setUser] = useState<User | null>(null);
@@ -104,11 +126,6 @@ export default function RadioPage() {
   const currentItem = state?.currentItem ?? null;
   const queue = state?.queue || [];
   const pendingQueue = queue.slice(1).filter((item) => isVisible(item.song.id));
-  const livePosition = playerMode === "radio" ? currentTime : getLiveRadioPosition(state);
-  const liveDuration = playerMode === "radio"
-    ? duration || currentItem?.song.duration || 0
-    : currentItem?.song.duration || 0;
-  const progress = liveDuration > 0 ? Math.min(100, Math.max(0, (livePosition / liveDuration) * 100)) : 0;
   const radioButtonPlaying = playerMode === "radio" ? isPlaying : state?.status === "playing";
   const handleRadioPlayPause = () => {
     if (playerMode !== "radio") {
@@ -417,13 +434,7 @@ export default function RadioPage() {
                 </button>
               </div>
 
-              <div className="radio-page__progress">
-                <span>{formatTime(livePosition)}</span>
-                <div className="radio-page__progress-track">
-                  <span style={{ width: `${progress}%` }} />
-                </div>
-                <span>{formatTime(liveDuration)}</span>
-              </div>
+              <RadioProgress />
 
               {currentItem && (
                 <div className="radio-page__current-pitch">

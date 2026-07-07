@@ -113,6 +113,20 @@ export default function PlaylistSongTable({
   }, [sort, tracks]);
   const playbackTracks = useMemo(() => [...tracks].reverse(), [tracks]);
 
+  // Indice y textos precalculados por cancion: antes cada fila hacia un
+  // findIndex sobre toda la lista (O(n²) por render) y creaba Dates nuevos.
+  const rowMeta = useMemo(() => {
+    const map = new Map<string, { realIndex: number; addedAtLabel: string; durationLabel: string }>();
+    tracks.forEach((track, index) => {
+      map.set(track.id, {
+        realIndex: index,
+        addedAtLabel: formatAddedAt(track.addedAt),
+        durationLabel: formatDuration(track.duration),
+      });
+    });
+    return map;
+  }, [tracks]);
+
   const requestSort = (key: SortKey) => {
     setSort((current) => ({
       key,
@@ -223,7 +237,8 @@ export default function PlaylistSongTable({
       </div>
 
       {sortedTracks.map((track, visibleIndex) => {
-        const realIndex = tracks.findIndex((item) => item.id === track.id);
+        const meta = rowMeta.get(track.id);
+        const realIndex = meta?.realIndex ?? visibleIndex;
         const active = currentTrackId === track.id;
         const menuOpen = openMenuId === track.id;
 
@@ -271,8 +286,8 @@ export default function PlaylistSongTable({
               </div>
             </div>
 
-            <div className="playlist-song-table__muted">{formatAddedAt(track.addedAt)}</div>
-            <div className="playlist-song-table__muted playlist-song-table__duration">{formatDuration(track.duration)}</div>
+            <div className="playlist-song-table__muted">{meta?.addedAtLabel ?? ""}</div>
+            <div className="playlist-song-table__muted playlist-song-table__duration">{meta?.durationLabel ?? ""}</div>
 
             {showActions && (
               <div className="playlist-song-table__actions" onClick={(event) => event.stopPropagation()}>
