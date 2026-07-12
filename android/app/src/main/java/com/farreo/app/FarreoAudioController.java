@@ -99,6 +99,8 @@ public class FarreoAudioController {
             public void onPlaybackStateChanged(int playbackState) {
                 if (playbackState == Player.STATE_ENDED) {
                     notifyState("ended");
+                } else {
+                    notifyState("state");
                 }
                 refreshForegroundService();
             }
@@ -297,6 +299,7 @@ public class FarreoAudioController {
         JSObject state = new JSObject();
         state.put("isAvailable", true);
         state.put("isPlaying", player.isPlaying());
+        state.put("isBuffering", player.getPlaybackState() == Player.STATE_BUFFERING);
         state.put("currentTrack", getCurrentTrackOrNull());
         state.put("currentSource", source == null ? JSONObject.NULL : source);
         state.put("position", player.getCurrentPosition() / 1000d);

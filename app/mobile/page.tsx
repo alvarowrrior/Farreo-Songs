@@ -13,6 +13,7 @@ import {
   HomeIcon,
   ImageIcon,
   ListMusicIcon,
+  LoaderCircleIcon,
   LockIcon,
   LogInIcon,
   LogOutIcon,
@@ -183,6 +184,7 @@ interface MobileMiniPlayerProps {
   webLyric: CurrentLyric | null;
   lyricCues: LyricCue[];
   isPlaying: boolean;
+  isBuffering: boolean;
   canPlayPrev: boolean;
   canPlayNext: boolean;
   onOpen: () => void;
@@ -201,6 +203,7 @@ function MobileMiniPlayer({
   webLyric,
   lyricCues,
   isPlaying,
+  isBuffering,
   canPlayPrev,
   canPlayNext,
   onOpen,
@@ -249,13 +252,19 @@ function MobileMiniPlayer({
         <SongArtwork src={track.iconUrl} alt={track.name} className="mobile-farreo__mini-art" />
         <span>
           <strong>{track.name}</strong>
-          <small className={displayLyric ? "mobile-farreo__mini-lyric" : undefined}>
-            {displayLyric?.text || source?.name || "Farreo"}
+          <small className={displayLyric && !isBuffering ? "mobile-farreo__mini-lyric" : undefined}>
+            {isBuffering ? "Preparando audio..." : displayLyric?.text || source?.name || "Farreo"}
           </small>
         </span>
       </button>
       <button type="button" className="mobile-farreo__mini-play" onClick={onToggle}>
-        {isPlaying ? <PauseIcon size={20} fill="currentColor" /> : <PlayIcon size={20} fill="currentColor" />}
+        {isBuffering ? (
+          <LoaderCircleIcon size={21} className="mobile-farreo__spinner" />
+        ) : isPlaying ? (
+          <PauseIcon size={20} fill="currentColor" />
+        ) : (
+          <PlayIcon size={20} fill="currentColor" />
+        )}
       </button>
       <button type="button" className="mobile-farreo__mini-skip" disabled={!canPlayNext} onClick={onNext}>
         <SkipForwardIcon size={18} />
@@ -310,6 +319,8 @@ export default function MobilePage() {
   const [nativeAvailable, setNativeAvailable] = useState(false);
   const [nativeState, setNativeState] = useState<FarreoNativeState | null>(null);
   const [playerOpen, setPlayerOpen] = useState(false);
+  const [playerClosing, setPlayerClosing] = useState(false);
+  const [playbackStarting, setPlaybackStarting] = useState(false);
   const [followLyrics, setFollowLyrics] = useState(true);
   const [lyricsOpen, setLyricsOpen] = useState(false);
   const [lyricsText, setLyricsText] = useState("");
@@ -345,6 +356,16 @@ export default function MobilePage() {
   const globalCarouselMovedRef = useRef(false);
   const globalCarouselRecenterFrameRef = useRef<number | null>(null);
   const sheetDismissDragRef = useRef<{ pointerId: number; startY: number; moved: boolean } | null>(null);
+  const timelineGestureRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    vertical: boolean;
+    pendingPosition: number | null;
+  } | null>(null);
+  const timelineSuppressSeekUntilRef = useRef(0);
+  const playerCloseTimerRef = useRef<number | null>(null);
+  const playbackFeedbackTimerRef = useRef<number | null>(null);
 
   const visibleSongs = useMemo(
     () => songs.filter((song) => isVisible(song.id)),
@@ -392,6 +413,8 @@ export default function MobilePage() {
   const activeTrack = nativeAvailable ? nativeState?.currentTrack ?? null : currentTrack;
   const activeSource = nativeAvailable ? nativeState?.currentSource ?? null : currentSource;
   const activeIsPlaying = nativeAvailable ? Boolean(nativeState?.isPlaying) : isPlaying;
+  const activeIsBuffering = nativeAvailable ? Boolean(nativeState?.isBuffering) : false;
+  const showPlaybackLoading = playbackStarting || activeIsBuffering;
   const activeCurrentTime = nativeAvailable ? nativeState?.position ?? 0 : currentTime;
   const activePitch = nativeAvailable ? nativeState?.pitch ?? playbackPitch : playbackPitch;
   const activeVolume = nativeAvailable ? nativeState?.volume ?? volume : volume;
@@ -425,6 +448,20 @@ export default function MobilePage() {
   useEffect(() => {
     selectedTracksRef.current = selectedTracks;
   }, [selectedTracks]);
+
+  useEffect(() => () => {
+    if (playerCloseTimerRef.current !== null) window.clearTimeout(playerCloseTimerRef.current);
+    if (playbackFeedbackTimerRef.current !== null) window.clearTimeout(playbackFeedbackTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    if (!activeIsPlaying || activeIsBuffering) return;
+    setPlaybackStarting(false);
+    if (playbackFeedbackTimerRef.current !== null) {
+      window.clearTimeout(playbackFeedbackTimerRef.current);
+      playbackFeedbackTimerRef.current = null;
+    }
+  }, [activeIsBuffering, activeIsPlaying]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -656,8 +693,41 @@ export default function MobilePage() {
     });
   };
 
+  const beginPlaybackFeedback = useCallback(() => {
+    setPlaybackStarting(true);
+    if (playbackFeedbackTimerRef.current !== null) {
+      window.clearTimeout(playbackFeedbackTimerRef.current);
+    }
+    playbackFeedbackTimerRef.current = window.setTimeout(() => {
+      setPlaybackStarting(false);
+      playbackFeedbackTimerRef.current = null;
+    }, 10000);
+  }, []);
+
+  const openAdvancedPlayer = useCallback(() => {
+    if (playerCloseTimerRef.current !== null) {
+      window.clearTimeout(playerCloseTimerRef.current);
+      playerCloseTimerRef.current = null;
+    }
+    setPlayerClosing(false);
+    setPlayerOpen(true);
+  }, []);
+
+  const closeAdvancedPlayer = useCallback(() => {
+    setPlayerOpen(false);
+    setPlayerClosing(true);
+    if (playerCloseTimerRef.current !== null) window.clearTimeout(playerCloseTimerRef.current);
+    playerCloseTimerRef.current = window.setTimeout(() => {
+      setPlayerClosing(false);
+      playerCloseTimerRef.current = null;
+    }, 300);
+  }, []);
+
   const beginSheetDismiss = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.pointerType === "mouse" && event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture?.(event.pointerId);
     sheetDismissDragRef.current = {
       pointerId: event.pointerId,
       startY: event.clientY,
@@ -668,17 +738,55 @@ export default function MobilePage() {
   const moveSheetDismiss = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = sheetDismissDragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
     if (event.clientY - drag.startY > 10) drag.moved = true;
   };
 
   const finishSheetDismiss = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = sheetDismissDragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+    }
     sheetDismissDragRef.current = null;
 
     // El asa y toda la portada cierran con un toque. Arrastrar hacia abajo
     // desde arriba permite ocultar el panel sin tener que alcanzar el asa.
-    if (!drag.moved || event.clientY - drag.startY > 64) setPlayerOpen(false);
+    if (!drag.moved || event.clientY - drag.startY > 64) closeAdvancedPlayer();
+  };
+
+  const beginTimelineGesture = (event: ReactPointerEvent<HTMLInputElement>) => {
+    timelineGestureRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      vertical: false,
+      pendingPosition: null,
+    };
+  };
+
+  const moveTimelineGesture = (event: ReactPointerEvent<HTMLInputElement>) => {
+    const gesture = timelineGestureRef.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    const horizontalDistance = Math.abs(event.clientX - gesture.startX);
+    const verticalDistance = Math.abs(event.clientY - gesture.startY);
+    if (verticalDistance > horizontalDistance + 6) gesture.vertical = true;
+  };
+
+  const finishTimelineGesture = (event: ReactPointerEvent<HTMLInputElement>) => {
+    const gesture = timelineGestureRef.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    timelineGestureRef.current = null;
+    if (gesture.vertical) {
+      timelineSuppressSeekUntilRef.current = Date.now() + 300;
+      return;
+    }
+    if (!gesture.vertical && gesture.pendingPosition !== null) {
+      void seekMobileTrack(gesture.pendingPosition);
+    }
   };
 
   const activateNativeAudio = useCallback(async () => {
@@ -715,6 +823,7 @@ export default function MobilePage() {
       addFarreoNativeListener("error", (payload) => {
         if (!payload || typeof payload !== "object") return;
         const text = (payload as { message?: string }).message;
+        setPlaybackStarting(false);
         if (text) showMessage(text);
       }),
     ];
@@ -827,30 +936,36 @@ export default function MobilePage() {
     index = 0,
     options?: { shuffle?: boolean },
   ) => {
+    beginPlaybackFeedback();
     const shuffleForThisPlay = options?.shuffle ?? activeShuffle;
-    const native = await activateNativeAudio();
-    if (native) {
-      const loaded = await native.loadQueue({
-        tracks,
-        startIndex: index,
-        source,
-        shuffle: shuffleForThisPlay,
-        pitch: activePitch,
-        volume: activeVolume,
-      });
-      setNativeState(loaded);
-      setNativeState(await native.play());
-      return;
-    }
+    try {
+      const native = await activateNativeAudio();
+      if (native) {
+        const loaded = await native.loadQueue({
+          tracks,
+          startIndex: index,
+          source,
+          shuffle: shuffleForThisPlay,
+          pitch: activePitch,
+          volume: activeVolume,
+        });
+        setNativeState(loaded);
+        setNativeState(await native.play());
+        return;
+      }
 
-    if (options?.shuffle === false && activeShuffle) {
-      const requestedTrack = tracks[index];
-      if (requestedTrack) toggleTrack(requestedTrack, tracks, source);
-      return;
-    }
+      if (options?.shuffle === false && activeShuffle) {
+        const requestedTrack = tracks[index];
+        if (requestedTrack) toggleTrack(requestedTrack, tracks, source);
+        return;
+      }
 
-    playQueue(tracks, index, source);
-  }, [activateNativeAudio, activePitch, activeShuffle, activeVolume, playQueue, toggleTrack]);
+      playQueue(tracks, index, source);
+    } catch (error) {
+      setPlaybackStarting(false);
+      throw error;
+    }
+  }, [activateNativeAudio, activePitch, activeShuffle, activeVolume, beginPlaybackFeedback, playQueue, toggleTrack]);
 
   const loadPlaylist = useCallback(async (
     playlist: MobilePlaylist,
@@ -859,7 +974,11 @@ export default function MobilePage() {
   ) => {
     try {
       setLoadingPlaylist(true);
-      if (openPlaylistTab) setTab("playlist");
+      if (openPlaylistTab) {
+        setSelectedPlaylist(playlist);
+        setSelectedTracks([]);
+        setTab("playlist");
+      }
 
       let tracks: MusicTrack[] = [];
       let source: MusicPlaylistSource;
@@ -951,9 +1070,9 @@ export default function MobilePage() {
     }
 
     setTab("home");
-    setPlayerOpen(true);
+    openAdvancedPlayer();
     void playSong(song);
-  }, [playSong, requestedSongId, showMessage, songs]);
+  }, [openAdvancedPlayer, playSong, requestedSongId, showMessage, songs]);
 
   const shareUrl = async (url: string, title: string) => {
     try {
@@ -1292,13 +1411,16 @@ export default function MobilePage() {
   const toggleMobilePlayback = async () => {
     const native = nativeAvailable ? getFarreoNativeAudio() : null;
     if (native) {
+      if (!activeIsPlaying) beginPlaybackFeedback();
       setNativeState(activeIsPlaying ? await native.pause() : await native.play());
       return;
     }
+    if (!activeIsPlaying) beginPlaybackFeedback();
     togglePlayPause();
   };
 
   const nextMobileTrack = async () => {
+    beginPlaybackFeedback();
     const native = nativeAvailable ? getFarreoNativeAudio() : null;
     if (native) {
       setNativeState(await native.next());
@@ -1308,6 +1430,7 @@ export default function MobilePage() {
   };
 
   const previousMobileTrack = async () => {
+    beginPlaybackFeedback();
     const native = nativeAvailable ? getFarreoNativeAudio() : null;
     if (native) {
       setNativeState(await native.previous());
@@ -1582,7 +1705,19 @@ export default function MobilePage() {
             </button>
           </div>
           {loadingPlaylist ? (
-            <div className="mobile-farreo__empty">Cargando canciones...</div>
+            <div className="mobile-farreo__playlist-loader" role="status" aria-live="polite">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/brand/farreo-f.png" alt="" />
+              <div className="mobile-farreo__loader-bars" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+                <span />
+                <span />
+              </div>
+              <strong>Cargando canciones</strong>
+              <small>Preparando tu playlist...</small>
+            </div>
           ) : (
             <div className="mobile-farreo__song-list">
               {displayTracks.map((track, index) => {
@@ -1931,9 +2066,10 @@ export default function MobilePage() {
           webLyric={currentLyric}
           lyricCues={lyricCues}
           isPlaying={activeIsPlaying}
+          isBuffering={showPlaybackLoading}
           canPlayPrev={activeCanPlayPrev}
           canPlayNext={activeCanPlayNext}
-          onOpen={() => setPlayerOpen(true)}
+          onOpen={openAdvancedPlayer}
           onToggle={() => void toggleMobilePlayback()}
           onPrevious={() => void previousMobileTrack()}
           onNext={() => void nextMobileTrack()}
@@ -1941,15 +2077,23 @@ export default function MobilePage() {
       )}
 
       {activeTrack && (
-        <div className={`mobile-farreo__sheet-layer ${playerOpen ? "mobile-farreo__sheet-layer--open" : ""}`} aria-hidden={!playerOpen}>
-          <button type="button" className="mobile-farreo__sheet-backdrop" onClick={() => setPlayerOpen(false)} />
+        <div className={`mobile-farreo__sheet-layer ${playerOpen ? "mobile-farreo__sheet-layer--open" : ""} ${playerClosing ? "mobile-farreo__sheet-layer--closing" : ""}`} aria-hidden={!playerOpen}>
+          <button type="button" className="mobile-farreo__sheet-backdrop" onClick={closeAdvancedPlayer} />
           <section className="mobile-farreo__player-sheet" aria-label="Reproductor">
             <div
               className="mobile-farreo__sheet-dismiss-zone"
               onPointerDown={beginSheetDismiss}
               onPointerMove={moveSheetDismiss}
               onPointerUp={finishSheetDismiss}
-              onPointerCancel={() => { sheetDismissDragRef.current = null; }}
+              onPointerCancel={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                sheetDismissDragRef.current = null;
+              }}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              }}
             >
               <button type="button" className="mobile-farreo__sheet-handle" aria-label="Cerrar reproductor" />
               {renderAdvancedArtwork()}
@@ -1970,7 +2114,22 @@ export default function MobilePage() {
                 min={0}
                 max={currentDuration || 0}
                 value={Math.min(activeCurrentTime, currentDuration || activeCurrentTime)}
-                onChange={(event) => void seekMobileTrack(Number(event.target.value))}
+                onPointerDown={beginTimelineGesture}
+                onPointerMove={moveTimelineGesture}
+                onPointerUp={finishTimelineGesture}
+                onPointerCancel={() => {
+                  timelineGestureRef.current = null;
+                  timelineSuppressSeekUntilRef.current = Date.now() + 300;
+                }}
+                onChange={(event) => {
+                  const position = Number(event.target.value);
+                  if (timelineGestureRef.current) {
+                    timelineGestureRef.current.pendingPosition = position;
+                    return;
+                  }
+                  if (Date.now() < timelineSuppressSeekUntilRef.current) return;
+                  void seekMobileTrack(position);
+                }}
               />
               <span>{formatTime(currentDuration)}</span>
             </div>
@@ -1980,7 +2139,13 @@ export default function MobilePage() {
               </button>
               <button type="button" onClick={() => void previousMobileTrack()} disabled={!activeCanPlayPrev}><SkipBackIcon size={21} /></button>
               <button type="button" className="mobile-farreo__play-main" onClick={() => void toggleMobilePlayback()}>
-                {activeIsPlaying ? <PauseIcon size={25} fill="currentColor" /> : <PlayIcon size={25} fill="currentColor" />}
+                {showPlaybackLoading ? (
+                  <LoaderCircleIcon size={26} className="mobile-farreo__spinner" />
+                ) : activeIsPlaying ? (
+                  <PauseIcon size={25} fill="currentColor" />
+                ) : (
+                  <PlayIcon size={25} fill="currentColor" />
+                )}
               </button>
               <button type="button" onClick={() => void nextMobileTrack()} disabled={!activeCanPlayNext}><SkipForwardIcon size={21} /></button>
               <button type="button" onClick={() => setFollowLyrics((value) => !value)} className={followLyrics ? "mobile-farreo__control-active" : ""}>
