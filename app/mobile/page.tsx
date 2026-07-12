@@ -238,15 +238,19 @@ export default function MobilePage() {
     tab: null as string | null,
     playlistId: null as string | null,
     playlistKind: null as string | null,
+    songId: null as string | null,
   });
   const handledDeepLinkRef = useRef<string | null>(null);
   const requestedTab = mobileDeepLink.tab;
   const requestedPlaylistId = mobileDeepLink.playlistId;
   const requestedPlaylistKind = mobileDeepLink.playlistKind;
+  const requestedSongId = mobileDeepLink.songId;
   const [playlistDropIndex, setPlaylistDropIndex] = useState<number | null>(null);
   const globalCarouselRef = useRef<HTMLDivElement | null>(null);
   const globalCarouselDragRef = useRef<{ pointerId: number; startX: number; startScrollLeft: number; moved: boolean; captured: boolean } | null>(null);
   const globalCarouselMovedRef = useRef(false);
+  const globalCarouselRecenterFrameRef = useRef<number | null>(null);
+  const sheetDismissDragRef = useRef<{ pointerId: number; startY: number; moved: boolean } | null>(null);
 
   const visibleSongs = useMemo(
     () => songs.filter((song) => isVisible(song.id)),
@@ -330,11 +334,12 @@ export default function MobilePage() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    setMobileDeepLink({
-      tab: params.get("tab"),
-      playlistId: params.get("playlist"),
-      playlistKind: params.get("kind"),
-    });
+      setMobileDeepLink({
+        tab: params.get("tab"),
+        playlistId: params.get("playlist"),
+        playlistKind: params.get("kind"),
+        songId: params.get("song"),
+      });
   }, []);
 
   useEffect(() => {
@@ -534,6 +539,52 @@ export default function MobilePage() {
         carousel.scrollLeft -= segmentWidth;
       }
     });
+  };
+
+  const recenterGlobalCarousel = () => {
+    if (allGlobalCards.length < 2 || globalCarouselRecenterFrameRef.current !== null) return;
+
+    globalCarouselRecenterFrameRef.current = window.requestAnimationFrame(() => {
+      globalCarouselRecenterFrameRef.current = null;
+      const carousel = globalCarouselRef.current;
+      if (!carousel) return;
+
+      const segmentWidth = carousel.scrollWidth / 3;
+      if (segmentWidth <= 0) return;
+
+      // El contenido se triplica: cuando el desplazamiento entra en uno de los
+      // extremos, saltamos una copia completa sin cambiar lo que se ve.
+      if (carousel.scrollLeft < segmentWidth * 0.08) {
+        carousel.scrollLeft += segmentWidth;
+      } else if (carousel.scrollLeft > segmentWidth * 1.92) {
+        carousel.scrollLeft -= segmentWidth;
+      }
+    });
+  };
+
+  const beginSheetDismiss = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    sheetDismissDragRef.current = {
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      moved: false,
+    };
+  };
+
+  const moveSheetDismiss = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = sheetDismissDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (event.clientY - drag.startY > 10) drag.moved = true;
+  };
+
+  const finishSheetDismiss = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = sheetDismissDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    sheetDismissDragRef.current = null;
+
+    // El asa y toda la portada cierran con un toque. Arrastrar hacia abajo
+    // desde arriba permite ocultar el panel sin tener que alcanzar el asa.
+    if (!drag.moved || event.clientY - drag.startY > 64) setPlayerOpen(false);
   };
 
   const activateNativeAudio = useCallback(async () => {
@@ -773,10 +824,27 @@ export default function MobilePage() {
     void loadPlaylist(playlist, false, true);
   }, [allGlobalCards, libraryPlaylists, loadPlaylist, requestedPlaylistId, requestedPlaylistKind]);
 
-  const playSong = async (song: ApiSong) => {
+  const playSong = useCallback(async (song: ApiSong) => {
     const track = mapSongToTrack(song);
     await playTracks([track], { id: song.id, name: "Cancion suelta", type: "song" }, 0, { shuffle: false });
-  };
+  }, [playTracks]);
+
+  useEffect(() => {
+    if (!requestedSongId || songs.length === 0) return;
+    const key = `song:${requestedSongId}`;
+    if (handledDeepLinkRef.current === key) return;
+
+    handledDeepLinkRef.current = key;
+    const song = songs.find((entry) => entry.id === requestedSongId);
+    if (!song) {
+      showMessage("No se encontro la cancion compartida.");
+      return;
+    }
+
+    setTab("home");
+    setPlayerOpen(true);
+    void playSong(song);
+  }, [playSong, requestedSongId, showMessage, songs]);
 
   const shareUrl = async (url: string, title: string) => {
     try {
@@ -1579,6 +1647,7 @@ export default function MobilePage() {
             onPointerMove={moveGlobalCarouselDrag}
             onPointerUp={finishGlobalCarouselDrag}
             onPointerCancel={finishGlobalCarouselDrag}
+            onScroll={recenterGlobalCarousel}
           >
             {loopGlobalCards.map((playlist, index) => (
               <div key={`${playlist.kind}-${playlist.id}-${index}`} className="mobile-farreo__global-slide">
@@ -1769,8 +1838,16 @@ export default function MobilePage() {
         <div className={`mobile-farreo__sheet-layer ${playerOpen ? "mobile-farreo__sheet-layer--open" : ""}`} aria-hidden={!playerOpen}>
           <button type="button" className="mobile-farreo__sheet-backdrop" onClick={() => setPlayerOpen(false)} />
           <section className="mobile-farreo__player-sheet" aria-label="Reproductor">
-            <button type="button" className="mobile-farreo__sheet-handle" onClick={() => setPlayerOpen(false)} aria-label="Cerrar reproductor" />
-            {renderAdvancedArtwork()}
+            <div
+              className="mobile-farreo__sheet-dismiss-zone"
+              onPointerDown={beginSheetDismiss}
+              onPointerMove={moveSheetDismiss}
+              onPointerUp={finishSheetDismiss}
+              onPointerCancel={() => { sheetDismissDragRef.current = null; }}
+            >
+              <button type="button" className="mobile-farreo__sheet-handle" aria-label="Cerrar reproductor" />
+              {renderAdvancedArtwork()}
+            </div>
             <div className="mobile-farreo__sheet-title-row">
               <div>
                 <h2>{activeTrack.name}</h2>

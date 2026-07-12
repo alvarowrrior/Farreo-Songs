@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMusicPlayer } from "@/components/MusicPlayerProvider";
+import { addFarreoNativeListener, getFarreoNativeAudio } from "@/lib/nativeAudio";
 
 const BAR_COUNT = 420;
 
-const sampleFrequencyData = (data: Uint8Array<ArrayBuffer>, index: number) => {
+const sampleFrequencyData = (data: Uint8Array<ArrayBufferLike>, index: number) => {
   const position = index / Math.max(1, BAR_COUNT - 1);
   const distanceFromCenter = Math.abs(position - 0.5) * 2;
   // Los extremos representan los agudos y el centro los graves.
@@ -21,15 +22,66 @@ const sampleFrequencyData = (data: Uint8Array<ArrayBuffer>, index: number) => {
 export default function MusicWaveHeader({ simple = false }: { simple?: boolean }) {
   const { currentTrack, isPlaying, getAudioFrequencyData } = useMusicPlayer();
   const bars = useMemo(() => Array.from({ length: BAR_COUNT }, (_, index) => index), []);
+  const [nativePlayback, setNativePlayback] = useState({ known: false, hasTrack: false, isPlaying: false });
   const containerRef = useRef<HTMLDivElement | null>(null);
   const rafRef = useRef<number | null>(null);
+  const nativeFrequencyDataRef = useRef<Uint8Array | null>(null);
   const smoothedLevelsRef = useRef<Float32Array>(new Float32Array(BAR_COUNT));
   const writtenHeightsRef = useRef<Float32Array>(new Float32Array(BAR_COUNT));
   const writtenOpacitiesRef = useRef<Float32Array>(new Float32Array(BAR_COUNT));
   const lastFrameAtRef = useRef(0);
 
   useEffect(() => {
-    if (!currentTrack || !isPlaying) return undefined;
+    const native = getFarreoNativeAudio();
+    if (!native) return undefined;
+    let disposed = false;
+
+    const syncPlayback = (payload: unknown) => {
+      if (disposed || !payload || typeof payload !== "object") return;
+      const state = payload as { currentTrack?: unknown; isPlaying?: unknown };
+      setNativePlayback({
+        known: true,
+        hasTrack: Boolean(state.currentTrack),
+        isPlaying: Boolean(state.isPlaying),
+      });
+    };
+
+    const syncFrequency = (payload: unknown) => {
+      if (!payload || typeof payload !== "object") return;
+      const samples = (payload as { samples?: unknown }).samples;
+      if (!Array.isArray(samples)) return;
+      nativeFrequencyDataRef.current = Uint8Array.from(
+        samples.map((value) => Math.max(0, Math.min(255, Number(value) || 0))),
+      );
+    };
+
+    void native.getState().then(syncPlayback).catch(() => undefined);
+    const handles = [
+      addFarreoNativeListener("state", syncPlayback),
+      addFarreoNativeListener("trackChanged", syncPlayback),
+      addFarreoNativeListener("ended", syncPlayback),
+      addFarreoNativeListener("frequency", syncFrequency),
+    ];
+
+    return () => {
+      disposed = true;
+      handles.forEach((promise) => void promise.then((handle) => handle?.remove()).catch(() => undefined));
+    };
+  }, []);
+
+  const nativeIsPlaying = nativePlayback.known && nativePlayback.hasTrack && nativePlayback.isPlaying;
+  const webIsPlaying = !nativePlayback.known && Boolean(currentTrack && isPlaying);
+  const shouldShow = nativeIsPlaying || webIsPlaying;
+
+  useEffect(() => {
+    if (!nativeIsPlaying) return;
+    // Visualizer necesita permiso de audio en Android. Se solicita solamente
+    // cuando el usuario ya ha iniciado una reproduccion nativa.
+    void getFarreoNativeAudio()?.enableVisualization().catch(() => undefined);
+  }, [nativeIsPlaying]);
+
+  useEffect(() => {
+    if (!shouldShow) return undefined;
 
     const nodes = Array.from(containerRef.current?.children ?? []) as HTMLElement[];
     if (nodes.length === 0) return undefined;
@@ -46,7 +98,9 @@ export default function MusicWaveHeader({ simple = false }: { simple?: boolean }
       if (now - lastFrameAtRef.current < 28) return;
       lastFrameAtRef.current = now;
 
-      const data = getAudioFrequencyData();
+      const data = nativeIsPlaying
+        ? nativeFrequencyDataRef.current
+        : getAudioFrequencyData();
       if (!data) return;
 
       for (let index = 0; index < nodes.length; index += 1) {
@@ -88,9 +142,9 @@ export default function MusicWaveHeader({ simple = false }: { simple?: boolean }
         node.style.removeProperty("--wave-opacity");
       });
     };
-  }, [currentTrack, getAudioFrequencyData, isPlaying]);
+  }, [getAudioFrequencyData, nativeIsPlaying, shouldShow]);
 
-  if (!currentTrack || !isPlaying) return null;
+  if (!shouldShow) return null;
 
   return (
     <div className={`music-wave-header ${simple ? "music-wave-header--simple" : ""}`} aria-hidden="true">

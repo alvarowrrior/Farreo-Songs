@@ -8,7 +8,8 @@ export type FarreoNativeEvent =
   | "progress"
   | "trackChanged"
   | "ended"
-  | "error";
+  | "error"
+  | "frequency";
 
 export interface FarreoNativeQueuePayload {
   tracks: MusicTrack[];
@@ -51,6 +52,7 @@ type NativePlugin = {
   enterRadio: (payload?: { apiUrl?: string }) => Promise<FarreoNativeState>;
   leaveRadio: () => Promise<FarreoNativeState>;
   getState: () => Promise<FarreoNativeState>;
+  enableVisualization: () => Promise<{ enabled: boolean }>;
   addListener: (
     eventName: FarreoNativeEvent,
     listener: (payload: unknown) => void,

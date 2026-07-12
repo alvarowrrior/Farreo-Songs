@@ -1,15 +1,24 @@
 package com.farreo.app;
 
+import android.Manifest;
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
+import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.annotation.PermissionCallback;
 
 import android.util.Log;
 
-@CapacitorPlugin(name = "FarreoNativeAudio")
+@CapacitorPlugin(
+    name = "FarreoNativeAudio",
+    permissions = {
+        @Permission(alias = "audioVisualization", strings = { Manifest.permission.RECORD_AUDIO })
+    }
+)
 public class FarreoNativeAudioPlugin extends Plugin implements FarreoAudioController.Listener {
     private FarreoAudioController controller;
 
@@ -103,6 +112,36 @@ public class FarreoNativeAudioPlugin extends Plugin implements FarreoAudioContro
     @PluginMethod
     public void getState(PluginCall call) {
         resolveOnMain(call, () -> controller.getState());
+    }
+
+    @PluginMethod
+    public void enableVisualization(PluginCall call) {
+        if (!requireController(call)) return;
+        if (getPermissionState("audioVisualization") == PermissionState.GRANTED) {
+            finishEnableVisualization(call);
+            return;
+        }
+        requestPermissionForAlias("audioVisualization", call, "visualizationPermissionCallback");
+    }
+
+    @PermissionCallback
+    private void visualizationPermissionCallback(PluginCall call) {
+        if (getPermissionState("audioVisualization") == PermissionState.GRANTED) {
+            finishEnableVisualization(call);
+            return;
+        }
+        JSObject result = new JSObject();
+        result.put("enabled", false);
+        call.resolve(result);
+    }
+
+    private void finishEnableVisualization(PluginCall call) {
+        getActivity().runOnUiThread(() -> {
+            controller.setVisualizationEnabled(true);
+            JSObject result = new JSObject();
+            result.put("enabled", true);
+            call.resolve(result);
+        });
     }
 
     private void resolveOnMain(PluginCall call, ControllerAction action) {

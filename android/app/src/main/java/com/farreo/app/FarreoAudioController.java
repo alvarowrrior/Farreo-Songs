@@ -2,6 +2,7 @@ package com.farreo.app;
 
 import android.content.Context;
 import android.content.Intent;
+import android.media.audiofx.Visualizer;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
@@ -49,6 +50,9 @@ public class FarreoAudioController {
     private float pitch = 1f;
     private boolean shuffle = false;
     private boolean radioMode = false;
+    private boolean visualizationEnabled = false;
+    private Visualizer visualizer;
+    private int visualizerAudioSessionId = C.AUDIO_SESSION_ID_UNSET;
     private String radioApiUrl = DEFAULT_API_URL;
     private String radioItemId = "";
     private String radioStatus = "paused";
@@ -97,6 +101,11 @@ public class FarreoAudioController {
                 }
                 refreshForegroundService();
             }
+
+            @Override
+            public void onAudioSessionIdChanged(int audioSessionId) {
+                configureVisualizer(audioSessionId);
+            }
         });
         mainHandler.post(progressRunnable);
     }
@@ -114,6 +123,15 @@ public class FarreoAudioController {
 
     public void removeListener(Listener listener) {
         listeners.remove(listener);
+    }
+
+    public void setVisualizationEnabled(boolean enabled) {
+        visualizationEnabled = enabled;
+        if (!enabled) {
+            releaseVisualizer();
+            return;
+        }
+        configureVisualizer(player.getAudioSessionId());
     }
 
     public JSObject loadQueue(JSArray nextTracks, int startIndex, JSObject nextSource, boolean nextShuffle, float nextPitch, float nextVolume) {
@@ -304,6 +322,83 @@ public class FarreoAudioController {
         if (duration != C.TIME_UNSET && duration > 0) return duration;
         JSONObject track = getCurrentTrackOrNull();
         return track == null ? 0 : Math.max(0, Math.round(track.optDouble("duration", 0) * 1000));
+    }
+
+    public float getNotificationPlaybackSpeed() {
+        return pitch;
+    }
+
+    private void configureVisualizer(int audioSessionId) {
+        if (!visualizationEnabled || audioSessionId == C.AUDIO_SESSION_ID_UNSET || audioSessionId <= 0) return;
+        if (visualizer != null && visualizerAudioSessionId == audioSessionId) return;
+
+        releaseVisualizer();
+        try {
+            Visualizer nextVisualizer = new Visualizer(audioSessionId);
+            int[] captureSizeRange = Visualizer.getCaptureSizeRange();
+            int captureSize = Math.min(1024, captureSizeRange[1]);
+            captureSize = Math.max(captureSizeRange[0], captureSize);
+            nextVisualizer.setCaptureSize(captureSize);
+            int rate = Math.min(Visualizer.getMaxCaptureRate(), 12000);
+            nextVisualizer.setDataCaptureListener(new Visualizer.OnDataCaptureListener() {
+                @Override
+                public void onWaveFormDataCapture(Visualizer ignored, byte[] waveform, int samplingRate) {
+                    // FFT delivers a frequency spectrum, which matches the wave header.
+                }
+
+                @Override
+                public void onFftDataCapture(Visualizer ignored, byte[] fft, int samplingRate) {
+                    final byte[] snapshot = fft.clone();
+                    mainHandler.post(() -> notifyFrequency(snapshot));
+                }
+            }, rate, false, true);
+            nextVisualizer.setEnabled(true);
+            visualizer = nextVisualizer;
+            visualizerAudioSessionId = audioSessionId;
+        } catch (RuntimeException ignored) {
+            // Some devices do not expose an analysable audio session. Playback
+            // remains unaffected and the web header simply stays hidden.
+            releaseVisualizer();
+        }
+    }
+
+    private void releaseVisualizer() {
+        if (visualizer != null) {
+            try {
+                visualizer.setEnabled(false);
+                visualizer.release();
+            } catch (RuntimeException ignored) {
+            }
+        }
+        visualizer = null;
+        visualizerAudioSessionId = C.AUDIO_SESSION_ID_UNSET;
+    }
+
+    private void notifyFrequency(byte[] fft) {
+        if (!visualizationEnabled || fft.length < 8) return;
+        int availableBins = Math.max(1, (fft.length / 2) - 1);
+        int outputBins = Math.min(96, availableBins);
+        JSArray samples = new JSArray();
+
+        for (int outputIndex = 0; outputIndex < outputBins; outputIndex += 1) {
+            int from = 1 + (outputIndex * availableBins / outputBins);
+            int to = Math.max(from + 1, 1 + ((outputIndex + 1) * availableBins / outputBins));
+            double magnitude = 0;
+            for (int bin = from; bin < to && bin < availableBins + 1; bin += 1) {
+                int real = fft[bin * 2];
+                int imaginary = fft[(bin * 2) + 1];
+                magnitude += Math.sqrt((real * real) + (imaginary * imaginary));
+            }
+            double average = magnitude / Math.max(1, to - from);
+            int level = (int) Math.min(255, Math.round(Math.log1p(average) * 54));
+            samples.put(level);
+        }
+
+        JSObject payload = new JSObject();
+        payload.put("samples", samples);
+        for (Listener listener : listeners) {
+            listener.onControllerEvent("frequency", payload);
+        }
     }
 
     public boolean isPlaying() {

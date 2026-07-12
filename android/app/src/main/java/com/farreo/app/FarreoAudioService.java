@@ -145,6 +145,7 @@ public class FarreoAudioService extends Service implements FarreoAudioController
 
     @Override
     public void onControllerEvent(String eventName, JSObject payload) {
+        if ("frequency".equals(eventName)) return;
         mainHandler.post(() -> handleControllerEvent(eventName));
     }
 
@@ -234,7 +235,11 @@ public class FarreoAudioService extends Service implements FarreoAudioController
             : PlaybackStateCompat.STATE_PAUSED;
         mediaSession.setPlaybackState(new PlaybackStateCompat.Builder()
             .setActions(actions)
-            .setState(state, 0, 1f)
+            .setState(
+                state,
+                controller.getNotificationPositionMs(),
+                controller.getNotificationPlaybackSpeed()
+            )
             .build());
     }
 
@@ -246,6 +251,8 @@ public class FarreoAudioService extends Service implements FarreoAudioController
             .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, controller.getNotificationDurationMs());
         if (artwork != null) {
             metadata.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, artwork);
+            metadata.putBitmap(MediaMetadataCompat.METADATA_KEY_ART, artwork);
+            metadata.putBitmap(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON, artwork);
         }
         mediaSession.setMetadata(metadata.build());
     }

@@ -1003,7 +1003,7 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
     button {
       min-height: 45px;
       color: #050505;
-      background: #1ed760;
+      background: #fff;
       font-weight: 950;
 
       &:disabled {
@@ -1179,6 +1179,16 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
     border: 0;
     border-radius: 999px;
     background: rgba(255, 255, 255, 0.28);
+  }
+
+  &__sheet-dismiss-zone {
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+    gap: 0.72rem;
+    padding: 0.05rem 0 0.14rem;
+    touch-action: none;
+    user-select: none;
   }
 
   &__sheet-art {
