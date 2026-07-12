@@ -271,6 +271,14 @@ public class FarreoAudioController {
         return getState();
     }
 
+    public void stopForUserExit() {
+        // La radio es compartida: al cerrar esta APK se corta solamente su
+        // reproduccion local, sin enviar una pausa a toda la estacion.
+        if (radioMode) leaveRadioInternal();
+        player.pause();
+        notifyState("state");
+    }
+
     private void leaveRadioInternal() {
         radioMode = false;
         radioItemId = "";

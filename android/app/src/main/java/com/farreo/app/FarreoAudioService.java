@@ -104,7 +104,11 @@ public class FarreoAudioService extends Service implements FarreoAudioController
         if (intent != null && intent.getAction() != null) {
             switch (intent.getAction()) {
                 case ACTION_TOGGLE:
-                    controller.pause();
+                    if (controller.isPlaying()) {
+                        controller.pause();
+                    } else {
+                        controller.play();
+                    }
                     break;
                 case ACTION_PREVIOUS:
                     controller.previous();
@@ -113,9 +117,7 @@ public class FarreoAudioService extends Service implements FarreoAudioController
                     controller.next();
                     break;
                 case ACTION_STOP:
-                    controller.pause();
-                    stopForeground(false);
-                    stopSelf();
+                    stopPlaybackForUserExit();
                     return START_NOT_STICKY;
                 default:
                     break;
@@ -135,6 +137,14 @@ public class FarreoAudioService extends Service implements FarreoAudioController
             mediaSession.release();
         }
         super.onDestroy();
+    }
+
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        // Quitar Farreo de recientes es una salida explicita: no dejamos un
+        // foreground service oculto reproduciendo indefinidamente.
+        stopPlaybackForUserExit();
+        super.onTaskRemoved(rootIntent);
     }
 
     @Nullable
@@ -170,6 +180,7 @@ public class FarreoAudioService extends Service implements FarreoAudioController
         PendingIntent previous = pending(ACTION_PREVIOUS, 11);
         PendingIntent toggle = pending(ACTION_TOGGLE, 12);
         PendingIntent next = pending(ACTION_NEXT, 13);
+        PendingIntent dismiss = pending(ACTION_STOP, 15);
         PendingIntent content = PendingIntent.getActivity(
             this,
             14,
@@ -185,7 +196,8 @@ public class FarreoAudioService extends Service implements FarreoAudioController
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setOnlyAlertOnce(true)
             .setSilent(true)
-            .setOngoing(controller.hasTrack())
+            .setOngoing(false)
+            .setDeleteIntent(dismiss)
             .addAction(android.R.drawable.ic_media_previous, "Anterior", previous)
             .addAction(playIcon, playLabel, toggle)
             .addAction(android.R.drawable.ic_media_next, "Siguiente", next)
@@ -212,6 +224,12 @@ public class FarreoAudioService extends Service implements FarreoAudioController
         Intent intent = new Intent(this, FarreoAudioService.class);
         intent.setAction(action);
         return PendingIntent.getService(this, requestCode, intent, pendingFlags());
+    }
+
+    private void stopPlaybackForUserExit() {
+        if (controller != null) controller.stopForUserExit();
+        stopForeground(true);
+        stopSelf();
     }
 
     private int pendingFlags() {
