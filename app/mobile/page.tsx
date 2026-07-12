@@ -56,7 +56,7 @@ import {
 } from "@/lib/privatePlaylists";
 import { followGlobalPlaylist, listFollowedGlobalPlaylistIds, unfollowGlobalPlaylist } from "@/lib/globalPlaylistFollows";
 import { useHiddenSongs } from "@/lib/useHiddenSongs";
-import { computeCurrentLyric, parseSrt, type LyricCue } from "@/lib/lyrics";
+import { computeCurrentLyric, parseSrt, type CurrentLyric, type LyricCue } from "@/lib/lyrics";
 import {
   calibrateRadioClock,
   getLiveRadioPosition,
@@ -172,6 +172,100 @@ const mapSongToTrack = (song: ApiSong, addedAt?: string | null): MusicTrack => (
 });
 
 const getPlaybackOrder = (tracks: MusicTrack[]) => [...tracks].reverse();
+
+interface MobileMiniPlayerProps {
+  track: MusicTrack;
+  source: MusicPlaylistSource | null;
+  nativeAvailable: boolean;
+  initialPosition: number;
+  duration: number;
+  webPosition: number;
+  webLyric: CurrentLyric | null;
+  lyricCues: LyricCue[];
+  isPlaying: boolean;
+  canPlayPrev: boolean;
+  canPlayNext: boolean;
+  onOpen: () => void;
+  onToggle: () => void;
+  onPrevious: () => void;
+  onNext: () => void;
+}
+
+function MobileMiniPlayer({
+  track,
+  source,
+  nativeAvailable,
+  initialPosition,
+  duration,
+  webPosition,
+  webLyric,
+  lyricCues,
+  isPlaying,
+  canPlayPrev,
+  canPlayNext,
+  onOpen,
+  onToggle,
+  onPrevious,
+  onNext,
+}: MobileMiniPlayerProps) {
+  const [nativeProgress, setNativeProgress] = useState({
+    position: initialPosition,
+    duration,
+  });
+
+  useEffect(() => {
+    if (!nativeAvailable) return undefined;
+    let disposed = false;
+    const handle = addFarreoNativeListener("progress", (payload) => {
+      if (disposed || document.visibilityState === "hidden" || !payload || typeof payload !== "object") return;
+      const progress = payload as { position?: number; duration?: number };
+      setNativeProgress((current) => ({
+        position: typeof progress.position === "number" ? progress.position : current.position,
+        duration: typeof progress.duration === "number" ? progress.duration : current.duration,
+      }));
+    });
+
+    return () => {
+      disposed = true;
+      void handle.then((listener) => listener?.remove()).catch(() => undefined);
+    };
+  }, [nativeAvailable]);
+
+  const displayPosition = nativeAvailable ? nativeProgress.position : webPosition;
+  const displayDuration = nativeAvailable ? nativeProgress.duration || duration : duration;
+  const displayLyric = nativeAvailable
+    ? computeCurrentLyric(lyricCues, displayPosition, displayDuration)
+    : webLyric;
+  const progressPercent = displayDuration > 0
+    ? Math.min(100, Math.max(0, (displayPosition / displayDuration) * 100))
+    : 0;
+
+  return (
+    <div className="mobile-farreo__mini-player">
+      <button type="button" className="mobile-farreo__mini-skip" disabled={!canPlayPrev} onClick={onPrevious}>
+        <SkipBackIcon size={18} />
+      </button>
+      <button type="button" className="mobile-farreo__mini-main" onClick={onOpen}>
+        <SongArtwork src={track.iconUrl} alt={track.name} className="mobile-farreo__mini-art" />
+        <span>
+          <strong>{track.name}</strong>
+          <small className={displayLyric ? "mobile-farreo__mini-lyric" : undefined}>
+            {displayLyric?.text || source?.name || "Farreo"}
+          </small>
+        </span>
+      </button>
+      <button type="button" className="mobile-farreo__mini-play" onClick={onToggle}>
+        {isPlaying ? <PauseIcon size={20} fill="currentColor" /> : <PlayIcon size={20} fill="currentColor" />}
+      </button>
+      <button type="button" className="mobile-farreo__mini-skip" disabled={!canPlayNext} onClick={onNext}>
+        <SkipForwardIcon size={18} />
+      </button>
+      <span className="mobile-farreo__mini-progress" aria-hidden="true">
+        <span style={{ width: `${progressPercent}%` }} />
+      </span>
+    </div>
+  );
+}
 
 export default function MobilePage() {
   const {
@@ -614,21 +708,10 @@ export default function MobilePage() {
         ...(payload as FarreoNativeState),
       }));
     };
-    const syncProgress = (payload: unknown) => {
-      if (disposed || !payload || typeof payload !== "object") return;
-      const data = payload as { position?: number; duration?: number };
-      setNativeState((prev) => prev ? {
-        ...prev,
-        position: typeof data.position === "number" ? data.position : prev.position,
-        duration: typeof data.duration === "number" ? data.duration : prev.duration,
-      } : prev);
-    };
-
     const handles = [
       addFarreoNativeListener("state", syncState),
       addFarreoNativeListener("trackChanged", syncState),
       addFarreoNativeListener("ended", syncState),
-      addFarreoNativeListener("progress", syncProgress),
       addFarreoNativeListener("error", (payload) => {
         if (!payload || typeof payload !== "object") return;
         const text = (payload as { message?: string }).message;
@@ -643,6 +726,32 @@ export default function MobilePage() {
       });
     };
   }, [nativeAvailable, showMessage]);
+
+  useEffect(() => {
+    if (!nativeAvailable || !playerOpen) return undefined;
+    const native = getFarreoNativeAudio();
+    if (!native) return undefined;
+    let disposed = false;
+
+    const syncProgress = (payload: unknown) => {
+      if (disposed || document.visibilityState === "hidden" || !payload || typeof payload !== "object") return;
+      const data = payload as { position?: number; duration?: number };
+      setNativeState((prev) => prev ? {
+        ...prev,
+        position: typeof data.position === "number" ? data.position : prev.position,
+        duration: typeof data.duration === "number" ? data.duration : prev.duration,
+      } : prev);
+    };
+
+    void native.getState().then((state) => {
+      if (!disposed) setNativeState(state);
+    }).catch(() => undefined);
+    const handle = addFarreoNativeListener("progress", syncProgress);
+    return () => {
+      disposed = true;
+      void handle.then((listener) => listener?.remove()).catch(() => undefined);
+    };
+  }, [nativeAvailable, playerOpen]);
 
   useEffect(() => {
     if (!auth) {
@@ -1811,27 +1920,24 @@ export default function MobilePage() {
       )}
 
       {activeTrack && (
-        <div className="mobile-farreo__mini-player">
-          <button type="button" className="mobile-farreo__mini-skip" disabled={!activeCanPlayPrev} onClick={() => void previousMobileTrack()}>
-            <SkipBackIcon size={18} />
-          </button>
-          <button type="button" className="mobile-farreo__mini-main" onClick={() => setPlayerOpen(true)}>
-            <SongArtwork src={activeTrack.iconUrl} alt={activeTrack.name} className="mobile-farreo__mini-art" />
-            <span>
-              <strong>{activeTrack.name}</strong>
-              <small>{activeLyric?.text || activeSource?.name || "Farreo"}</small>
-            </span>
-          </button>
-          <button type="button" className="mobile-farreo__mini-play" onClick={() => void toggleMobilePlayback()}>
-            {activeIsPlaying ? <PauseIcon size={20} fill="currentColor" /> : <PlayIcon size={20} fill="currentColor" />}
-          </button>
-          <button type="button" className="mobile-farreo__mini-skip" disabled={!activeCanPlayNext} onClick={() => void nextMobileTrack()}>
-            <SkipForwardIcon size={18} />
-          </button>
-          <span className="mobile-farreo__mini-progress" aria-hidden="true">
-            <span style={{ width: `${currentDuration > 0 ? Math.min(100, Math.max(0, (activeCurrentTime / currentDuration) * 100)) : 0}%` }} />
-          </span>
-        </div>
+        <MobileMiniPlayer
+          key={`${nativeAvailable ? "native" : "web"}-${activeTrack.id}`}
+          track={activeTrack}
+          source={activeSource}
+          nativeAvailable={nativeAvailable}
+          initialPosition={activeCurrentTime}
+          duration={currentDuration}
+          webPosition={currentTime}
+          webLyric={currentLyric}
+          lyricCues={lyricCues}
+          isPlaying={activeIsPlaying}
+          canPlayPrev={activeCanPlayPrev}
+          canPlayNext={activeCanPlayNext}
+          onOpen={() => setPlayerOpen(true)}
+          onToggle={() => void toggleMobilePlayback()}
+          onPrevious={() => void previousMobileTrack()}
+          onNext={() => void nextMobileTrack()}
+        />
       )}
 
       {activeTrack && (

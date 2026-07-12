@@ -86,9 +86,8 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
     padding: 0.38rem;
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 22px;
-    background: rgba(10, 10, 10, 0.95);
+    background: #0a0a0a;
     box-shadow: 0 18px 48px rgba(0, 0, 0, 0.46);
-    backdrop-filter: blur(18px);
   }
 
   &__tab,
@@ -412,8 +411,7 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
     align-items: center;
     justify-content: center;
     color: #fff;
-    background: rgba(0, 0, 0, 0.24);
-    backdrop-filter: blur(10px);
+    background: rgba(0, 0, 0, 0.52);
   }
 
   &__playlist-hero-content {
@@ -535,9 +533,8 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
     margin: 0 -1rem;
     padding: 0.6rem 1rem 0.55rem;
     border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-    background: rgba(10, 10, 10, 0.97);
+    background: #0a0a0a;
     box-shadow: 0 12px 24px rgba(0, 0, 0, 0.15);
-    backdrop-filter: blur(18px);
   }
 
   &__detail-utilities {
@@ -604,8 +601,7 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
     border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 14px;
     color: #bdbdbd;
-    background: rgba(26, 26, 26, 0.96);
-    backdrop-filter: blur(12px);
+    background: #1a1a1a;
 
     input {
       min-width: 0;
@@ -630,6 +626,8 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
     grid-template-columns: minmax(0, 1fr) 42px;
     align-items: stretch;
     gap: 0.38rem;
+    content-visibility: auto;
+    contain-intrinsic-size: auto 72px;
 
     &--editable {
       grid-template-columns: 27px minmax(0, 1fr) 42px;
@@ -1039,9 +1037,8 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
     padding: 0.35rem;
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 18px;
-    background: rgba(18, 18, 18, 0.96);
+    background: #121212;
     box-shadow: 0 18px 44px rgba(0, 0, 0, 0.44);
-    backdrop-filter: blur(18px);
   }
 
   &__mini-progress {
@@ -1059,7 +1056,7 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
       display: block;
       height: 100%;
       border-radius: inherit;
-      background: #1ed760;
+      background: #fff;
       transition: width 180ms linear;
     }
   }
@@ -1119,6 +1116,11 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
     color: #1ed760;
     font-size: 0.76rem;
     font-weight: 850;
+  }
+
+  &__mini-lyric {
+    position: relative;
+    top: -2px;
   }
 
   &__sheet-layer {

@@ -46,6 +46,7 @@ public class FarreoAudioService extends Service implements FarreoAudioController
     private String artworkUrl = "";
     private String artworkLoadingUrl = "";
     private long lastProgressNotificationAt = 0;
+    private volatile boolean stopping = false;
 
     public static void refresh(Context context) {
         Intent intent = new Intent(context, FarreoAudioService.class);
@@ -94,6 +95,11 @@ public class FarreoAudioService extends Service implements FarreoAudioController
             public void onSeekTo(long pos) {
                 controller.seek(pos / 1000d);
             }
+
+            @Override
+            public void onStop() {
+                stopPlaybackForUserExit();
+            }
         });
         updatePlaybackState();
         refreshArtwork();
@@ -101,6 +107,7 @@ public class FarreoAudioService extends Service implements FarreoAudioController
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        if (stopping) return START_NOT_STICKY;
         if (intent != null && intent.getAction() != null) {
             switch (intent.getAction()) {
                 case ACTION_TOGGLE:
@@ -131,6 +138,8 @@ public class FarreoAudioService extends Service implements FarreoAudioController
 
     @Override
     public void onDestroy() {
+        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        manager.cancel(NOTIFICATION_ID);
         if (controller != null) controller.removeListener(this);
         if (mediaSession != null) {
             mediaSession.setActive(false);
@@ -155,21 +164,21 @@ public class FarreoAudioService extends Service implements FarreoAudioController
 
     @Override
     public void onControllerEvent(String eventName, JSObject payload) {
-        if ("frequency".equals(eventName)) return;
+        if (stopping || "frequency".equals(eventName)) return;
         mainHandler.post(() -> handleControllerEvent(eventName));
     }
 
     private void handleControllerEvent(String eventName) {
+        if (stopping) return;
+        long now = SystemClock.elapsedRealtime();
+        if ("progress".equals(eventName) && now - lastProgressNotificationAt < 1000) return;
         updatePlaybackState();
         if (!"progress".equals(eventName)) {
             refreshArtwork();
         }
-        long now = SystemClock.elapsedRealtime();
-        if (!"progress".equals(eventName) || now - lastProgressNotificationAt >= 1000) {
-            NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-            manager.notify(NOTIFICATION_ID, buildNotification());
-            lastProgressNotificationAt = now;
-        }
+        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        manager.notify(NOTIFICATION_ID, buildNotification());
+        lastProgressNotificationAt = now;
     }
 
     private Notification buildNotification() {
@@ -227,8 +236,26 @@ public class FarreoAudioService extends Service implements FarreoAudioController
     }
 
     private void stopPlaybackForUserExit() {
-        if (controller != null) controller.stopForUserExit();
-        stopForeground(true);
+        if (stopping) return;
+        stopping = true;
+        mainHandler.removeCallbacksAndMessages(null);
+        if (controller != null) {
+            controller.removeListener(this);
+            controller.stopForUserExit();
+        }
+        if (mediaSession != null) {
+            mediaSession.setPlaybackState(new PlaybackStateCompat.Builder()
+                .setState(PlaybackStateCompat.STATE_STOPPED, 0, 0f)
+                .build());
+            mediaSession.setActive(false);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE);
+        } else {
+            stopForeground(true);
+        }
+        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        manager.cancel(NOTIFICATION_ID);
         stopSelf();
     }
 
@@ -291,6 +318,7 @@ public class FarreoAudioService extends Service implements FarreoAudioController
         new Thread(() -> {
             Bitmap nextArtwork = loadArtwork(nextUrl);
             mainHandler.post(() -> {
+                if (stopping) return;
                 if (!nextUrl.equals(controller.getNotificationArtworkUrl())) return;
                 artwork = nextArtwork;
                 artworkUrl = nextUrl;

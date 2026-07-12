@@ -14,29 +14,12 @@
     left: 0;
   }
 
-  &__bars {
+  &__canvas {
+    display: block;
     height: 100%;
     width: 100%;
-    display: grid;
-    grid-template-columns: repeat(420, minmax(0, 1fr));
-    align-items: flex-start;
-    gap: 1px;
-    padding: 0 2px;
     box-sizing: border-box;
-    // Aisla el layout/paint de las 420 barras animadas: sus cambios de altura
-    // no pueden invalidar el layout del resto de la pagina.
-    contain: layout style paint;
-  }
-
-  &__bar {
-    height: var(--wave-height, 0%);
-    min-height: 0;
-    border-radius: 999px;
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(255, 255, 255, 0.2));
-    box-shadow: 0 0 10px rgba(255, 255, 255, 0.14);
-    opacity: var(--wave-opacity, 0);
-    transform-origin: top center;
-    transition: height 45ms linear, opacity 45ms linear;
+    contain: strict;
   }
 }
 
@@ -53,12 +36,6 @@ body:has(.app-sidebar--expanded) .music-wave-header:not(.music-wave-header--simp
       left: 0;
     }
 
-    &__bars {
-      // 420 huecos de 1px no caben en una pantalla movil: desbordaban el
-      // espectro y dejaban el centro fuera de la vista.
-      gap: 0.3px;
-      padding: 0;
-    }
   }
 
   body:has(.app-sidebar--expanded) .music-wave-header:not(.music-wave-header--simple) {

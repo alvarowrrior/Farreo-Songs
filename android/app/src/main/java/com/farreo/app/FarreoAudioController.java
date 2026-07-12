@@ -50,6 +50,7 @@ public class FarreoAudioController {
     private float pitch = 1f;
     private boolean shuffle = false;
     private boolean radioMode = false;
+    private boolean userExitStopping = false;
     private boolean visualizationEnabled = false;
     private Visualizer visualizer;
     private int visualizerAudioSessionId = C.AUDIO_SESSION_ID_UNSET;
@@ -61,7 +62,7 @@ public class FarreoAudioController {
         @Override
         public void run() {
             notifyProgress();
-            mainHandler.postDelayed(this, 500);
+            mainHandler.postDelayed(this, 200);
         }
     };
 
@@ -135,6 +136,7 @@ public class FarreoAudioController {
     }
 
     public JSObject loadQueue(JSArray nextTracks, int startIndex, JSObject nextSource, boolean nextShuffle, float nextPitch, float nextVolume) {
+        userExitStopping = false;
         leaveRadioInternal();
         tracks = nextTracks == null ? new JSONArray() : nextTracks;
         source = nextSource;
@@ -169,6 +171,7 @@ public class FarreoAudioController {
     }
 
     public JSObject play() {
+        userExitStopping = false;
         if (radioMode) {
             postRadio("/radio/play");
             return getState();
@@ -255,6 +258,7 @@ public class FarreoAudioController {
     }
 
     public JSObject enterRadio(String apiUrl) {
+        userExitStopping = false;
         radioMode = true;
         radioApiUrl = (apiUrl == null || apiUrl.isEmpty()) ? DEFAULT_API_URL : apiUrl;
         ensureForeground();
@@ -274,7 +278,10 @@ public class FarreoAudioController {
     public void stopForUserExit() {
         // La radio es compartida: al cerrar esta APK se corta solamente su
         // reproduccion local, sin enviar una pausa a toda la estacion.
+        userExitStopping = true;
         if (radioMode) leaveRadioInternal();
+        visualizationEnabled = false;
+        releaseVisualizer();
         player.pause();
         notifyState("state");
     }
@@ -347,7 +354,7 @@ public class FarreoAudioController {
             int captureSize = Math.min(1024, captureSizeRange[1]);
             captureSize = Math.max(captureSizeRange[0], captureSize);
             nextVisualizer.setCaptureSize(captureSize);
-            int rate = Math.min(Visualizer.getMaxCaptureRate(), 12000);
+            int rate = Math.min(Visualizer.getMaxCaptureRate(), 8000);
             nextVisualizer.setDataCaptureListener(new Visualizer.OnDataCaptureListener() {
                 @Override
                 public void onWaveFormDataCapture(Visualizer ignored, byte[] waveform, int samplingRate) {
@@ -385,7 +392,7 @@ public class FarreoAudioController {
     private void notifyFrequency(byte[] fft) {
         if (!visualizationEnabled || fft.length < 8) return;
         int availableBins = Math.max(1, (fft.length / 2) - 1);
-        int outputBins = Math.min(96, availableBins);
+        int outputBins = Math.min(64, availableBins);
         JSArray samples = new JSArray();
 
         for (int outputIndex = 0; outputIndex < outputBins; outputIndex += 1) {
@@ -587,7 +594,7 @@ public class FarreoAudioController {
     }
 
     private void ensureForeground() {
-        if (!hasTrack() && !radioMode) return;
+        if (userExitStopping || (!hasTrack() && !radioMode)) return;
         Intent intent = new Intent(context, FarreoAudioService.class);
         intent.setAction(FarreoAudioService.ACTION_START);
         try {
@@ -598,7 +605,7 @@ public class FarreoAudioController {
     }
 
     private void refreshForegroundService() {
-        if (!hasTrack() && !radioMode) return;
+        if (userExitStopping || (!hasTrack() && !radioMode)) return;
         FarreoAudioService.refresh(context);
     }
 
