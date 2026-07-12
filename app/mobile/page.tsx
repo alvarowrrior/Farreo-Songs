@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { onAuthStateChanged, signOut, updateProfile, type User } from "firebase/auth";
+import { GoogleAuthProvider, onAuthStateChanged, signInWithCredential, signInWithPopup, signOut, updateProfile, type User } from "firebase/auth";
 import {
   ArrowLeftIcon,
   ArrowUpIcon,
@@ -56,7 +56,7 @@ import {
 } from "@/lib/privatePlaylists";
 import { followGlobalPlaylist, listFollowedGlobalPlaylistIds, unfollowGlobalPlaylist } from "@/lib/globalPlaylistFollows";
 import { useHiddenSongs } from "@/lib/useHiddenSongs";
-import { parseSrt, type LyricCue } from "@/lib/lyrics";
+import { computeCurrentLyric, parseSrt, type LyricCue } from "@/lib/lyrics";
 import {
   calibrateRadioClock,
   getLiveRadioPosition,
@@ -71,10 +71,9 @@ import {
 import {
   addFarreoNativeListener,
   getFarreoNativeAudio,
-  getFarreoNativeState,
-  isFarreoNativeAudioAvailable,
   type FarreoNativeState,
 } from "@/lib/nativeAudio";
+import { getFarreoNativeGoogleAuth } from "@/lib/nativeGoogleAuth";
 
 type MobileTab = "home" | "radio" | "playlist" | "search" | "account";
 type MobilePlaylist =
@@ -222,6 +221,7 @@ export default function MobilePage() {
   const [lyricsText, setLyricsText] = useState("");
   const [profileName, setProfileName] = useState("");
   const [profileSaving, setProfileSaving] = useState(false);
+  const [loginLoading, setLoginLoading] = useState(false);
   const [actionSheet, setActionSheet] = useState<MobileActionSheet | null>(null);
   const [playlistEditor, setPlaylistEditor] = useState<PlaylistEditorState | null>(null);
   const [playlistSaving, setPlaylistSaving] = useState(false);
@@ -234,6 +234,15 @@ export default function MobilePage() {
   const selectedTracksRef = useRef<MusicTrack[]>([]);
   const playlistDragRef = useRef<{ pointerId: number; fromIndex: number; overIndex: number } | null>(null);
   const [draggedPlaylistIndex, setDraggedPlaylistIndex] = useState<number | null>(null);
+  const [mobileDeepLink, setMobileDeepLink] = useState({
+    tab: null as string | null,
+    playlistId: null as string | null,
+    playlistKind: null as string | null,
+  });
+  const handledDeepLinkRef = useRef<string | null>(null);
+  const requestedTab = mobileDeepLink.tab;
+  const requestedPlaylistId = mobileDeepLink.playlistId;
+  const requestedPlaylistKind = mobileDeepLink.playlistKind;
   const [playlistDropIndex, setPlaylistDropIndex] = useState<number | null>(null);
   const globalCarouselRef = useRef<HTMLDivElement | null>(null);
   const globalCarouselDragRef = useRef<{ pointerId: number; startX: number; startScrollLeft: number; moved: boolean; captured: boolean } | null>(null);
@@ -302,6 +311,12 @@ export default function MobilePage() {
     ? [...allGlobalCards, ...allGlobalCards, ...allGlobalCards]
     : allGlobalCards;
   const lyricCues = useMemo<LyricCue[]>(() => parseSrt(lyricsText || activeTrack?.lyricsSrt || ""), [activeTrack?.lyricsSrt, lyricsText]);
+  const activeLyric = useMemo(
+    () => nativeAvailable
+      ? computeCurrentLyric(lyricCues, activeCurrentTime, currentDuration)
+      : currentLyric,
+    [activeCurrentTime, currentDuration, currentLyric, lyricCues, nativeAvailable],
+  );
   const selectedPlaylistIsActive = Boolean(
     selectedPlaylist &&
     activeSource?.id === selectedPlaylist.id &&
@@ -312,6 +327,15 @@ export default function MobilePage() {
   useEffect(() => {
     selectedTracksRef.current = selectedTracks;
   }, [selectedTracks]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    setMobileDeepLink({
+      tab: params.get("tab"),
+      playlistId: params.get("playlist"),
+      playlistKind: params.get("kind"),
+    });
+  }, []);
 
   useEffect(() => {
     if (tab !== "playlist" || !selectedPlaylist) {
@@ -512,10 +536,24 @@ export default function MobilePage() {
     });
   };
 
+  const activateNativeAudio = useCallback(async () => {
+    const native = getFarreoNativeAudio();
+    if (!native) return null;
+
+    try {
+      const state = await native.getState();
+      setNativeState(state);
+      setNativeAvailable(true);
+      return native;
+    } catch {
+      setNativeState(null);
+      setNativeAvailable(false);
+      return null;
+    }
+  }, []);
+
   useEffect(() => {
-    const available = isFarreoNativeAudioAvailable();
-    setNativeAvailable(available);
-    if (!available) return undefined;
+    if (!nativeAvailable) return undefined;
 
     let disposed = false;
     const syncState = (payload: unknown) => {
@@ -535,12 +573,6 @@ export default function MobilePage() {
       } : prev);
     };
 
-    getFarreoNativeState()
-      .then((state) => {
-        if (!disposed && state) setNativeState(state);
-      })
-      .catch(() => undefined);
-
     const handles = [
       addFarreoNativeListener("state", syncState),
       addFarreoNativeListener("trackChanged", syncState),
@@ -559,7 +591,7 @@ export default function MobilePage() {
         void promise.then((handle) => handle?.remove()).catch(() => undefined);
       });
     };
-  }, [showMessage]);
+  }, [nativeAvailable, showMessage]);
 
   useEffect(() => {
     if (!auth) {
@@ -596,7 +628,7 @@ export default function MobilePage() {
   useEffect(() => {
     if (!playerOpen || !followLyrics) return;
     activeLyricRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
-  }, [currentLyric?.id, followLyrics, playerOpen]);
+  }, [activeLyric?.id, followLyrics, playerOpen]);
 
   useEffect(() => {
     if (!authReady) return;
@@ -636,7 +668,7 @@ export default function MobilePage() {
     options?: { shuffle?: boolean },
   ) => {
     const shuffleForThisPlay = options?.shuffle ?? activeShuffle;
-    const native = getFarreoNativeAudio();
+    const native = await activateNativeAudio();
     if (native) {
       const loaded = await native.loadQueue({
         tracks,
@@ -658,7 +690,7 @@ export default function MobilePage() {
     }
 
     playQueue(tracks, index, source);
-  }, [activePitch, activeShuffle, activeVolume, playQueue, toggleTrack]);
+  }, [activateNativeAudio, activePitch, activeShuffle, activeVolume, playQueue, toggleTrack]);
 
   const loadPlaylist = useCallback(async (
     playlist: MobilePlaylist,
@@ -722,6 +754,24 @@ export default function MobilePage() {
     );
     if (match) void loadPlaylist(match, false, false);
   }, [activeSource, allGlobalCards, libraryPlaylists, loadPlaylist, selectedPlaylist]);
+
+  useEffect(() => {
+    if (requestedTab === "radio") setTab("radio");
+    if (requestedTab === "account") setTab("account");
+  }, [requestedTab]);
+
+  useEffect(() => {
+    if (!requestedPlaylistId || (requestedPlaylistKind !== "global" && requestedPlaylistKind !== "private")) return;
+    const key = `${requestedPlaylistKind}:${requestedPlaylistId}`;
+    if (handledDeepLinkRef.current === key) return;
+
+    const candidates = requestedPlaylistKind === "global" ? allGlobalCards : libraryPlaylists;
+    const playlist = candidates.find((item) => item.id === requestedPlaylistId && item.kind === requestedPlaylistKind);
+    if (!playlist) return;
+
+    handledDeepLinkRef.current = key;
+    void loadPlaylist(playlist, false, true);
+  }, [allGlobalCards, libraryPlaylists, loadPlaylist, requestedPlaylistId, requestedPlaylistKind]);
 
   const playSong = async (song: ApiSong) => {
     const track = mapSongToTrack(song);
@@ -1037,7 +1087,7 @@ export default function MobilePage() {
   };
 
   const enterRadio = async () => {
-    const native = getFarreoNativeAudio();
+    const native = nativeAvailable ? getFarreoNativeAudio() : await activateNativeAudio();
     if (native) {
       setNativeState(await native.enterRadio({ apiUrl: MUSIC_API_URL }));
       return;
@@ -1063,7 +1113,7 @@ export default function MobilePage() {
   };
 
   const toggleMobilePlayback = async () => {
-    const native = getFarreoNativeAudio();
+    const native = nativeAvailable ? getFarreoNativeAudio() : null;
     if (native) {
       setNativeState(activeIsPlaying ? await native.pause() : await native.play());
       return;
@@ -1072,7 +1122,7 @@ export default function MobilePage() {
   };
 
   const nextMobileTrack = async () => {
-    const native = getFarreoNativeAudio();
+    const native = nativeAvailable ? getFarreoNativeAudio() : null;
     if (native) {
       setNativeState(await native.next());
       return;
@@ -1081,7 +1131,7 @@ export default function MobilePage() {
   };
 
   const previousMobileTrack = async () => {
-    const native = getFarreoNativeAudio();
+    const native = nativeAvailable ? getFarreoNativeAudio() : null;
     if (native) {
       setNativeState(await native.previous());
       return;
@@ -1090,7 +1140,7 @@ export default function MobilePage() {
   };
 
   const seekMobileTrack = async (position: number) => {
-    const native = getFarreoNativeAudio();
+    const native = nativeAvailable ? getFarreoNativeAudio() : null;
     if (native) {
       setNativeState(await native.seek({ position }));
       return;
@@ -1099,7 +1149,7 @@ export default function MobilePage() {
   };
 
   const setMobilePitch = async (pitch: number) => {
-    const native = getFarreoNativeAudio();
+    const native = nativeAvailable ? getFarreoNativeAudio() : null;
     if (native) {
       setNativeState(await native.setPitch({ pitch }));
       return;
@@ -1118,7 +1168,7 @@ export default function MobilePage() {
   };
 
   const setMobileShuffle = async () => {
-    const native = getFarreoNativeAudio();
+    const native = nativeAvailable ? getFarreoNativeAudio() : null;
     if (native) {
       setNativeState(await native.setShuffle({ shuffle: !activeShuffle }));
       return;
@@ -1439,6 +1489,30 @@ export default function MobilePage() {
     }
   };
 
+  const loginWithGoogle = async () => {
+    if (!auth) {
+      showMessage("Firebase no esta configurado.");
+      return;
+    }
+
+    setLoginLoading(true);
+    try {
+      const nativeGoogle = getFarreoNativeGoogleAuth();
+      if (nativeGoogle) {
+        const webClientId = process.env.NEXT_PUBLIC_GOOGLE_WEB_CLIENT_ID || "";
+        if (!webClientId) throw new Error("Falta configurar Google para la APK.");
+        const { idToken } = await nativeGoogle.signIn({ webClientId });
+        await signInWithCredential(auth, GoogleAuthProvider.credential(idToken));
+      } else {
+        await signInWithPopup(auth, new GoogleAuthProvider());
+      }
+    } catch (error) {
+      showMessage(error instanceof Error ? error.message : "No se pudo iniciar sesion con Google.");
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
   const renderAdvancedArtwork = () => {
     if (!activeTrack) return null;
     const advancedUrl = getMediaUrl(activeTrack.advancedCoverUrl);
@@ -1635,7 +1709,7 @@ export default function MobilePage() {
             )}
             <div>
               <h2>{user?.displayName || user?.email || "Sin sesion"}</h2>
-              <p>{nativeAvailable ? "Audio nativo disponible" : "Preview web en localhost"}</p>
+              <p>{user?.email || "Correo no disponible"}</p>
             </div>
           </article>
           {user ? (
@@ -1659,9 +1733,9 @@ export default function MobilePage() {
               </button>
             </>
           ) : (
-            <button type="button" className="mobile-farreo__account-action" onClick={() => { window.location.href = "/login"; }}>
+            <button type="button" className="mobile-farreo__account-action" onClick={() => void loginWithGoogle()} disabled={loginLoading}>
               <LogInIcon size={18} />
-              Iniciar sesion
+              {loginLoading ? "Abriendo Google..." : "Iniciar sesion con Google"}
             </button>
           )}
         </section>
@@ -1676,7 +1750,7 @@ export default function MobilePage() {
             <SongArtwork src={activeTrack.iconUrl} alt={activeTrack.name} className="mobile-farreo__mini-art" />
             <span>
               <strong>{activeTrack.name}</strong>
-              <small>{currentLyric?.text || activeSource?.name || "Farreo"}</small>
+              <small>{activeLyric?.text || activeSource?.name || "Farreo"}</small>
             </span>
           </button>
           <button type="button" className="mobile-farreo__mini-play" onClick={() => void toggleMobilePlayback()}>
@@ -1763,7 +1837,7 @@ export default function MobilePage() {
               {lyricsOpen && lyricCues.length > 0 ? (
                 <div className="mobile-farreo__lyrics-list">
                   {lyricCues.map((cue) => {
-                    const active = currentLyric?.id === cue.id;
+                    const active = activeLyric?.id === cue.id;
                     return (
                       <button
                         key={cue.id}
@@ -1787,7 +1861,7 @@ export default function MobilePage() {
                 </div>
               ) : (
                 <p className="mobile-farreo__lyrics-preview">
-                  {currentLyric?.text || (lyricCues.length > 0 || activeTrack.staticLyrics ? "Lyrics disponibles" : "Sin lyrics disponibles")}
+                  {activeLyric?.text || (lyricCues.length > 0 || activeTrack.staticLyrics ? "Lyrics disponibles" : "Sin lyrics disponibles")}
                 </p>
               )}
             </article>

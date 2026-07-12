@@ -7,14 +7,25 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
+import android.util.Log;
+
 @CapacitorPlugin(name = "FarreoNativeAudio")
 public class FarreoNativeAudioPlugin extends Plugin implements FarreoAudioController.Listener {
     private FarreoAudioController controller;
 
+    private interface ControllerAction {
+        JSObject run();
+    }
+
     @Override
     public void load() {
-        controller = FarreoAudioController.get(getContext());
-        controller.addListener(this);
+        try {
+            controller = FarreoAudioController.get(getContext());
+            controller.addListener(this);
+        } catch (RuntimeException error) {
+            controller = null;
+            Log.e("FarreoNativeAudio", "No se pudo iniciar el reproductor nativo", error);
+        }
     }
 
     @Override
@@ -31,62 +42,85 @@ public class FarreoNativeAudioPlugin extends Plugin implements FarreoAudioContro
         boolean shuffle = call.getBoolean("shuffle", false);
         float pitch = call.getDouble("pitch", 1d).floatValue();
         float volume = call.getDouble("volume", 1d).floatValue();
-        call.resolve(controller.loadQueue(tracks, startIndex, source, shuffle, pitch, volume));
+        resolveOnMain(call, () -> controller.loadQueue(tracks, startIndex, source, shuffle, pitch, volume));
     }
 
     @PluginMethod
     public void play(PluginCall call) {
-        call.resolve(controller.play());
+        resolveOnMain(call, () -> controller.play());
     }
 
     @PluginMethod
     public void pause(PluginCall call) {
-        call.resolve(controller.pause());
+        resolveOnMain(call, () -> controller.pause());
     }
 
     @PluginMethod
     public void seek(PluginCall call) {
-        call.resolve(controller.seek(call.getDouble("position", 0d)));
+        double position = call.getDouble("position", 0d);
+        resolveOnMain(call, () -> controller.seek(position));
     }
 
     @PluginMethod
     public void next(PluginCall call) {
-        call.resolve(controller.next());
+        resolveOnMain(call, () -> controller.next());
     }
 
     @PluginMethod
     public void previous(PluginCall call) {
-        call.resolve(controller.previous());
+        resolveOnMain(call, () -> controller.previous());
     }
 
     @PluginMethod
     public void setVolume(PluginCall call) {
-        call.resolve(controller.setVolume(call.getDouble("volume", 1d).floatValue()));
+        float volume = call.getDouble("volume", 1d).floatValue();
+        resolveOnMain(call, () -> controller.setVolume(volume));
     }
 
     @PluginMethod
     public void setPitch(PluginCall call) {
-        call.resolve(controller.setPitch(call.getDouble("pitch", 1d).floatValue()));
+        float pitch = call.getDouble("pitch", 1d).floatValue();
+        resolveOnMain(call, () -> controller.setPitch(pitch));
     }
 
     @PluginMethod
     public void setShuffle(PluginCall call) {
-        call.resolve(controller.setShuffle(call.getBoolean("shuffle", false)));
+        boolean shuffle = call.getBoolean("shuffle", false);
+        resolveOnMain(call, () -> controller.setShuffle(shuffle));
     }
 
     @PluginMethod
     public void enterRadio(PluginCall call) {
-        call.resolve(controller.enterRadio(call.getString("apiUrl", "")));
+        String apiUrl = call.getString("apiUrl", "");
+        resolveOnMain(call, () -> controller.enterRadio(apiUrl));
     }
 
     @PluginMethod
     public void leaveRadio(PluginCall call) {
-        call.resolve(controller.leaveRadio());
+        resolveOnMain(call, () -> controller.leaveRadio());
     }
 
     @PluginMethod
     public void getState(PluginCall call) {
-        call.resolve(controller.getState());
+        resolveOnMain(call, () -> controller.getState());
+    }
+
+    private void resolveOnMain(PluginCall call, ControllerAction action) {
+        if (!requireController(call)) return;
+        getActivity().runOnUiThread(() -> {
+            try {
+                call.resolve(action.run());
+            } catch (RuntimeException error) {
+                Log.e("FarreoNativeAudio", "Fallo al ejecutar el reproductor nativo", error);
+                call.reject("No se pudo ejecutar el reproductor nativo.");
+            }
+        });
+    }
+
+    private boolean requireController(PluginCall call) {
+        if (controller != null) return true;
+        call.reject("El reproductor nativo no esta disponible.");
+        return false;
     }
 
     @Override

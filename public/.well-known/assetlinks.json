@@ -3,9 +3,9 @@
     "relation": ["delegate_permission/common.handle_all_urls"],
     "target": {
       "namespace": "android_app",
-      "package_name": "app.vercel.farreo.twa",
+      "package_name": "com.farreo.app",
       "sha256_cert_fingerprints": [
-        "2C:77:C4:7E:01:C8:B4:6A:B6:EE:8B:7C:73:D2:DE:22:34:76:25:5B:5E:63:D1:5E:10:62:FA:01:8E:76:BC:CE"
+        "9A:EB:0C:38:93:CE:6A:D5:2E:1C:19:FF:11:71:39:53:26:65:D6:21:EF:AD:95:A8:C7:E2:B2:17:44:00:FA:E6"
       ]
     }
   }

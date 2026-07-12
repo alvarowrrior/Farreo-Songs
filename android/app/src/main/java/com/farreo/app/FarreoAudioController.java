@@ -79,7 +79,7 @@ public class FarreoAudioController {
             @Override
             public void onIsPlayingChanged(boolean isPlaying) {
                 notifyState("state");
-                FarreoAudioService.refresh(context);
+                refreshForegroundService();
             }
 
             @Override
@@ -87,7 +87,7 @@ public class FarreoAudioController {
                 int index = player.getCurrentMediaItemIndex();
                 if (index >= 0) currentIndex = index;
                 notifyState("trackChanged");
-                FarreoAudioService.refresh(context);
+                refreshForegroundService();
             }
 
             @Override
@@ -95,7 +95,7 @@ public class FarreoAudioController {
                 if (playbackState == Player.STATE_ENDED) {
                     notifyState("ended");
                 }
-                FarreoAudioService.refresh(context);
+                refreshForegroundService();
             }
         });
         mainHandler.post(progressRunnable);
@@ -290,6 +290,22 @@ public class FarreoAudioController {
         return radioMode ? "Radio" : "Farreo";
     }
 
+    public String getNotificationArtworkUrl() {
+        JSONObject track = getCurrentTrackOrNull();
+        return track == null ? "" : resolveUrl(track.optString("iconUrl", ""));
+    }
+
+    public long getNotificationPositionMs() {
+        return Math.max(0, player.getCurrentPosition());
+    }
+
+    public long getNotificationDurationMs() {
+        long duration = player.getDuration();
+        if (duration != C.TIME_UNSET && duration > 0) return duration;
+        JSONObject track = getCurrentTrackOrNull();
+        return track == null ? 0 : Math.max(0, Math.round(track.optDouble("duration", 0) * 1000));
+    }
+
     public boolean isPlaying() {
         return player.isPlaying();
     }
@@ -468,9 +484,19 @@ public class FarreoAudioController {
     }
 
     private void ensureForeground() {
+        if (!hasTrack() && !radioMode) return;
         Intent intent = new Intent(context, FarreoAudioService.class);
         intent.setAction(FarreoAudioService.ACTION_START);
-        ContextCompat.startForegroundService(context, intent);
+        try {
+            ContextCompat.startForegroundService(context, intent);
+        } catch (RuntimeException error) {
+            notifyError("No se pudo iniciar el audio en segundo plano.");
+        }
+    }
+
+    private void refreshForegroundService() {
+        if (!hasTrack() && !radioMode) return;
+        FarreoAudioService.refresh(context);
     }
 
     private String resolveUrl(String url) {
