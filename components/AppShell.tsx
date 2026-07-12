@@ -7,7 +7,7 @@ import SongInfoSidebar from "@/components/SongInfoSidebar";
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const isSimplePage = pathname.startsWith("/login");
+  const isSimplePage = pathname.startsWith("/login") || pathname.startsWith("/mobile");
 
   return (
     <>

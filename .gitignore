@@ -42,3 +42,6 @@ yarn-error.log*
 next-env.d.ts
 /backend/
 /backend_bot_discord/
+
+# Android SDK path is machine-specific.
+/android/local.properties

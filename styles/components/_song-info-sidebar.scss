@@ -123,7 +123,7 @@
   position: relative;
   width: 100%;
   aspect-ratio: 9 / 14;
-  max-height: min(58vh, 560px);
+  max-height: none;
   overflow: hidden;
   border-radius: 7px;
   background: #050505;
@@ -135,6 +135,7 @@
     height: 100%;
     display: block;
     object-fit: cover;
+    object-position: center center;
   }
 
   &::after {

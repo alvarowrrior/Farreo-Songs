@@ -8,6 +8,7 @@ const BAR_COUNT = 420;
 const sampleFrequencyData = (data: Uint8Array<ArrayBuffer>, index: number) => {
   const position = index / Math.max(1, BAR_COUNT - 1);
   const distanceFromCenter = Math.abs(position - 0.5) * 2;
+  // Los extremos representan los agudos y el centro los graves.
   const curvedPosition = Math.pow(distanceFromCenter, 1.55);
   const center = Math.min(data.length - 1, Math.floor(curvedPosition * (data.length - 1)));
   const previous = data[Math.max(0, center - 1)] ?? 0;

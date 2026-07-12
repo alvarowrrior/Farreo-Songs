@@ -40,6 +40,8 @@ interface MusicPlayerContextValue {
   volume: number;
   duration: number;
   isShuffle: boolean;
+  canPlayNext: boolean;
+  canPlayPrev: boolean;
   autoRandomPitch: boolean;
   lyricsEnabled: boolean;
   playerMode: "local" | "radio";
@@ -298,6 +300,8 @@ export function PlayerProgressBar() {
 
 export default function MusicPlayerProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+  const isMobileRoute = pathname.startsWith("/mobile");
+  const playerStorageKey = isMobileRoute ? `${STORAGE_KEY}-mobile` : STORAGE_KEY;
   const audioRef = useRef<HTMLAudioElement | null>(null);
   // Doble buffer (gapless): dos elementos fisicos de audio. audioRef.current
   // SIEMPRE apunta al elemento activo; el otro precarga la siguiente cancion.
@@ -1202,7 +1206,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     hasRestoredRef.current = true;
 
     try {
-      const rawState = window.localStorage.getItem(STORAGE_KEY);
+      const rawState = window.localStorage.getItem(playerStorageKey);
       if (!rawState) {
         setStorageReady(true);
         return;
@@ -1234,11 +1238,11 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       setLyricsEnabled(typeof state.lyricsEnabled === "boolean" ? state.lyricsEnabled : true);
       setIsPlaying(false);
     } catch {
-      window.localStorage.removeItem(STORAGE_KEY);
+      window.localStorage.removeItem(playerStorageKey);
     } finally {
       setStorageReady(true);
     }
-  }, []);
+  }, [playerStorageKey]);
 
   useEffect(() => {
     return () => {
@@ -1258,10 +1262,15 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     if (typeof window === "undefined" || !storageReady) return;
     if (playerMode === "radio") return;
 
+    const keepOnlyMobilePlaylistReference = isMobileRoute && (
+      currentSource?.type === "global" || currentSource?.type === "private"
+    );
     const state: StoredPlayerState = {
       currentTrack,
-      queue,
-      queueSource,
+      // En movil la lista se recarga desde Farreo al volver a abrirla: asi no
+      // persistimos una copia larga y potencialmente desactualizada.
+      queue: keepOnlyMobilePlaylistReference ? [] : queue,
+      queueSource: keepOnlyMobilePlaylistReference ? null : queueSource,
       currentSource,
       currentTime: persistedTime,
       playbackPitch,
@@ -1272,27 +1281,27 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       lyricsEnabled,
     };
 
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  }, [autoRandomPitch, currentSource, persistedTime, currentTrack, isShuffle, lastNonZeroVolume, lyricsEnabled, playbackPitch, playerMode, queue, queueSource, storageReady, volume]);
+    window.localStorage.setItem(playerStorageKey, JSON.stringify(state));
+  }, [autoRandomPitch, currentSource, isMobileRoute, persistedTime, currentTrack, isShuffle, lastNonZeroVolume, lyricsEnabled, playbackPitch, playerMode, playerStorageKey, queue, queueSource, storageReady, volume]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !storageReady) return;
 
     try {
-      const rawState = window.localStorage.getItem(STORAGE_KEY);
+      const rawState = window.localStorage.getItem(playerStorageKey);
       const state = rawState ? JSON.parse(rawState) as Partial<StoredPlayerState> : {};
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      window.localStorage.setItem(playerStorageKey, JSON.stringify({
         ...state,
         volume,
         lastNonZeroVolume,
       }));
     } catch {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      window.localStorage.setItem(playerStorageKey, JSON.stringify({
         volume,
         lastNonZeroVolume,
       }));
     }
-  }, [lastNonZeroVolume, storageReady, volume]);
+  }, [lastNonZeroVolume, playerStorageKey, storageReady, volume]);
 
   useEffect(() => {
     if (!isPlaying) return;
@@ -1521,6 +1530,9 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     stop: () => apiRef.current.stop(),
   }), []);
 
+  const canPlayNext = playerMode === "radio" ? Boolean(radioState?.currentItem) : queue.length > 1 || (!currentTrack && queue.length > 0);
+  const canPlayPrev = playerMode === "radio" ? Boolean(radioState?.currentItem) : history.length > 0 || queue.length > 1;
+
   const contextValue = useMemo<MusicPlayerContextValue>(() => ({
     currentTrack,
     currentSource,
@@ -1530,6 +1542,8 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     volume,
     duration,
     isShuffle,
+    canPlayNext,
+    canPlayPrev,
     autoRandomPitch,
     lyricsEnabled,
     playerMode,
@@ -1540,7 +1554,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     setAutoRandomPitch,
     setLyricsEnabled,
     ...stableApi,
-  }), [autoRandomPitch, currentSource, currentTrack, duration, getAudioFrequencyData, hasCurrentLyrics, isPlaying, isRadioAwaitingUserGesture, isRadioBuffering, isShuffle, lyricsEnabled, playbackPitch, playerMode, radioState, stableApi, volume]);
+  }), [autoRandomPitch, canPlayNext, canPlayPrev, currentSource, currentTrack, duration, getAudioFrequencyData, hasCurrentLyrics, isPlaying, isRadioAwaitingUserGesture, isRadioBuffering, isShuffle, lyricsEnabled, playbackPitch, playerMode, radioState, stableApi, volume]);
 
   const timeContextValue = useMemo<MusicPlayerTimeContextValue>(() => ({
     currentTime,
@@ -1548,13 +1562,14 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     currentLyric,
   }), [currentLyric, currentTime, visualCurrentTime]);
   const currentSourceHref = getSourceHref(currentSource);
+  const showDesktopPlayer = !pathname.startsWith("/admin") && !pathname.startsWith("/mobile");
 
   return (
     <MusicPlayerContext.Provider value={contextValue}>
       <MusicPlayerTimeContext.Provider value={timeContextValue}>
       {children}
 
-      {!pathname.startsWith("/admin") && (
+      {showDesktopPlayer && (
       <>
       <LyricsDisplay lyric={currentLyric} visible={lyricsEnabled && hasCurrentLyrics} />
       <div className="playlist-admin__player">

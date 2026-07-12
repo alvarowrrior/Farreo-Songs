@@ -3,7 +3,7 @@ export const MUSIC_API_URL =
 
 export const getMediaUrl = (url?: string | null) => {
   if (!url) return "";
-  if (url.startsWith("http")) return url;
+  if (/^(https?:|data:|blob:|\/\/)/i.test(url)) return url;
   return `${MUSIC_API_URL}${url}`;
 };
 

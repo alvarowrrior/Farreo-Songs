@@ -18,7 +18,7 @@
     height: 100%;
     width: 100%;
     display: grid;
-    grid-template-columns: repeat(420, minmax(1px, 1fr));
+    grid-template-columns: repeat(420, minmax(0, 1fr));
     align-items: flex-start;
     gap: 1px;
     padding: 0 2px;
@@ -54,8 +54,10 @@ body:has(.app-sidebar--expanded) .music-wave-header:not(.music-wave-header--simp
     }
 
     &__bars {
-      gap: 1px;
-      padding: 0 2px;
+      // 420 huecos de 1px no caben en una pantalla movil: desbordaban el
+      // espectro y dejaban el centro fuera de la vista.
+      gap: 0.3px;
+      padding: 0;
     }
   }
 
