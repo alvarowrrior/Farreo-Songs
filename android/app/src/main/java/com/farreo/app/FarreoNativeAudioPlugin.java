@@ -1,6 +1,9 @@
 package com.farreo.app;
 
 import android.Manifest;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
+import android.os.Build;
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.PermissionState;
@@ -112,6 +115,22 @@ public class FarreoNativeAudioPlugin extends Plugin implements FarreoAudioContro
     @PluginMethod
     public void getState(PluginCall call) {
         resolveOnMain(call, () -> controller.getState());
+    }
+
+    @PluginMethod
+    public void getAppInfo(PluginCall call) {
+        try {
+            PackageInfo packageInfo = getContext().getPackageManager().getPackageInfo(getContext().getPackageName(), 0);
+            long versionCode = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+                ? packageInfo.getLongVersionCode()
+                : packageInfo.versionCode;
+            JSObject result = new JSObject();
+            result.put("version", packageInfo.versionName);
+            result.put("build", versionCode);
+            call.resolve(result);
+        } catch (PackageManager.NameNotFoundException error) {
+            call.reject("No se pudo leer la version instalada.", error);
+        }
     }
 
     @PluginMethod

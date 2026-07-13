@@ -54,6 +54,7 @@ type NativePlugin = {
   enterRadio: (payload?: { apiUrl?: string }) => Promise<FarreoNativeState>;
   leaveRadio: () => Promise<FarreoNativeState>;
   getState: () => Promise<FarreoNativeState>;
+  getAppInfo: () => Promise<{ version: string; build: number }>;
   enableVisualization: () => Promise<{ enabled: boolean }>;
   addListener: (
     eventName: FarreoNativeEvent,

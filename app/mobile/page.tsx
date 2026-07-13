@@ -319,6 +319,7 @@ export default function MobilePage() {
   const [query, setQuery] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [nativeAvailable, setNativeAvailable] = useState(false);
+  const [apkVersion, setApkVersion] = useState<string | null>(null);
   const [nativeState, setNativeState] = useState<FarreoNativeState | null>(null);
   const [playerOpen, setPlayerOpen] = useState(false);
   const [playerClosing, setPlayerClosing] = useState(false);
@@ -893,6 +894,24 @@ export default function MobilePage() {
       return null;
     }
   }, [applyNativeState]);
+
+  useEffect(() => {
+    const native = getFarreoNativeAudio();
+    if (!native) return;
+
+    let disposed = false;
+    void native.getAppInfo()
+      .then((info) => {
+        if (!disposed && info.version) setApkVersion(info.version);
+      })
+      .catch(() => {
+        if (!disposed) setApkVersion(null);
+      });
+
+    return () => {
+      disposed = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!nativeAvailable) return undefined;
@@ -2172,7 +2191,7 @@ export default function MobilePage() {
       )}
 
       {tab === "account" && (
-        <section className="mobile-farreo__section">
+        <section className="mobile-farreo__section mobile-farreo__section--account">
           <article className="mobile-farreo__account-card">
             {user?.photoURL ? (
               // eslint-disable-next-line @next/next/no-img-element
@@ -2211,6 +2230,7 @@ export default function MobilePage() {
               {loginLoading ? "Abriendo Google..." : "Iniciar sesion con Google"}
             </button>
           )}
+          {apkVersion && <small className="mobile-farreo__apk-version">Farreo v{apkVersion}</small>}
         </section>
       )}
 
