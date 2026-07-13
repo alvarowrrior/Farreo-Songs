@@ -311,17 +311,23 @@ public class FarreoAudioService extends Service implements FarreoAudioController
             artwork = null;
             artworkUrl = "";
             artworkLoadingUrl = "";
+            updateMediaMetadata();
             return;
         }
 
+        // Nunca mostramos la portada anterior mientras llega la nueva. Ademas
+        // de ser confuso, Android puede cachearla como metadata de la pista nueva.
+        artwork = null;
+        artworkUrl = "";
         artworkLoadingUrl = nextUrl;
+        updateMediaMetadata();
         new Thread(() -> {
             Bitmap nextArtwork = loadArtwork(nextUrl);
             mainHandler.post(() -> {
                 if (stopping) return;
                 if (!nextUrl.equals(controller.getNotificationArtworkUrl())) return;
                 artwork = nextArtwork;
-                artworkUrl = nextUrl;
+                artworkUrl = nextArtwork == null ? "" : nextUrl;
                 artworkLoadingUrl = "";
                 NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
                 manager.notify(NOTIFICATION_ID, buildNotification());

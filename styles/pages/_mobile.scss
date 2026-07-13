@@ -27,6 +27,33 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
     padding-bottom: 12rem;
   }
 
+  &__app-loading {
+    display: grid;
+    place-items: center;
+    padding: 1rem;
+    background: #080808;
+  }
+
+  &__app-loading-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.62rem;
+    animation: mobile-farreo-loader-appear 220ms ease both;
+
+    img {
+      width: 112px;
+      height: auto;
+      object-fit: contain;
+    }
+
+    small {
+      color: #999;
+      font-size: 0.78rem;
+      font-weight: 750;
+    }
+  }
+
   &,
   * {
     box-sizing: border-box;
@@ -1237,6 +1264,10 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
     &::-webkit-scrollbar {
       display: none;
     }
+
+    button {
+      touch-action: pan-y;
+    }
   }
 
   &__sheet-handle {
@@ -1354,6 +1385,7 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
     input {
       width: 100%;
       accent-color: #1ed760;
+      touch-action: pan-y;
     }
   }
 
@@ -1787,6 +1819,18 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
 @keyframes mobile-farreo-spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes mobile-farreo-loader-appear {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 

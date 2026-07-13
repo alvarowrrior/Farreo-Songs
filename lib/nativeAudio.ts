@@ -22,6 +22,7 @@ export interface FarreoNativeQueuePayload {
 
 export interface FarreoNativeState {
   isAvailable: boolean;
+  stateVersion?: number;
   isPlaying: boolean;
   isBuffering?: boolean;
   currentTrack: MusicTrack | null;

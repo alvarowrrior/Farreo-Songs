@@ -49,6 +49,7 @@ public class FarreoAudioController {
     private float volume = 1f;
     private float pitch = 1f;
     private boolean shuffle = false;
+    private long stateVersion = 0;
     private boolean radioMode = false;
     private boolean userExitStopping = false;
     private boolean visualizationEnabled = false;
@@ -165,6 +166,7 @@ public class FarreoAudioController {
         currentIndex = Math.max(0, Math.min(startIndex, player.getMediaItemCount() - 1));
         player.setVolume(volume);
         player.setPlaybackParameters(new PlaybackParameters(pitch, pitch));
+        player.setShuffleModeEnabled(shuffle);
         player.seekTo(currentIndex, 0);
         player.prepare();
         ensureForeground();
@@ -298,6 +300,7 @@ public class FarreoAudioController {
     public JSObject getState() {
         JSObject state = new JSObject();
         state.put("isAvailable", true);
+        state.put("stateVersion", stateVersion);
         state.put("isPlaying", player.isPlaying());
         state.put("isBuffering", player.getPlaybackState() == Player.STATE_BUFFERING);
         state.put("currentTrack", getCurrentTrackOrNull());
@@ -572,6 +575,7 @@ public class FarreoAudioController {
     }
 
     private void notifyState(String eventName) {
+        stateVersion += 1;
         JSObject state = getState();
         for (Listener listener : listeners) {
             listener.onControllerEvent(eventName, state);
