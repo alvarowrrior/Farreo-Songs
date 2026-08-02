@@ -6,6 +6,7 @@ import {
   ArrowLeftIcon,
   ArrowUpIcon,
   AudioLinesIcon,
+  ChevronDownIcon,
   DicesIcon,
   Globe2Icon,
   GripVerticalIcon,
@@ -52,10 +53,16 @@ import {
   listOwnPrivatePlaylists,
   removeSongFromPrivatePlaylist,
   reorderPrivatePlaylistSongs,
+  touchPrivatePlaylist,
   updatePrivatePlaylist,
   type PrivatePlaylist,
 } from "@/lib/privatePlaylists";
-import { followGlobalPlaylist, listFollowedGlobalPlaylistIds, unfollowGlobalPlaylist } from "@/lib/globalPlaylistFollows";
+import {
+  followGlobalPlaylist,
+  listFollowedGlobalPlaylists,
+  touchFollowedGlobalPlaylist,
+  unfollowGlobalPlaylist,
+} from "@/lib/globalPlaylistFollows";
 import { useHiddenSongs } from "@/lib/useHiddenSongs";
 import { computeCurrentLyric, parseSrt, type CurrentLyric, type LyricCue } from "@/lib/lyrics";
 import {
@@ -75,11 +82,13 @@ import {
   type FarreoNativeState,
 } from "@/lib/nativeAudio";
 import { getFarreoNativeGoogleAuth } from "@/lib/nativeGoogleAuth";
+import { formatPlaylistDuration } from "@/lib/playlistDuration";
+import { playlistActivityTime } from "@/lib/playlistLibraryOrder";
 
 type MobileTab = "home" | "radio" | "playlist" | "search" | "account";
 type MobilePlaylist =
-  | { kind: "private"; id: string; name: string; iconUrl?: string | null; count: number; visibility?: "private" | "public" }
-  | { kind: "global"; id: string; name: string; iconUrl?: string | null; count: number; followed?: boolean };
+  | { kind: "private"; id: string; name: string; iconUrl?: string | null; count: number; visibility?: "private" | "public"; activityAt?: string | null }
+  | { kind: "global"; id: string; name: string; iconUrl?: string | null; count: number; followed?: boolean; activityAt?: string | null };
 
 interface ApiPlaylist {
   id?: string;
@@ -111,6 +120,15 @@ type PlaylistEditorState = {
   visibility: "private" | "public";
 };
 
+type MobileAppUpdate = {
+  latestVersion: string;
+  latestBuild: number;
+  installedVersion: string;
+  installedBuild: number;
+  message?: string;
+  downloadUrl?: string;
+};
+
 const toMobilePrivatePlaylist = (playlist: PrivatePlaylist): MobilePlaylist => ({
   kind: "private",
   id: playlist.id,
@@ -118,6 +136,7 @@ const toMobilePrivatePlaylist = (playlist: PrivatePlaylist): MobilePlaylist => (
   iconUrl: playlist.iconUrl,
   count: playlist.songIds.length,
   visibility: playlist.visibility,
+  activityAt: playlist.lastOpenedAt || playlist.createdAt,
 });
 
 const formatTime = (seconds?: number | null) => {
@@ -153,6 +172,18 @@ const songMatchesQuery = (song: ApiSong, query: string) => {
   return [song.name, ...(song.variantes || [])]
     .map(normalizeSearch)
     .some((value) => value.includes(q));
+};
+
+const SEARCH_PAGE_SIZE = 30;
+
+const getCreatedAtTime = (value: ApiSong["createdAt"]) => {
+  if (!value) return 0;
+  if (typeof value === "string") {
+    const time = new Date(value).getTime();
+    return Number.isFinite(time) ? time : 0;
+  }
+  if (typeof value === "object" && "seconds" in value) return value.seconds * 1000;
+  return 0;
 };
 
 const mapSongToTrack = (song: ApiSong, addedAt?: string | null): MusicTrack => ({
@@ -312,14 +343,17 @@ export default function MobilePage() {
   const [songs, setSongs] = useState<ApiSong[]>([]);
   const [globalPlaylists, setGlobalPlaylists] = useState<ApiPlaylistInfo[]>([]);
   const [followedIds, setFollowedIds] = useState<Set<string>>(new Set());
+  const [followedActivity, setFollowedActivity] = useState<Map<string, string | null>>(new Map());
   const [privatePlaylists, setPrivatePlaylists] = useState<PrivatePlaylist[]>([]);
   const [selectedPlaylist, setSelectedPlaylist] = useState<MobilePlaylist | null>(null);
   const [selectedTracks, setSelectedTracks] = useState<MusicTrack[]>([]);
   const [loadingPlaylist, setLoadingPlaylist] = useState(false);
   const [query, setQuery] = useState("");
+  const [searchPage, setSearchPage] = useState(1);
   const [message, setMessage] = useState<string | null>(null);
   const [nativeAvailable, setNativeAvailable] = useState(false);
   const [apkVersion, setApkVersion] = useState<string | null>(null);
+  const [availableAppUpdate, setAvailableAppUpdate] = useState<MobileAppUpdate | null>(null);
   const [nativeState, setNativeState] = useState<FarreoNativeState | null>(null);
   const [playerOpen, setPlayerOpen] = useState(false);
   const [playerClosing, setPlayerClosing] = useState(false);
@@ -336,8 +370,10 @@ export default function MobilePage() {
   const [playlistSaving, setPlaylistSaving] = useState(false);
   const [radioPreviewState, setRadioPreviewState] = useState<RadioState | null>(null);
   const [showPlaylistReturn, setShowPlaylistReturn] = useState(false);
+  const [ownLibraryCanScrollDown, setOwnLibraryCanScrollDown] = useState(false);
   const activeLyricRef = useRef<HTMLButtonElement | null>(null);
   const playlistHeroRef = useRef<HTMLElement | null>(null);
+  const ownLibraryScrollRef = useRef<HTMLDivElement | null>(null);
   const longPressTimerRef = useRef<number | null>(null);
   const longPressFiredRef = useRef(false);
   const selectedTracksRef = useRef<MusicTrack[]>([]);
@@ -396,10 +432,20 @@ export default function MobilePage() {
     [isVisible, songs],
   );
 
+  const matchingSongs = useMemo(() => visibleSongs
+    .map((song, index) => ({ song, index }))
+    .filter(({ song }) => !query.trim() || songMatchesQuery(song, query))
+    .sort((left, right) => getCreatedAtTime(right.song.createdAt) - getCreatedAtTime(left.song.createdAt) || left.index - right.index)
+    .map(({ song }) => song), [query, visibleSongs]);
+
   const searchedSongs = useMemo(
-    () => visibleSongs.filter((song) => songMatchesQuery(song, query)).slice(0, 35),
-    [query, visibleSongs],
+    () => matchingSongs.slice(0, searchPage * SEARCH_PAGE_SIZE),
+    [matchingSongs, searchPage],
   );
+
+  useEffect(() => {
+    setSearchPage(1);
+  }, [query]);
 
   const libraryPlaylists = useMemo<MobilePlaylist[]>(() => [
     ...privatePlaylists.map((playlist) => ({
@@ -409,6 +455,7 @@ export default function MobilePage() {
       iconUrl: playlist.iconUrl,
       count: playlist.songIds.length,
       visibility: playlist.visibility,
+      activityAt: playlist.lastOpenedAt || playlist.createdAt,
     })),
     ...globalPlaylists
       .filter((playlist) => followedIds.has(playlist.id))
@@ -419,8 +466,39 @@ export default function MobilePage() {
         iconUrl: playlist.iconUrl,
         count: playlist.numCanciones,
         followed: true,
+        activityAt: followedActivity.get(playlist.id),
       })),
-  ], [followedIds, globalPlaylists, privatePlaylists]);
+  ].sort((left, right) => playlistActivityTime(right.activityAt) - playlistActivityTime(left.activityAt)), [followedActivity, followedIds, globalPlaylists, privatePlaylists]);
+
+  const updateOwnLibraryScrollHint = useCallback(() => {
+    const container = ownLibraryScrollRef.current;
+    if (!container) {
+      setOwnLibraryCanScrollDown(false);
+      return;
+    }
+
+    const remainingScroll = container.scrollHeight - container.clientHeight - container.scrollTop;
+    setOwnLibraryCanScrollDown(remainingScroll > 4);
+  }, []);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(updateOwnLibraryScrollHint);
+    const container = ownLibraryScrollRef.current;
+    if (!container || typeof ResizeObserver === "undefined") {
+      return () => window.cancelAnimationFrame(frame);
+    }
+
+    const observer = new ResizeObserver(updateOwnLibraryScrollHint);
+    observer.observe(container);
+    if (container.firstElementChild instanceof HTMLElement) {
+      observer.observe(container.firstElementChild);
+    }
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [libraryPlaylists.length, tab, updateOwnLibraryScrollHint]);
 
   const allGlobalCards = useMemo<MobilePlaylist[]>(
     () => globalPlaylists.map((playlist) => ({
@@ -444,6 +522,9 @@ export default function MobilePage() {
   const displayedPitch = pitchPreview ?? activePitch;
   const activeVolume = nativeAvailable ? nativeState?.volume ?? volume : volume;
   const activeShuffle = nativeAvailable ? nativeState?.shuffle ?? isShuffle : isShuffle;
+  const activeAutoRandomPitch = nativeAvailable
+    ? nativeState?.autoRandomPitch ?? autoRandomPitch
+    : autoRandomPitch;
   const activeCanPlayNext = nativeAvailable ? Boolean(nativeState?.canPlayNext) : canPlayNext;
   const activeCanPlayPrev = nativeAvailable ? Boolean(nativeState?.canPlayPrev) : canPlayPrev;
   const displayedRadioState = radioState ?? radioPreviewState;
@@ -594,15 +675,17 @@ export default function MobilePage() {
     if (!targetUser) {
       setPrivatePlaylists([]);
       setFollowedIds(new Set());
+      setFollowedActivity(new Map());
       return;
     }
 
     const [own, followed] = await Promise.all([
       listOwnPrivatePlaylists(targetUser.uid),
-      listFollowedGlobalPlaylistIds(targetUser.uid),
+      listFollowedGlobalPlaylists(targetUser.uid),
     ]);
     setPrivatePlaylists(own);
-    setFollowedIds(new Set(followed));
+    setFollowedIds(new Set(followed.map((item) => item.playlistId)));
+    setFollowedActivity(new Map(followed.map((item) => [item.playlistId, item.lastOpenedAt || item.followedAt])));
   }, [user]);
 
   const closeActionSheet = () => setActionSheet(null);
@@ -623,6 +706,7 @@ export default function MobilePage() {
   const longPressProps = (open: () => void) => ({
     onPointerDown: (event: ReactPointerEvent) => {
       if (event.pointerType === "mouse" && event.button !== 0) return;
+      if ((event.target as Element).closest("[data-no-long-press]")) return;
       clearLongPress();
       longPressFiredRef.current = false;
       longPressTimerRef.current = window.setTimeout(() => {
@@ -635,6 +719,7 @@ export default function MobilePage() {
     onPointerLeave: clearLongPress,
     onContextMenu: (event: ReactMouseEvent) => {
       event.preventDefault();
+      if ((event.target as Element).closest("[data-no-long-press]")) return;
       clearLongPress();
       open();
     },
@@ -895,21 +980,71 @@ export default function MobilePage() {
     }
   }, [applyNativeState]);
 
+  const openAppUpdate = useCallback(async (url: string) => {
+    const native = getFarreoNativeAudio();
+    try {
+      if (native?.openExternalUrl) {
+        await native.openExternalUrl({ url });
+        return;
+      }
+    } catch {
+      // Older APKs fall back to normal navigation.
+    }
+    window.location.assign(url);
+  }, []);
+
   useEffect(() => {
     const native = getFarreoNativeAudio();
     if (!native) return;
 
     let disposed = false;
-    void native.getAppInfo()
-      .then((info) => {
-        if (!disposed && info.version) setApkVersion(info.version);
-      })
-      .catch(() => {
+    const checkForUpdate = async () => {
+      let info: Awaited<ReturnType<typeof native.getAppInfo>>;
+      try {
+        info = await native.getAppInfo();
+        if (disposed) return;
+        setApkVersion(info.version || null);
+      } catch {
         if (!disposed) setApkVersion(null);
-      });
+        return;
+      }
+
+      try {
+        const response = await fetch(`/mobile-app-version.json?check=${Date.now()}`, {
+          cache: "no-store",
+        });
+        if (!response.ok) return;
+
+        const release = await response.json() as Partial<MobileAppUpdate>;
+        const latestBuild = Number(release.latestBuild);
+        if (disposed || !Number.isInteger(latestBuild)) return;
+
+        if (latestBuild > info.build) {
+          setAvailableAppUpdate({
+            latestVersion: release.latestVersion || String(latestBuild),
+            latestBuild,
+            installedVersion: info.version,
+            installedBuild: info.build,
+            message: release.message,
+            downloadUrl: release.downloadUrl,
+          });
+        } else {
+          setAvailableAppUpdate(null);
+        }
+      } catch {
+        // An unavailable manifest must never prevent the app from opening.
+      }
+    };
+
+    void checkForUpdate();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") void checkForUpdate();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       disposed = true;
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);
 
@@ -1036,14 +1171,16 @@ export default function MobilePage() {
         if (user) {
           const [own, followed] = await Promise.all([
             listOwnPrivatePlaylists(user.uid),
-            listFollowedGlobalPlaylistIds(user.uid),
+            listFollowedGlobalPlaylists(user.uid),
           ]);
           setPrivatePlaylists(own);
-          setFollowedIds(new Set(followed));
+          setFollowedIds(new Set(followed.map((item) => item.playlistId)));
+          setFollowedActivity(new Map(followed.map((item) => [item.playlistId, item.lastOpenedAt || item.followedAt])));
           setLoadedSessionUserId(user.uid);
         } else {
           setPrivatePlaylists([]);
           setFollowedIds(new Set());
+          setFollowedActivity(new Map());
           setLoadedSessionUserId(null);
         }
       } catch {
@@ -1070,7 +1207,8 @@ export default function MobilePage() {
           tracks,
           startIndex: index,
           source,
-          shuffle: shuffleForThisPlay,
+          shuffle: options?.shuffle === false ? activeShuffle : shuffleForThisPlay,
+          autoRandomPitch: activeAutoRandomPitch,
           pitch: activePitch,
           volume: activeVolume,
         });
@@ -1090,7 +1228,7 @@ export default function MobilePage() {
       setPlaybackStarting(false);
       throw error;
     }
-  }, [activateNativeAudio, activePitch, activeShuffle, activeVolume, applyNativeState, beginPlaybackFeedback, playQueue, toggleTrack]);
+  }, [activateNativeAudio, activeAutoRandomPitch, activePitch, activeShuffle, activeVolume, applyNativeState, beginPlaybackFeedback, playQueue, toggleTrack]);
 
   const loadPlaylist = useCallback(async (
     playlist: MobilePlaylist,
@@ -1120,12 +1258,24 @@ export default function MobilePage() {
           count: tracks.length,
         };
         source = { id: playlist.id, name: resolvedPlaylist.name, type: "global" };
+        if (openPlaylistTab && user && followedIds.has(playlist.id)) {
+          const openedAt = new Date().toISOString();
+          setFollowedActivity((current) => new Map(current).set(playlist.id, openedAt));
+          void touchFollowedGlobalPlaylist(user.uid, playlist.id).catch(() => undefined);
+        }
       } else {
         const fullPlaylist = await getPrivatePlaylist(playlist.id);
         if (!fullPlaylist) throw new Error("Playlist no encontrada.");
         tracks = privatePlaylistTracks(fullPlaylist);
         resolvedPlaylist = toMobilePrivatePlaylist(fullPlaylist);
         source = { id: playlist.id, name: resolvedPlaylist.name, type: "private" };
+        if (openPlaylistTab && user?.uid === fullPlaylist.ownerId) {
+          const openedAt = new Date().toISOString();
+          setPrivatePlaylists((current) => current.map((item) =>
+            item.id === playlist.id ? { ...item, lastOpenedAt: openedAt } : item
+          ));
+          void touchPrivatePlaylist(playlist.id).catch(() => undefined);
+        }
       }
 
       const playbackTracks = getPlaybackOrder(tracks);
@@ -1143,7 +1293,7 @@ export default function MobilePage() {
     } finally {
       setLoadingPlaylist(false);
     }
-  }, [activeShuffle, activeSource, isVisible, loadQueue, playTracks, privatePlaylistTracks, showMessage]);
+  }, [activeShuffle, activeSource, followedIds, isVisible, loadQueue, playTracks, privatePlaylistTracks, showMessage, user]);
 
   useEffect(() => {
     if (
@@ -1447,6 +1597,8 @@ export default function MobilePage() {
 
     event.preventDefault();
     event.stopPropagation();
+    clearLongPress();
+    longPressFiredRef.current = false;
     event.currentTarget.setPointerCapture?.(event.pointerId);
     playlistDragRef.current = { pointerId: event.pointerId, fromIndex, overIndex: fromIndex };
     setDraggedPlaylistIndex(fromIndex);
@@ -1497,7 +1649,7 @@ export default function MobilePage() {
       const nextState = await radioPost<RadioState>("/radio/queue/songs", {
         songIds: [song.id],
         insertAt: "last",
-        randomPitch: autoRandomPitch,
+        randomPitch: activeAutoRandomPitch,
         pitch: activePitch,
       });
       calibrateRadioClock(nextState, Date.now());
@@ -1611,13 +1763,18 @@ export default function MobilePage() {
     setPitchPreview(null);
   };
 
-  const randomizeMobilePitch = async () => {
-    setAutoRandomPitch(true);
-    await setMobilePitch(Math.random() * (1.2 - 0.8) + 0.8);
+  const toggleMobileRandomPitch = async () => {
+    const enabled = !activeAutoRandomPitch;
+    const shouldRandomizeCurrentTrack = enabled && Math.abs(activePitch - 1) < 0.005;
+    setAutoRandomPitch(enabled);
+    const native = nativeAvailable ? getFarreoNativeAudio() : null;
+    if (native?.setAutoRandomPitch) applyNativeState(await native.setAutoRandomPitch({ enabled }));
+    if (shouldRandomizeCurrentTrack) {
+      await setMobilePitch(Math.random() * (1.2 - 0.8) + 0.8);
+    }
   };
 
   const resetMobilePitch = async () => {
-    setAutoRandomPitch(false);
     await setMobilePitch(1);
   };
 
@@ -1734,22 +1891,6 @@ export default function MobilePage() {
     </button>
   );
 
-  const renderCreatePlaylistCard = () => (
-    <button
-      type="button"
-      key="create-private-playlist"
-      className="mobile-farreo__playlist-card mobile-farreo__playlist-card--compact mobile-farreo__playlist-card--create"
-      onClick={() => openPlaylistEditor("create")}
-    >
-      <span className="mobile-farreo__playlist-art mobile-farreo__playlist-art--create">
-        <ListMusicIcon size={22} />
-        <PlusIcon size={16} />
-      </span>
-      <span className="mobile-farreo__playlist-title">Nueva Playlist</span>
-      <span className="mobile-farreo__playlist-meta">Crear privada</span>
-    </button>
-  );
-
   const renderPlaylistDetail = () => {
     if (!selectedPlaylist) {
       return (
@@ -1785,7 +1926,11 @@ export default function MobilePage() {
               <div className="mobile-farreo__playlist-hero-copy">
                 <span className="mobile-farreo__eyebrow">{selectedPlaylist.kind === "private" ? "Playlist propia" : "Playlist global"}</span>
                 <h1>{selectedPlaylist.name}</h1>
-                <p>{selectedTracks.length} canciones{selectedPlaylist.kind === "private" && selectedPlaylist.visibility === "private" ? " · Privada" : ""}</p>
+                <p>
+                  {selectedTracks.length} canciones, {formatPlaylistDuration(selectedTracks)} · {selectedPlaylist.kind === "private"
+                    ? selectedPlaylist.visibility === "public" ? "Pública" : "Privada"
+                    : "Pública"}
+                </p>
               </div>
             </div>
           </header>
@@ -1892,12 +2037,17 @@ export default function MobilePage() {
                     {selectedPlaylist.kind === "private" && (
                       <button
                         type="button"
+                        data-no-long-press
                         className="mobile-farreo__drag-handle"
                         onPointerDown={(event) => startPlaylistDrag(event, index)}
                         onPointerMove={updatePlaylistDrag}
                         onPointerUp={(event) => void finishPlaylistDrag(event)}
                         onPointerCancel={clearPlaylistDrag}
                         onClick={(event) => event.stopPropagation()}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                        }}
                         aria-label={`Mover ${track.name}`}
                       >
                         <GripVerticalIcon size={19} />
@@ -2043,9 +2193,19 @@ export default function MobilePage() {
 
       {tab === "home" && (
         <section className="mobile-farreo__section">
-          <div className="mobile-farreo__section-title">
+          <div className="mobile-farreo__section-title mobile-farreo__section-title--library">
             <HomeIcon size={18} />
             <h2>Para ti</h2>
+            <button
+              type="button"
+              className="mobile-farreo__section-create"
+              onClick={() => openPlaylistEditor("create")}
+              title="Nueva playlist"
+              aria-label="Nueva playlist"
+            >
+              <PlusIcon size={17} />
+              <span>Nueva playlist</span>
+            </button>
           </div>
           {!user && (
             <div className="mobile-farreo__empty">
@@ -2053,9 +2213,30 @@ export default function MobilePage() {
               <span>Entra con tu cuenta para ver tus playlists propias.</span>
             </div>
           )}
-          <div className="mobile-farreo__own-grid">
-            {libraryPlaylists.map((playlist) => renderPlaylistCard(playlist, true))}
-            {renderCreatePlaylistCard()}
+          <div className="mobile-farreo__own-scroll-shell">
+            <div
+              ref={ownLibraryScrollRef}
+              className="mobile-farreo__own-scroll"
+              onScroll={updateOwnLibraryScrollHint}
+            >
+              <div className="mobile-farreo__own-grid">
+                {libraryPlaylists.map((playlist) => renderPlaylistCard(playlist, true))}
+              </div>
+            </div>
+            {ownLibraryCanScrollDown && (
+              <button
+                type="button"
+                className="mobile-farreo__own-scroll-hint"
+                onClick={() => ownLibraryScrollRef.current?.scrollBy({
+                  top: Math.max(82, ownLibraryScrollRef.current.clientHeight * 0.55),
+                  behavior: "smooth",
+                })}
+                aria-label="Ver mas playlists"
+                title="Ver mas playlists"
+              >
+                <ChevronDownIcon size={17} />
+              </button>
+            )}
           </div>
 
           <div className="mobile-farreo__section-title mobile-farreo__section-title--spaced">
@@ -2095,7 +2276,7 @@ export default function MobilePage() {
           </label>
           {hiddenLoading ? (
             <div className="mobile-farreo__empty">Preparando busqueda...</div>
-          ) : query.trim() ? (
+          ) : (
             <div className="mobile-farreo__song-list">
               {searchedSongs.map((song) => {
                 const isCurrentSong = activeIsPlaying && activeTrack?.id === song.id;
@@ -2134,9 +2315,16 @@ export default function MobilePage() {
                 );
               })}
               {searchedSongs.length === 0 && <div className="mobile-farreo__empty">No hay resultados.</div>}
+              {searchedSongs.length < matchingSongs.length && (
+                <button
+                  type="button"
+                  className="mobile-farreo__load-more"
+                  onClick={() => setSearchPage((page) => page + 1)}
+                >
+                  Cargar más canciones
+                </button>
+              )}
             </div>
-          ) : (
-            <div className="mobile-farreo__empty">Busca por titulo o nombres alternativos.</div>
           )}
         </section>
       )}
@@ -2347,9 +2535,9 @@ export default function MobilePage() {
                   <div>
                     <button
                       type="button"
-                      className={autoRandomPitch ? "mobile-farreo__pitch-chip mobile-farreo__pitch-chip--active" : "mobile-farreo__pitch-chip"}
-                      onClick={() => void randomizeMobilePitch()}
-                      title="Pitch aleatorio"
+                      className={activeAutoRandomPitch ? "mobile-farreo__pitch-chip mobile-farreo__pitch-chip--active" : "mobile-farreo__pitch-chip"}
+                      onClick={() => void toggleMobileRandomPitch()}
+                      title={activeAutoRandomPitch ? "Desactivar pitch aleatorio" : "Activar pitch aleatorio"}
                     >
                       <DicesIcon size={17} />
                     </button>
@@ -2503,6 +2691,52 @@ export default function MobilePage() {
               {playlistSaving ? "Guardando..." : playlistEditor.mode === "create" ? "Crear playlist" : "Guardar cambios"}
             </button>
           </form>
+        </div>
+      )}
+
+      {availableAppUpdate && (
+        <div className="mobile-farreo__modal-layer mobile-farreo__update-layer">
+          <button
+            type="button"
+            className="mobile-farreo__modal-backdrop"
+            onClick={() => setAvailableAppUpdate(null)}
+            aria-label="Cerrar aviso de actualizacion"
+          />
+          <section
+            className="mobile-farreo__update-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="farreo-update-title"
+          >
+            <SongArtwork
+              src="/brand/farreo-app-icon-192.png"
+              alt=""
+              className="mobile-farreo__update-icon"
+            />
+            <div className="mobile-farreo__update-copy">
+              <span>Nueva version</span>
+              <h2 id="farreo-update-title">Actualiza Farreo</h2>
+              <p>
+                Tienes la version {availableAppUpdate.installedVersion}. Ya esta disponible
+                Farreo {availableAppUpdate.latestVersion}.
+              </p>
+              {availableAppUpdate.message && <small>{availableAppUpdate.message}</small>}
+            </div>
+            <div className="mobile-farreo__update-actions">
+              <button type="button" onClick={() => setAvailableAppUpdate(null)}>
+                Ahora no
+              </button>
+              {availableAppUpdate.downloadUrl && (
+                <button
+                  type="button"
+                  className="mobile-farreo__update-primary"
+                  onClick={() => void openAppUpdate(availableAppUpdate.downloadUrl || "")}
+                >
+                  Actualizar
+                </button>
+              )}
+            </div>
+          </section>
         </div>
       )}
 

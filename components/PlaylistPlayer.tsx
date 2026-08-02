@@ -11,6 +11,7 @@ import {
   countGlobalPlaylistFollowers,
   followGlobalPlaylist,
   isFollowingGlobalPlaylist,
+  touchFollowedGlobalPlaylist,
   unfollowGlobalPlaylist,
 } from "@/lib/globalPlaylistFollows";
 import {
@@ -20,6 +21,7 @@ import {
 } from "@/lib/privatePlaylists";
 import { useHiddenSongs } from "@/lib/useHiddenSongs";
 import { getMediaUrl, MUSIC_API_URL, type ApiSong } from "@/lib/radioApi";
+import { formatPlaylistDuration } from "@/lib/playlistDuration";
 
 interface ApiPlaylist {
   id?: string;
@@ -169,7 +171,12 @@ export default function PlaylistPlayer({ playlistId, songId }: PlaylistPlayerPro
     const loadFollowState = async () => {
       try {
         setFollowersCount(await countGlobalPlaylistFollowers(playlistId));
-        setIsFollowing(user ? await isFollowingGlobalPlaylist(user.uid, playlistId) : false);
+        const following = user ? await isFollowingGlobalPlaylist(user.uid, playlistId) : false;
+        setIsFollowing(following);
+        if (user && following) {
+          await touchFollowedGlobalPlaylist(user.uid, playlistId);
+          window.dispatchEvent(new Event("farreo:library-updated"));
+        }
       } catch {
         setFollowersCount(0);
         setIsFollowing(false);
@@ -271,7 +278,8 @@ export default function PlaylistPlayer({ playlistId, songId }: PlaylistPlayerPro
             <div className="playlist-admin__playlist-heading-content">
               <h1 className="playlist-admin__title">{playlistId ? playlistTitle || playlistId : "Reproduciendo"}</h1>
               <p className="playlist-admin__subtitle">
-                {playlist.length} canciones{playlistId ? ` · ${followersCount} seguidores` : ""}
+                {playlist.length} canciones, {formatPlaylistDuration(playlist)}
+                {playlistId ? ` · Pública · ${followersCount} seguidores` : ""}
               </p>
               <div className="playlist-admin__header-actions playlist-admin__header-actions--compact" onMouseLeave={() => setMenuOpen(false)}>
                 <button type="button" onClick={handleMainPlay} className="playlist-admin__round-play" title={isCurrentSource && isPlaying ? "Pausar playlist" : "Reproducir playlist"}>

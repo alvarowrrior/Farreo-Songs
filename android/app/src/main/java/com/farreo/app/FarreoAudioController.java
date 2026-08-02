@@ -49,6 +49,8 @@ public class FarreoAudioController {
     private float volume = 1f;
     private float pitch = 1f;
     private boolean shuffle = false;
+    private boolean autoRandomPitch = true;
+    private int lastPitchTrackIndex = -1;
     private long stateVersion = 0;
     private boolean radioMode = false;
     private boolean userExitStopping = false;
@@ -91,7 +93,14 @@ public class FarreoAudioController {
             @Override
             public void onMediaItemTransition(MediaItem mediaItem, int reason) {
                 int index = player.getCurrentMediaItemIndex();
-                if (index >= 0) currentIndex = index;
+                if (index >= 0) {
+                    currentIndex = index;
+                    if (!radioMode && autoRandomPitch && index != lastPitchTrackIndex) {
+                        pitch = 0.8f + ((float) Math.random() * 0.4f);
+                        player.setPlaybackParameters(new PlaybackParameters(pitch, pitch));
+                    }
+                    lastPitchTrackIndex = index;
+                }
                 notifyState("trackChanged");
                 refreshForegroundService();
             }
@@ -138,21 +147,26 @@ public class FarreoAudioController {
         configureVisualizer(player.getAudioSessionId());
     }
 
-    public JSObject loadQueue(JSArray nextTracks, int startIndex, JSObject nextSource, boolean nextShuffle, float nextPitch, float nextVolume) {
+    public JSObject loadQueue(JSArray nextTracks, int startIndex, JSObject nextSource, boolean nextShuffle, boolean nextAutoRandomPitch, float nextPitch, float nextVolume) {
         userExitStopping = false;
         leaveRadioInternal();
-        tracks = nextTracks == null ? new JSONArray() : nextTracks;
+        JSONArray normalizedTracks = nextTracks == null ? new JSONArray() : nextTracks;
+        boolean sameQueue = hasSameQueue(normalizedTracks);
+        tracks = normalizedTracks;
         source = nextSource;
         shuffle = nextShuffle;
+        autoRandomPitch = nextAutoRandomPitch;
         pitch = clamp(nextPitch, 0.5f, 1.5f);
         volume = clamp(nextVolume, 0f, 1f);
 
-        player.clearMediaItems();
-        for (int i = 0; i < tracks.length(); i++) {
-            JSONObject track = tracks.optJSONObject(i);
-            String url = resolveUrl(track == null ? "" : track.optString("url", ""));
-            if (!url.isEmpty()) {
-                player.addMediaItem(MediaItem.fromUri(Uri.parse(url)));
+        if (!sameQueue) {
+            player.clearMediaItems();
+            for (int i = 0; i < tracks.length(); i++) {
+                JSONObject track = tracks.optJSONObject(i);
+                String url = resolveUrl(track == null ? "" : track.optString("url", ""));
+                if (!url.isEmpty()) {
+                    player.addMediaItem(MediaItem.fromUri(Uri.parse(url)));
+                }
             }
         }
 
@@ -164,9 +178,11 @@ public class FarreoAudioController {
         }
 
         currentIndex = Math.max(0, Math.min(startIndex, player.getMediaItemCount() - 1));
+        lastPitchTrackIndex = currentIndex;
         player.setVolume(volume);
         player.setPlaybackParameters(new PlaybackParameters(pitch, pitch));
         player.setShuffleModeEnabled(shuffle);
+        player.setRepeatMode(player.getMediaItemCount() > 1 ? Player.REPEAT_MODE_ALL : Player.REPEAT_MODE_OFF);
         player.seekTo(currentIndex, 0);
         player.prepare();
         ensureForeground();
@@ -261,6 +277,12 @@ public class FarreoAudioController {
         return getState();
     }
 
+    public JSObject setAutoRandomPitch(boolean enabled) {
+        autoRandomPitch = enabled;
+        notifyState("state");
+        return getState();
+    }
+
     public JSObject enterRadio(String apiUrl) {
         userExitStopping = false;
         radioMode = true;
@@ -310,11 +332,24 @@ public class FarreoAudioController {
         state.put("volume", volume);
         state.put("pitch", pitch);
         state.put("shuffle", shuffle);
+        state.put("autoRandomPitch", autoRandomPitch);
         state.put("canPlayNext", radioMode || player.hasNextMediaItem());
         state.put("canPlayPrev", radioMode || player.hasPreviousMediaItem() || player.getCurrentPosition() > 3000);
         state.put("radioMode", radioMode);
         state.put("radioStatus", radioStatus);
         return state;
+    }
+
+    private boolean hasSameQueue(JSONArray nextTracks) {
+        if (tracks.length() != nextTracks.length() || player.getMediaItemCount() != nextTracks.length()) return false;
+        for (int i = 0; i < tracks.length(); i++) {
+            JSONObject currentTrack = tracks.optJSONObject(i);
+            JSONObject nextTrack = nextTracks.optJSONObject(i);
+            if (currentTrack == null || nextTrack == null) return false;
+            if (!currentTrack.optString("id", "").equals(nextTrack.optString("id", ""))) return false;
+            if (!resolveUrl(currentTrack.optString("url", "")).equals(resolveUrl(nextTrack.optString("url", "")))) return false;
+        }
+        return true;
     }
 
     public String getNotificationTitle() {

@@ -3,6 +3,8 @@ package com.farreo.app;
 import android.Manifest;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.content.Intent;
+import android.net.Uri;
 import android.os.Build;
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -52,9 +54,10 @@ public class FarreoNativeAudioPlugin extends Plugin implements FarreoAudioContro
         int startIndex = call.getInt("startIndex", 0);
         JSObject source = call.getObject("source", null);
         boolean shuffle = call.getBoolean("shuffle", false);
+        boolean autoRandomPitch = call.getBoolean("autoRandomPitch", true);
         float pitch = call.getDouble("pitch", 1d).floatValue();
         float volume = call.getDouble("volume", 1d).floatValue();
-        resolveOnMain(call, () -> controller.loadQueue(tracks, startIndex, source, shuffle, pitch, volume));
+        resolveOnMain(call, () -> controller.loadQueue(tracks, startIndex, source, shuffle, autoRandomPitch, pitch, volume));
     }
 
     @PluginMethod
@@ -102,6 +105,12 @@ public class FarreoNativeAudioPlugin extends Plugin implements FarreoAudioContro
     }
 
     @PluginMethod
+    public void setAutoRandomPitch(PluginCall call) {
+        boolean enabled = call.getBoolean("enabled", true);
+        resolveOnMain(call, () -> controller.setAutoRandomPitch(enabled));
+    }
+
+    @PluginMethod
     public void enterRadio(PluginCall call) {
         String apiUrl = call.getString("apiUrl", "");
         resolveOnMain(call, () -> controller.enterRadio(apiUrl));
@@ -131,6 +140,25 @@ public class FarreoNativeAudioPlugin extends Plugin implements FarreoAudioContro
         } catch (PackageManager.NameNotFoundException error) {
             call.reject("No se pudo leer la version instalada.", error);
         }
+    }
+
+    @PluginMethod
+    public void openExternalUrl(PluginCall call) {
+        String url = call.getString("url", "");
+        if (url.isEmpty()) {
+            call.reject("Falta la URL que se quiere abrir.");
+            return;
+        }
+
+        getActivity().runOnUiThread(() -> {
+            try {
+                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                getActivity().startActivity(intent);
+                call.resolve();
+            } catch (RuntimeException error) {
+                call.reject("No se pudo abrir el enlace de actualizacion.", error);
+            }
+        });
     }
 
     @PluginMethod

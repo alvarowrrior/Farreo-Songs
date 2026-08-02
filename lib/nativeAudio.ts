@@ -16,6 +16,7 @@ export interface FarreoNativeQueuePayload {
   startIndex?: number;
   source?: MusicPlaylistSource | null;
   shuffle?: boolean;
+  autoRandomPitch?: boolean;
   pitch?: number;
   volume?: number;
 }
@@ -32,6 +33,7 @@ export interface FarreoNativeState {
   volume: number;
   pitch: number;
   shuffle: boolean;
+  autoRandomPitch?: boolean;
   canPlayNext?: boolean;
   canPlayPrev?: boolean;
   radioState?: RadioState | null;
@@ -51,10 +53,12 @@ type NativePlugin = {
   setVolume: (payload: { volume: number }) => Promise<FarreoNativeState>;
   setPitch: (payload: { pitch: number }) => Promise<FarreoNativeState>;
   setShuffle: (payload: { shuffle: boolean }) => Promise<FarreoNativeState>;
+  setAutoRandomPitch?: (payload: { enabled: boolean }) => Promise<FarreoNativeState>;
   enterRadio: (payload?: { apiUrl?: string }) => Promise<FarreoNativeState>;
   leaveRadio: () => Promise<FarreoNativeState>;
   getState: () => Promise<FarreoNativeState>;
   getAppInfo: () => Promise<{ version: string; build: number }>;
+  openExternalUrl?: (payload: { url: string }) => Promise<void>;
   enableVisualization: () => Promise<{ enabled: boolean }>;
   addListener: (
     eventName: FarreoNativeEvent,

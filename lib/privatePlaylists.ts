@@ -23,6 +23,8 @@ export interface PrivatePlaylist {
   visibility: PrivatePlaylistVisibility;
   songIds: string[];
   songEntries: PrivatePlaylistSongEntry[];
+  createdAt?: string | null;
+  lastOpenedAt?: string | null;
 }
 
 export interface PrivatePlaylistSongEntry {
@@ -35,6 +37,16 @@ const COLLECTION = "privatePlaylists";
 const assertDb = () => {
   if (!db) throw new Error("Firebase no esta configurado.");
   return db;
+};
+
+const timestampToIso = (value: unknown): string | null => {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return null;
+
+  const timestamp = value as { seconds?: unknown; toDate?: () => Date };
+  if (typeof timestamp.toDate === "function") return timestamp.toDate().toISOString();
+  if (typeof timestamp.seconds === "number") return new Date(timestamp.seconds * 1000).toISOString();
+  return null;
 };
 
 const normalizeSongEntries = (data: Record<string, unknown>): PrivatePlaylistSongEntry[] => {
@@ -70,6 +82,8 @@ const mapPrivatePlaylist = (id: string, data: Record<string, unknown>): PrivateP
     visibility: data.visibility === "public" ? "public" : "private",
     songIds: songEntries.map((entry) => entry.songId),
     songEntries,
+    createdAt: timestampToIso(data.createdAt),
+    lastOpenedAt: timestampToIso(data.lastOpenedAt),
   };
 };
 
@@ -96,6 +110,7 @@ export async function createPrivatePlaylist(input: {
     songIds: [],
     songEntries: [],
     createdAt: serverTimestamp(),
+    lastOpenedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
 
@@ -115,6 +130,12 @@ export async function updatePrivatePlaylist(id: string, input: {
 
 export async function deletePrivatePlaylist(id: string) {
   await deleteDoc(doc(assertDb(), COLLECTION, id));
+}
+
+export async function touchPrivatePlaylist(id: string) {
+  await updateDoc(doc(assertDb(), COLLECTION, id), {
+    lastOpenedAt: serverTimestamp(),
+  });
 }
 
 export async function getPrivatePlaylist(id: string) {

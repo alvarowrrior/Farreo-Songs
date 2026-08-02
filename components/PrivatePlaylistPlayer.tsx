@@ -26,6 +26,7 @@ import {
   listOwnPrivatePlaylists,
   removeSongFromPrivatePlaylist,
   reorderPrivatePlaylistSongs,
+  touchPrivatePlaylist,
   updatePrivatePlaylist,
   type PrivatePlaylist,
   type PrivatePlaylistVisibility,
@@ -35,6 +36,7 @@ import { useMusicPlayer, type MusicPlaylistSource } from "@/components/MusicPlay
 import PlaylistSongTable, { type PlaylistSongRow } from "@/components/PlaylistSongTable";
 import SongArtwork from "@/components/SongArtwork";
 import { getMediaUrl, MUSIC_API_URL, type ApiSong } from "@/lib/radioApi";
+import { formatPlaylistDuration } from "@/lib/playlistDuration";
 
 type Notice = {
   type: "success" | "error";
@@ -180,6 +182,13 @@ export default function PrivatePlaylistPlayer({ playlistId }: { playlistId: stri
     // loadPlaylist needs latest auth state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authReady, hiddenLoading, playlistId, user?.uid]);
+
+  useEffect(() => {
+    if (!playlist || !isOwner) return;
+    void touchPrivatePlaylist(playlist.id)
+      .then(() => window.dispatchEvent(new Event("farreo:library-updated")))
+      .catch(() => undefined);
+  }, [isOwner, playlist]);
 
   const filteredPickerSongs = useMemo(() => {
     const currentIds = new Set(tracks.map((track) => track.id));
@@ -409,7 +418,7 @@ export default function PrivatePlaylistPlayer({ playlistId }: { playlistId: stri
             <div className="playlist-admin__playlist-heading-content">
               <h1 className="playlist-admin__title">{playlist?.nombre || "Playlist propia"}</h1>
               <p className="playlist-admin__subtitle">
-                {tracks.length} canciones · {playlist?.visibility === "public" ? "Pública" : "Privada"}
+                {tracks.length} canciones, {formatPlaylistDuration(tracks)} · {playlist?.visibility === "public" ? "Pública" : "Privada"}
               </p>
               <div className="playlist-admin__header-actions playlist-admin__header-actions--compact" onMouseLeave={() => setMenuOpen(false)}>
                 <button type="button" onClick={handleMainPlay} className="playlist-admin__round-play" title={isCurrentSource && isPlaying ? "Pausar playlist" : "Reproducir playlist"}>

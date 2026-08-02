@@ -18,11 +18,13 @@ import {
   type PrivatePlaylist,
   type PrivatePlaylistVisibility,
 } from "@/lib/privatePlaylists";
-import { listFollowedGlobalPlaylistIds, unfollowGlobalPlaylist } from "@/lib/globalPlaylistFollows";
+import { listFollowedGlobalPlaylists, unfollowGlobalPlaylist } from "@/lib/globalPlaylistFollows";
 import { useHiddenSongs } from "@/lib/useHiddenSongs";
 import PlaylistSongTable, { type PlaylistSongRow } from "@/components/PlaylistSongTable";
 import SongArtwork from "@/components/SongArtwork";
 import FarreoContextMenu, { type FarreoContextMenuItem } from "@/components/FarreoContextMenu";
+import { formatPlaylistDuration } from "@/lib/playlistDuration";
+import { playlistActivityTime } from "@/lib/playlistLibraryOrder";
 
 const ADMIN_EMAILS = (process.env.NEXT_PUBLIC_ADMIN_EMAILS || "").split(",");
 
@@ -30,6 +32,23 @@ const ADMIN_EMAILS = (process.env.NEXT_PUBLIC_ADMIN_EMAILS || "").split(",");
 import { MUSIC_API_URL } from "@/lib/radioApi";
 
 const TUNNEL_URL = MUSIC_API_URL;
+
+const libraryCardGridPosition = (position: number, total: number) => {
+  const safePosition = Math.max(0, position);
+
+  if (total <= 8 || safePosition < 8) {
+    return {
+      gridColumn: (safePosition % 4) + 1,
+      gridRow: Math.floor(safePosition / 4) + 1,
+    };
+  }
+
+  const overflowPosition = safePosition - 8;
+  return {
+    gridColumn: Math.floor(overflowPosition / 2) + 5,
+    gridRow: (overflowPosition % 2) + 1,
+  };
+};
 
 const getMediaUrl = (url?: string | null) => {
   if (!url) return "";
@@ -115,6 +134,7 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
   const [playlists, setPlaylists] = useState<PlaylistInfo[]>([]);
   const [privatePlaylists, setPrivatePlaylists] = useState<PrivatePlaylist[]>([]);
   const [followedGlobalPlaylistIds, setFollowedGlobalPlaylistIds] = useState<string[]>([]);
+  const [followedGlobalActivity, setFollowedGlobalActivity] = useState<Map<string, string | null>>(new Map());
   const [loadingPrivatePlaylists, setLoadingPrivatePlaylists] = useState(false);
   const [loadingPlaylists, setLoadingPlaylists] = useState(false);
   const [playlistEditorOpen, setPlaylistEditorOpen] = useState(false);
@@ -225,6 +245,7 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
       } else {
         setPrivatePlaylists([]);
         setFollowedGlobalPlaylistIds([]);
+        setFollowedGlobalActivity(new Map());
       }
 
       if (adminMode && authorized) {
@@ -289,13 +310,17 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
   const loadFollowedGlobalPlaylists = async (ownerId = currentUser?.uid) => {
     if (!ownerId) {
       setFollowedGlobalPlaylistIds([]);
+      setFollowedGlobalActivity(new Map());
       return;
     }
 
     try {
-      setFollowedGlobalPlaylistIds(await listFollowedGlobalPlaylistIds(ownerId));
+      const followed = await listFollowedGlobalPlaylists(ownerId);
+      setFollowedGlobalPlaylistIds(followed.map((item) => item.playlistId));
+      setFollowedGlobalActivity(new Map(followed.map((item) => [item.playlistId, item.lastOpenedAt || item.followedAt])));
     } catch {
       setFollowedGlobalPlaylistIds([]);
+      setFollowedGlobalActivity(new Map());
     }
   };
 
@@ -936,6 +961,22 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
   const followedGlobalPlaylists = playlists.filter((playlist) =>
     followedGlobalPlaylistIds.includes(playlist.id)
   );
+  const libraryEntries: Array<
+    | { kind: "private"; playlist: PrivatePlaylist; activity: number }
+    | { kind: "global"; playlist: PlaylistInfo; activity: number }
+  > = [
+    ...privatePlaylists.map((item) => ({
+      kind: "private" as const,
+      playlist: item,
+      activity: playlistActivityTime(item.lastOpenedAt, item.createdAt),
+    })),
+    ...followedGlobalPlaylists.map((item) => ({
+      kind: "global" as const,
+      playlist: item,
+      activity: playlistActivityTime(followedGlobalActivity.get(item.id)),
+    })),
+  ];
+  libraryEntries.sort((left, right) => right.activity - left.activity);
   const shareSongModal = shareModalOpen ? (
     <div className="playlist-admin__modal-overlay" onClick={() => setShareModalOpen(false)}>
       <div className="playlist-admin__modal" onClick={(e) => e.stopPropagation()}>
@@ -1293,6 +1334,7 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
                   {privatePlaylists.map((pl) => (
                     <div
                       key={pl.id}
+                      style={libraryCardGridPosition(libraryEntries.findIndex((entry) => entry.kind === "private" && entry.playlist.id === pl.id), libraryEntries.length)}
                       className={adminMode ? "playlist-admin__item playlist-admin__item--playlist" : "playlist-admin__card playlist-admin__card--library"}
                       onContextMenu={(event) => {
                         if (!adminMode) openPlaylistContextMenu(event, privatePlaylistContextItems(pl));
@@ -1352,6 +1394,7 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
                   {followedGlobalPlaylists.map((pl) => (
                     <div
                       key={`followed-${pl.id}`}
+                      style={libraryCardGridPosition(libraryEntries.findIndex((entry) => entry.kind === "global" && entry.playlist.id === pl.id), libraryEntries.length)}
                       className="playlist-admin__card playlist-admin__card--library"
                       onContextMenu={(event) => openPlaylistContextMenu(event, globalPlaylistContextItems(pl, true))}
                       onClick={() => router.push(`/playlist/${encodeURIComponent(pl.id)}`)}
@@ -1817,7 +1860,11 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
               <ArrowLeftIcon size={16} /> Volver a Playlists
             </button>
             <h1 className="playlist-admin__title">{currentPlaylist?.nombre ?? currentPrivatePlaylist?.nombre ?? playlistActual}</h1>
-            <p className="playlist-admin__subtitle">{playlist.length} canciones</p>
+            <p className="playlist-admin__subtitle">
+              {playlist.length} canciones, {formatPlaylistDuration(playlist)} · {playlistScope === "private"
+                ? currentPrivatePlaylist?.visibility === "public" ? "Pública" : "Privada"
+                : "Pública"}
+            </p>
           </div>
           <div className="playlist-admin__header-actions">
             <button

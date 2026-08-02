@@ -754,8 +754,18 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     if (playerMode === "radio") {
       disableRadioMode();
     }
+    let keepsCurrentShuffleCycle = true;
     if (tracks) {
-      resetShuffleBag(tracks, track.id);
+      const sameQueue = getQueueSignature(tracks) === getQueueSignature(queue);
+      const sameSource = !source || (
+        source.id === queueSource?.id && source.type === queueSource?.type
+      );
+      keepsCurrentShuffleCycle = sameQueue && sameSource;
+      if (keepsCurrentShuffleCycle) {
+        shuffleRemainingRef.current = shuffleRemainingRef.current.filter((id) => id !== track.id);
+      } else {
+        resetShuffleBag(tracks, track.id);
+      }
       setQueue(tracks);
       setQueueSource(source ?? null);
     }
@@ -771,7 +781,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       return;
     }
 
-    setHistory([]);
+    if (!keepsCurrentShuffleCycle) setHistory([]);
     startTrack(track, source ?? queueSource);
   };
 

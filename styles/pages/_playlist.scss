@@ -398,8 +398,24 @@
     gap: 1rem;
 
     &--library {
-      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      grid-template-rows: repeat(2, 64px);
+      grid-template-columns: repeat(4, minmax(220px, calc((100% - 2.25rem) / 4)));
+      grid-auto-columns: minmax(220px, calc((100% - 2.25rem) / 4));
       gap: 0.75rem;
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding-bottom: 0.4rem;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255, 255, 255, 0.24) transparent;
+
+      &::-webkit-scrollbar {
+        height: 5px;
+      }
+
+      &::-webkit-scrollbar-thumb {
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.24);
+      }
     }
 
     &--global {

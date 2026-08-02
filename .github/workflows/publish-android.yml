@@ -1,0 +1,125 @@
+name: Publicar APK de Farreo
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "android/**"
+      - ".github/workflows/publish-android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: farreo-android-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Compilar y publicar APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Preparar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Preparar Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - name: Instalar dependencias web
+        run: npm ci
+
+      - name: Leer version Android
+        id: version
+        shell: bash
+        run: |
+          VERSION_NAME=$(sed -n 's/.*versionName "\([^"]*\)".*/\1/p' android/app/build.gradle | head -n 1)
+          VERSION_CODE=$(sed -n 's/.*versionCode \([0-9]*\).*/\1/p' android/app/build.gradle | head -n 1)
+          if [ -z "$VERSION_NAME" ] || [ -z "$VERSION_CODE" ]; then
+            echo "No se pudo leer versionName/versionCode de android/app/build.gradle."
+            exit 1
+          fi
+          echo "name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "tag=android-v$VERSION_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Preparar firma permanente
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ] || [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
+            echo "Faltan los Secrets de firma Android. Consulta docs/android-releases.md."
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/farreo-release.jks"
+
+      - name: Compilar APK firmada
+        working-directory: android
+        env:
+          FARREO_ANDROID_KEYSTORE: ${{ runner.temp }}/farreo-release.jks
+          FARREO_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          FARREO_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          FARREO_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew assembleRelease --no-daemon
+
+      - name: Preparar archivos de release
+        shell: bash
+        env:
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+        run: |
+          cp android/app/build/outputs/apk/release/app-release.apk Farreo.apk
+          node - <<'NODE'
+          const fs = require('fs');
+          const manifest = {
+            latestVersion: process.env.VERSION_NAME,
+            latestBuild: Number(process.env.VERSION_CODE),
+            message: 'Actualiza la aplicacion para recibir las ultimas mejoras y correcciones de Farreo.',
+            downloadUrl: 'https://github.com/alvarowrrior/Farreo-Songs/releases/latest/download/Farreo.apk'
+          };
+          fs.writeFileSync('public/mobile-app-version.json', `${JSON.stringify(manifest, null, 2)}\n`);
+          NODE
+
+      - name: Crear o actualizar GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" Farreo.apk --clobber
+            gh release edit "$RELEASE_TAG" --latest
+          else
+            gh release create "$RELEASE_TAG" Farreo.apk \
+              --target "$GITHUB_SHA" \
+              --title "Farreo Android $VERSION_NAME" \
+              --generate-notes \
+              --latest
+          fi
+
+      - name: Sincronizar manifiesto de actualizaciones
+        shell: bash
+        run: |
+          if git diff --quiet -- public/mobile-app-version.json; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/mobile-app-version.json
+          git commit -m "chore: actualizar manifiesto Android [skip ci]"
+          git push origin HEAD:main
