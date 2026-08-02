@@ -39,6 +39,9 @@ jobs:
       - name: Instalar dependencias web
         run: npm ci
 
+      - name: Sincronizar proyecto Capacitor
+        run: npm run android:sync
+
       - name: Leer version Android
         id: version
         shell: bash
