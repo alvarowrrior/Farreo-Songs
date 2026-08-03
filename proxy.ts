@@ -6,7 +6,7 @@ export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const userAgent = request.headers.get("user-agent") || "";
 
-  if (!MOBILE_USER_AGENT.test(userAgent) || pathname === "/mobile") {
+  if (!MOBILE_USER_AGENT.test(userAgent) || pathname === "/mobile" || pathname.startsWith("/recommendation/")) {
     return NextResponse.next();
   }
 
@@ -19,6 +19,9 @@ export function proxy(request: NextRequest) {
   } else if (pathname.startsWith("/user-playlist/")) {
     url.searchParams.set("playlist", decodeURIComponent(pathname.slice("/user-playlist/".length)));
     url.searchParams.set("kind", "private");
+  } else if (pathname.startsWith("/album/")) {
+    url.searchParams.set("playlist", decodeURIComponent(pathname.slice("/album/".length)));
+    url.searchParams.set("kind", "album");
   } else if (pathname === "/radio") {
     url.searchParams.set("tab", "radio");
   } else if (pathname === "/login" || pathname === "/perfil") {

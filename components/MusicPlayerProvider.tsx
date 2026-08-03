@@ -7,6 +7,8 @@ import { usePathname } from "next/navigation";
 import { MUSIC_API_URL, calibrateRadioClock, getLiveRadioPosition, getMediaUrl, getRadioServerNow, radioPatch, radioPost, type RadioState } from "@/lib/radioApi";
 import { computeCurrentLyric } from "@/lib/lyrics";
 import SongArtwork from "@/components/SongArtwork";
+import { claimAlbumFirstPlay } from "@/lib/albums";
+import { recordSongListened } from "@/lib/listeningHistory";
 
 export interface MusicTrack {
   id: string;
@@ -23,12 +25,15 @@ export interface MusicTrack {
   advancedCoverType?: string | null;
   addedAt?: string | null;
   createdAt?: { seconds: number; nanoseconds: number } | Date | string | null;
+  albumId?: string;
+  albumEntryId?: string;
+  firstListenPending?: boolean;
 }
 
 export interface MusicPlaylistSource {
   id: string;
   name: string;
-  type: "global" | "private" | "song" | "admin" | "radio";
+  type: "global" | "private" | "album" | "song" | "admin" | "radio";
 }
 
 interface MusicPlayerContextValue {
@@ -43,6 +48,7 @@ interface MusicPlayerContextValue {
   canPlayNext: boolean;
   canPlayPrev: boolean;
   autoRandomPitch: boolean;
+  isPitchLocked: boolean;
   lyricsEnabled: boolean;
   playerMode: "local" | "radio";
   isRadioBuffering: boolean;
@@ -84,6 +90,7 @@ const getSourceHref = (source: MusicPlaylistSource | null) => {
   if (!source) return null;
   if (source.type === "global") return `/playlist/${encodeURIComponent(source.id)}`;
   if (source.type === "private") return `/user-playlist/${encodeURIComponent(source.id)}`;
+  if (source.type === "album") return `/album/${encodeURIComponent(source.id)}`;
   return null;
 };
 
@@ -335,6 +342,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   const lastRadioItemRef = useRef<string | null>(null);
   const hasRestoredRef = useRef(false);
   const pendingPlayRef = useRef(false);
+  const pitchLockedRef = useRef(false);
   const [storageReady, setStorageReady] = useState(false);
   const [playerMode, setPlayerMode] = useState<"local" | "radio">("local");
   const [isRadioBuffering, setIsRadioBuffering] = useState(false);
@@ -353,6 +361,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   const [duration, setDuration] = useState(0);
   const [isShuffle, setIsShuffle] = useState(true);
   const [autoRandomPitch, setAutoRandomPitch] = useState(true);
+  const [isPitchLocked, setIsPitchLocked] = useState(false);
   const [lyricsEnabled, setLyricsEnabled] = useState(true);
   const [history, setHistory] = useState<MusicTrack[]>([]);
 
@@ -362,6 +371,11 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     () => computeCurrentLyric(lyricCues, currentTime, duration),
     [currentTime, duration, lyricCues],
   );
+
+  const currentTrackId = currentTrack?.id;
+  useEffect(() => {
+    if (currentTrackId && isPlaying) recordSongListened(currentTrackId);
+  }, [currentTrackId, isPlaying]);
 
   const radioTrackFromItem = (item: RadioState["queue"][number]): MusicTrack => ({
     id: item.song.id,
@@ -681,25 +695,56 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       disableRadioMode();
     }
 
-    if (isShuffle) {
-      shuffleRemainingRef.current = shuffleRemainingRef.current.filter((id) => id !== track.id);
-    }
+    const beginPlayback = async () => {
+      let forcePitch = false;
+      let nextTrack = track;
+      if (track.firstListenPending && track.albumId && track.albumEntryId) {
+        try {
+          const claim = await claimAlbumFirstPlay(track.albumId, track.albumEntryId);
+          forcePitch = claim.forcePitch;
+          if (claim.firstPlay || !claim.forcePitch) {
+            nextTrack = { ...track, firstListenPending: false };
+            setQueue((current) => current.map((item) => item.albumEntryId === track.albumEntryId ? nextTrack : item));
+          }
+        } catch {
+          // Conservador: si no podemos confirmar la primera escucha, mantenemos x1
+          // y reintentamos guardar el comienzo sin desbloquear esta reproduccion.
+          forcePitch = true;
+          window.setTimeout(() => {
+            void claimAlbumFirstPlay(track.albumId!, track.albumEntryId!).then(() => {
+              setQueue((current) => current.map((item) => item.albumEntryId === track.albumEntryId
+                ? { ...item, firstListenPending: false }
+                : item));
+              setCurrentTrack((current) => current && current.albumEntryId === track.albumEntryId
+                ? { ...current, firstListenPending: false }
+                : current);
+            }).catch(() => undefined);
+          }, 3000);
+        }
+      }
 
-    let pitch = playbackPitch;
-    if (autoRandomPitch) {
-      pitch = Math.random() * (1.2 - 0.8) + 0.8;
+      pitchLockedRef.current = forcePitch;
+      setIsPitchLocked(forcePitch);
+
+      if (isShuffle) {
+        shuffleRemainingRef.current = shuffleRemainingRef.current.filter((id) => id !== nextTrack.id);
+      }
+
+      let pitch = forcePitch ? 1 : playbackPitch;
+      if (!forcePitch && autoRandomPitch) {
+        pitch = Math.random() * (1.2 - 0.8) + 0.8;
+      }
       setPlaybackPitch(pitch);
-    }
 
-    pendingPlayRef.current = true;
-    preloadedTrackRef.current = null;
-    preloadedUrlRef.current = "";
-    setCurrentTrack(track);
-    setCurrentSource(source);
-    setCurrentTime(0);
-    setVisualCurrentTime(0);
-    setDuration(0);
-    setIsPlaying(true);
+      pendingPlayRef.current = true;
+      preloadedTrackRef.current = null;
+      preloadedUrlRef.current = "";
+      setCurrentTrack(nextTrack);
+      setCurrentSource(source);
+      setCurrentTime(0);
+      setVisualCurrentTime(0);
+      setDuration(0);
+      setIsPlaying(true);
     // Cargamos el audio de forma IMPERATIVA aqui mismo (dentro del stack del
     // evento onEnded), sin esperar al re-render de React. Chrome aplaza/congela
     // el render de pestanas en segundo plano, asi que si dependieramos del
@@ -712,18 +757,21 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     // queda parada (era el fallo de "se para tras 2-3 canciones"). Un play()
     // pendiente mantiene al elemento como "potencialmente reproduciendo" y el
     // navegador sigue cargando y arranca solo en cuanto hay datos.
-    const audio = audioRef.current;
-    if (audio) {
-      audio.src = track.url;
-      audio.load();
-      audio.preservesPitch = false;
-      audio.defaultPlaybackRate = pitch;
-      audio.playbackRate = pitch;
-      audio.volume = volumeRef.current;
-      audio.play().catch(() => {
-        // onLoadedMetadata / onCanPlay reintentan via pendingPlayRef.
-      });
-    }
+      const audio = audioRef.current;
+      if (audio) {
+        audio.src = nextTrack.url!;
+        audio.load();
+        audio.preservesPitch = false;
+        audio.defaultPlaybackRate = pitch;
+        audio.playbackRate = pitch;
+        audio.volume = volumeRef.current;
+        audio.play().catch(() => {
+          // onLoadedMetadata / onCanPlay reintentan via pendingPlayRef.
+        });
+      }
+    };
+
+    void beginPlayback();
   };
 
   const playQueue = (tracks: MusicTrack[], index: number, source?: MusicPlaylistSource | null) => {
@@ -1155,6 +1203,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   };
 
   const handlePitchChange = (val: number) => {
+    if (pitchLockedRef.current && playerMode !== "radio") return;
     setPlaybackPitch(val);
     if (playerMode === "radio" && radioState?.currentItem) {
       void radioPatch<RadioState>(`/radio/queue/${encodeURIComponent(radioState.currentItem.itemId)}`, { pitch: val })
@@ -1273,7 +1322,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     if (playerMode === "radio") return;
 
     const keepOnlyMobilePlaylistReference = isMobileRoute && (
-      currentSource?.type === "global" || currentSource?.type === "private"
+      currentSource?.type === "global" || currentSource?.type === "private" || currentSource?.type === "album"
     );
     const state: StoredPlayerState = {
       currentTrack,
@@ -1453,6 +1502,35 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   });
 
   useEffect(() => {
+    if (isMobileRoute || pathname.startsWith("/admin/lyrics")) return;
+
+    const isEditableTarget = (target: EventTarget | null) => {
+      if (!(target instanceof HTMLElement)) return false;
+      return target.isContentEditable || Boolean(target.closest("input, textarea, select, [contenteditable='true'], [role='textbox']"));
+    };
+    const isSpace = (event: KeyboardEvent) => event.code === "Space" || event.key === " ";
+
+    const handleSpaceDown = (event: KeyboardEvent) => {
+      if (!isSpace(event) || event.repeat || isEditableTarget(event.target)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (currentTrack) togglePlayPauseRef.current();
+    };
+    const handleSpaceUp = (event: KeyboardEvent) => {
+      if (!isSpace(event) || isEditableTarget(event.target)) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    window.addEventListener("keydown", handleSpaceDown, true);
+    window.addEventListener("keyup", handleSpaceUp, true);
+    return () => {
+      window.removeEventListener("keydown", handleSpaceDown, true);
+      window.removeEventListener("keyup", handleSpaceUp, true);
+    };
+  }, [currentTrack, isMobileRoute, pathname]);
+
+  useEffect(() => {
     if (typeof window === "undefined" || !("mediaSession" in navigator)) return;
 
     try {
@@ -1555,6 +1633,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     canPlayNext,
     canPlayPrev,
     autoRandomPitch,
+    isPitchLocked,
     lyricsEnabled,
     playerMode,
     isRadioBuffering,
@@ -1564,7 +1643,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     setAutoRandomPitch,
     setLyricsEnabled,
     ...stableApi,
-  }), [autoRandomPitch, canPlayNext, canPlayPrev, currentSource, currentTrack, duration, getAudioFrequencyData, hasCurrentLyrics, isPlaying, isRadioAwaitingUserGesture, isRadioBuffering, isShuffle, lyricsEnabled, playbackPitch, playerMode, radioState, stableApi, volume]);
+  }), [autoRandomPitch, canPlayNext, canPlayPrev, currentSource, currentTrack, duration, getAudioFrequencyData, hasCurrentLyrics, isPitchLocked, isPlaying, isRadioAwaitingUserGesture, isRadioBuffering, isShuffle, lyricsEnabled, playbackPitch, playerMode, radioState, stableApi, volume]);
 
   const timeContextValue = useMemo<MusicPlayerTimeContextValue>(() => ({
     currentTime,
@@ -1609,6 +1688,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
                   <button
                     className="playlist-admin__pitch-reset"
                     onClick={() => handlePitchChange(1)}
+                    disabled={isPitchLocked}
                     title="Restaurar pitch a 1x"
                   >
                     <RotateCcwIcon size={11} />
@@ -1652,6 +1732,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
             <button
               className={`playlist-admin__control-btn playlist-admin__control-btn--pitch-toggle ${autoRandomPitch ? "playlist-admin__control-btn--active" : ""}`}
               onClick={() => setAutoRandomPitch((v) => !v)}
+              disabled={isPitchLocked}
               title={autoRandomPitch ? "Pitch aleatorio al cambiar canción" : "Pitch fijo"}
             >
               <DicesIcon size={16} />
@@ -1663,6 +1744,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
               step={0.01}
               value={playbackPitch}
               onChange={(e) => handlePitchChange(Number(e.target.value))}
+              disabled={isPitchLocked}
               className="playlist-admin__mini-slider"
               title={`Pitch: ${playbackPitch.toFixed(2)}x`}
             />

@@ -2,6 +2,7 @@ package com.farreo.app;
 
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.media.audiofx.Visualizer;
 import android.net.Uri;
 import android.os.Handler;
@@ -36,6 +37,8 @@ public class FarreoAudioController {
     }
 
     private static final String DEFAULT_API_URL = "https://welite.ddns.net:3001";
+    private static final String AUDIO_PREFS = "farreo-native-audio";
+    private static final String PENDING_FIRST_PLAYS = "pending-album-first-plays";
     private static FarreoAudioController instance;
 
     private final Context context;
@@ -51,6 +54,8 @@ public class FarreoAudioController {
     private boolean shuffle = false;
     private boolean autoRandomPitch = true;
     private int lastPitchTrackIndex = -1;
+    private int firstListenLockedIndex = -1;
+    private boolean firstListenPitchLocked = false;
     private long stateVersion = 0;
     private boolean radioMode = false;
     private boolean userExitStopping = false;
@@ -93,14 +98,17 @@ public class FarreoAudioController {
             @Override
             public void onMediaItemTransition(MediaItem mediaItem, int reason) {
                 int index = player.getCurrentMediaItemIndex();
+                boolean firstListenStarted = false;
                 if (index >= 0) {
                     currentIndex = index;
-                    if (!radioMode && autoRandomPitch && index != lastPitchTrackIndex) {
+                    firstListenStarted = applyFirstListenPitch(index);
+                    if (!radioMode && !firstListenPitchLocked && autoRandomPitch && index != lastPitchTrackIndex) {
                         pitch = 0.8f + ((float) Math.random() * 0.4f);
                         player.setPlaybackParameters(new PlaybackParameters(pitch, pitch));
                     }
                     lastPitchTrackIndex = index;
                 }
+                if (firstListenStarted) notifyState("firstListenStarted");
                 notifyState("trackChanged");
                 refreshForegroundService();
             }
@@ -178,7 +186,10 @@ public class FarreoAudioController {
         }
 
         currentIndex = Math.max(0, Math.min(startIndex, player.getMediaItemCount() - 1));
+        firstListenLockedIndex = -1;
+        firstListenPitchLocked = false;
         lastPitchTrackIndex = currentIndex;
+        boolean firstListenStarted = applyFirstListenPitch(currentIndex);
         player.setVolume(volume);
         player.setPlaybackParameters(new PlaybackParameters(pitch, pitch));
         player.setShuffleModeEnabled(shuffle);
@@ -186,6 +197,7 @@ public class FarreoAudioController {
         player.seekTo(currentIndex, 0);
         player.prepare();
         ensureForeground();
+        if (firstListenStarted) notifyState("firstListenStarted");
         notifyState("trackChanged");
         return getState();
     }
@@ -258,6 +270,7 @@ public class FarreoAudioController {
     }
 
     public JSObject setPitch(float nextPitch) {
+        if (firstListenPitchLocked && !radioMode) return getState();
         pitch = clamp(nextPitch, 0.5f, 1.5f);
         player.setPlaybackParameters(new PlaybackParameters(pitch, pitch));
         if (radioMode && !radioItemId.isEmpty()) {
@@ -333,11 +346,40 @@ public class FarreoAudioController {
         state.put("pitch", pitch);
         state.put("shuffle", shuffle);
         state.put("autoRandomPitch", autoRandomPitch);
+        state.put("isPitchLocked", firstListenPitchLocked && !radioMode);
         state.put("canPlayNext", radioMode || player.hasNextMediaItem());
         state.put("canPlayPrev", radioMode || player.hasPreviousMediaItem() || player.getCurrentPosition() > 3000);
         state.put("radioMode", radioMode);
         state.put("radioStatus", radioStatus);
         return state;
+    }
+
+    public JSArray getPendingFirstPlays() {
+        JSArray result = new JSArray();
+        JSONArray pending = readPendingFirstPlays();
+        for (int index = 0; index < pending.length(); index++) {
+            JSONObject item = pending.optJSONObject(index);
+            if (item != null) result.put(item);
+        }
+        return result;
+    }
+
+    public JSObject confirmFirstPlay(String albumId, String entryId, boolean keepPitchLocked) {
+        JSONArray pending = readPendingFirstPlays();
+        JSONArray next = new JSONArray();
+        for (int index = 0; index < pending.length(); index++) {
+            JSONObject item = pending.optJSONObject(index);
+            if (item == null) continue;
+            if (albumId.equals(item.optString("albumId")) && entryId.equals(item.optString("albumEntryId"))) continue;
+            next.put(item);
+        }
+        context.getSharedPreferences(AUDIO_PREFS, Context.MODE_PRIVATE).edit().putString(PENDING_FIRST_PLAYS, next.toString()).apply();
+        JSONObject current = getCurrentTrackOrNull();
+        if (!keepPitchLocked && current != null && albumId.equals(current.optString("albumId")) && entryId.equals(current.optString("albumEntryId"))) {
+            firstListenPitchLocked = false;
+            firstListenLockedIndex = -1;
+        }
+        return getState();
     }
 
     private boolean hasSameQueue(JSONArray nextTracks) {
@@ -600,6 +642,63 @@ public class FarreoAudioController {
     private JSONObject getCurrentTrackOrNull() {
         if (currentIndex < 0 || currentIndex >= tracks.length()) return null;
         return tracks.optJSONObject(currentIndex);
+    }
+
+    private boolean applyFirstListenPitch(int index) {
+        JSONObject track = index >= 0 && index < tracks.length() ? tracks.optJSONObject(index) : null;
+        if (track == null || radioMode) {
+            firstListenPitchLocked = false;
+            firstListenLockedIndex = -1;
+            return false;
+        }
+        if (index == firstListenLockedIndex) {
+            firstListenPitchLocked = true;
+            pitch = 1f;
+            player.setPlaybackParameters(new PlaybackParameters(1f, 1f));
+            return false;
+        }
+
+        firstListenPitchLocked = false;
+        firstListenLockedIndex = -1;
+        String albumId = track.optString("albumId", "");
+        String entryId = track.optString("albumEntryId", "");
+        if (!track.optBoolean("firstListenPending", false) || albumId.isEmpty() || entryId.isEmpty()) return false;
+
+        firstListenPitchLocked = true;
+        firstListenLockedIndex = index;
+        pitch = 1f;
+        player.setPlaybackParameters(new PlaybackParameters(1f, 1f));
+        try {
+            track.put("firstListenPending", false);
+        } catch (JSONException ignored) {
+        }
+        enqueuePendingFirstPlay(albumId, entryId);
+        return true;
+    }
+
+    private JSONArray readPendingFirstPlays() {
+        SharedPreferences preferences = context.getSharedPreferences(AUDIO_PREFS, Context.MODE_PRIVATE);
+        try {
+            return new JSONArray(preferences.getString(PENDING_FIRST_PLAYS, "[]"));
+        } catch (JSONException ignored) {
+            return new JSONArray();
+        }
+    }
+
+    private void enqueuePendingFirstPlay(String albumId, String entryId) {
+        JSONArray pending = readPendingFirstPlays();
+        for (int index = 0; index < pending.length(); index++) {
+            JSONObject item = pending.optJSONObject(index);
+            if (item != null && albumId.equals(item.optString("albumId")) && entryId.equals(item.optString("albumEntryId"))) return;
+        }
+        JSONObject item = new JSONObject();
+        try {
+            item.put("albumId", albumId);
+            item.put("albumEntryId", entryId);
+            pending.put(item);
+            context.getSharedPreferences(AUDIO_PREFS, Context.MODE_PRIVATE).edit().putString(PENDING_FIRST_PLAYS, pending.toString()).apply();
+        } catch (JSONException ignored) {
+        }
     }
 
     private double getDurationSeconds() {

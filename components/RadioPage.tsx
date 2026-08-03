@@ -33,6 +33,7 @@ import {
   type RadioQueueItem,
   type RadioState,
 } from "@/lib/radioApi";
+import { addAlbumToRadio, getAlbum, listAlbums } from "@/lib/albums";
 
 const formatTime = (seconds: number) => {
   if (!Number.isFinite(seconds) || seconds <= 0) return "0:00";
@@ -45,6 +46,7 @@ type InsertChoice = "last" | "next" | "now";
 type PlaylistChoice =
   | { kind: "private"; id: string; name: string; count: number }
   | { kind: "global"; id: string; name: string; count: number }
+  | { kind: "album"; id: string; name: string; count: number; entryIds: string[] }
   | { kind: "external"; id: string; name: string; count: number; url: string };
 type SelectedRadioItem =
   | { type: "song"; song: ApiSong }
@@ -110,6 +112,7 @@ export default function RadioPage() {
   const [songs, setSongs] = useState<ApiSong[]>([]);
   const [globalPlaylists, setGlobalPlaylists] = useState<ApiPlaylistInfo[]>([]);
   const [privatePlaylists, setPrivatePlaylists] = useState<PrivatePlaylist[]>([]);
+  const [availableAlbums, setAvailableAlbums] = useState<Array<{ id: string; name: string; count: number; entryIds: string[] }>>([]);
   const [songQuery, setSongQuery] = useState("");
   const [playlistQuery, setPlaylistQuery] = useState("");
   const [resolvedUrlPlaylist, setResolvedUrlPlaylist] = useState<PlaylistChoice | null>(null);
@@ -145,12 +148,19 @@ export default function RadioPage() {
 
     const load = async () => {
       try {
-        const [songData, playlistData] = await Promise.all([
+        const [songData, playlistData, albumCards] = await Promise.all([
           radioGet<ApiSong[]>("/canciones"),
           radioGet<ApiPlaylistInfo[]>("/playlists"),
+          listAlbums().catch(() => []),
         ]);
         setSongs(songData);
         setGlobalPlaylists(playlistData);
+        const albumDetails = await Promise.all(albumCards.map((album) => getAlbum(album.id).catch(() => null)));
+        setAvailableAlbums(albumDetails.flatMap((album) => {
+          if (!album) return [];
+          const entries = album.tracks.filter((entry) => entry.song && (entry.state === "revealed" || entry.state === "normal"));
+          return entries.length > 0 ? [{ id: album.id, name: album.nombre, count: entries.length, entryIds: entries.map((entry) => entry.entryId) }] : [];
+        }));
       } catch {
         setMessage({ type: "error", text: "No se pudo cargar el catalogo." });
       }
@@ -263,7 +273,11 @@ export default function RadioPage() {
       name: playlist.nombre,
       count: playlist.numCanciones,
     })),
-  ], [globalPlaylists, privatePlaylists]);
+    ...availableAlbums.map((album) => ({
+      kind: "album" as const,
+      ...album,
+    })),
+  ], [availableAlbums, globalPlaylists, privatePlaylists]);
 
   const filteredSongs = useMemo(() => {
     const visibleSongs = songs.filter((song) => isVisible(song.id));
@@ -324,6 +338,15 @@ export default function RadioPage() {
 
     const playlist = selectedItem.playlist;
     const shuffle = playlistShuffle;
+
+    if (playlist.kind === "album") {
+      runRadioAction(() => addAlbumToRadio<RadioState>(playlist.id, {
+        entryIds: playlist.entryIds,
+        shuffle,
+        ...addOptions(),
+      }));
+      return;
+    }
 
     if (playlist.kind === "private" || playlist.kind === "external") {
       const url = playlist.kind === "external"
@@ -554,7 +577,7 @@ export default function RadioPage() {
                       <div>
                         <strong>{playlist.name}</strong>
                         <span>
-                          {playlist.kind === "private" ? "Propia pública" : playlist.kind === "external" ? "URL pública" : "Global"} - {playlist.count} canciones
+                          {playlist.kind === "private" ? "Propia pública" : playlist.kind === "external" ? "URL pública" : playlist.kind === "album" ? "Álbum disponible" : "Global"} - {playlist.count} canciones
                         </span>
                       </div>
                     </button>

@@ -25,11 +25,21 @@ const sampleFrequencyData = (
 export default function MusicWaveHeader({ simple = false }: { simple?: boolean }) {
   const { currentTrack, isPlaying, getAudioFrequencyData } = useMusicPlayer();
   const [nativePlayback, setNativePlayback] = useState({ known: false, hasTrack: false, isPlaying: false });
+  const [albumDiscVisible, setAlbumDiscVisible] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rafRef = useRef<number | null>(null);
   const nativeFrequencyDataRef = useRef<Uint8Array | null>(null);
   const smoothedLevelsRef = useRef<Float32Array>(new Float32Array(MAX_BAR_COUNT));
   const lastFrameAtRef = useRef(0);
+
+  useEffect(() => {
+    const syncAlbumDiscVisibility = () => {
+      setAlbumDiscVisible(Boolean(document.querySelector(".album-disc-backdrop--visible")));
+    };
+    syncAlbumDiscVisibility();
+    window.addEventListener("farreo:album-disc-visibility", syncAlbumDiscVisibility);
+    return () => window.removeEventListener("farreo:album-disc-visibility", syncAlbumDiscVisibility);
+  }, []);
 
   useEffect(() => {
     const native = getFarreoNativeAudio();
@@ -71,7 +81,7 @@ export default function MusicWaveHeader({ simple = false }: { simple?: boolean }
 
   const nativeIsPlaying = nativePlayback.known && nativePlayback.hasTrack && nativePlayback.isPlaying;
   const webIsPlaying = !nativePlayback.known && Boolean(currentTrack && isPlaying);
-  const shouldShow = nativeIsPlaying || webIsPlaying;
+  const shouldShow = (nativeIsPlaying || webIsPlaying) && !albumDiscVisible;
 
   useEffect(() => {
     if (!nativeIsPlaying) return;

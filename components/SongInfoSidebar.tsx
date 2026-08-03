@@ -7,6 +7,7 @@ import SongArtwork from "@/components/SongArtwork";
 import { useMusicPlayer, useMusicPlayerTime, type MusicPlaylistSource } from "@/components/MusicPlayerProvider";
 import { getMediaUrl } from "@/lib/radioApi";
 import { parseSrt } from "@/lib/lyrics";
+import SongDiscoverySections from "@/components/SongDiscoverySections";
 
 const SIDEBAR_VISIBILITY_KEY = "farreo-song-info-sidebar";
 
@@ -21,6 +22,7 @@ const getSourceHref = (source: MusicPlaylistSource | null) => {
   if (!source) return null;
   if (source.type === "global") return `/playlist/${encodeURIComponent(source.id)}`;
   if (source.type === "private") return `/user-playlist/${encodeURIComponent(source.id)}`;
+  if (source.type === "album") return `/album/${encodeURIComponent(source.id)}`;
   return null;
 };
 
@@ -105,13 +107,14 @@ const LyricsWindow = memo(function LyricsWindow({
 });
 
 export default function SongInfoSidebar() {
-  const { currentTrack, currentSource, duration, handleSeek, isPlaying, togglePlayPause } = useMusicPlayer();
+  const { currentTrack, currentSource, duration, handleSeek, isPitchLocked, isPlaying, togglePlayPause, toggleTrack } = useMusicPlayer();
   const { visualCurrentTime } = useMusicPlayerTime();
-  const [open, setOpen] = useState(() => (
+  const [preferredOpen, setPreferredOpen] = useState(() => (
     typeof window === "undefined"
       ? true
       : window.localStorage.getItem(SIDEBAR_VISIBILITY_KEY) !== "closed"
   ));
+  const [openedAlbumId, setOpenedAlbumId] = useState<string | null>(null);
   const [lyricsExpanded, setLyricsExpanded] = useState(false);
   const [autoFollow, setAutoFollow] = useState(true);
   const dynamicLyrics = useMemo(() => parseSrt(currentTrack?.lyricsSrt), [currentTrack?.lyricsSrt]);
@@ -126,20 +129,27 @@ export default function SongInfoSidebar() {
   const activeLyricIndex = dynamicLyrics.findIndex((cue) => visualCurrentTime >= cue.start && visualCurrentTime <= cue.end);
   const advancedCoverUrl = currentTrack?.advancedCoverUrl ? getMediaUrl(currentTrack.advancedCoverUrl) : "";
   const advancedCoverIsVideo = Boolean(currentTrack?.advancedCoverType?.startsWith("video/"));
+  const albumFirstListenLocked = currentSource?.type === "album" && isPitchLocked;
+  const open = currentSource?.type === "album"
+    ? openedAlbumId === currentSource.id && preferredOpen
+    : preferredOpen;
 
   const hidePanel = () => {
     window.localStorage.setItem(SIDEBAR_VISIBILITY_KEY, "closed");
-    setOpen(false);
+    setPreferredOpen(false);
+    setOpenedAlbumId(null);
   };
 
   const showPanel = () => {
+    if (albumFirstListenLocked) return;
     window.localStorage.setItem(SIDEBAR_VISIBILITY_KEY, "open");
-    setOpen(true);
+    setPreferredOpen(true);
+    if (currentSource?.type === "album") setOpenedAlbumId(currentSource.id);
   };
 
   if (!currentTrack) return null;
 
-  if (!open) {
+  if (!open && !albumFirstListenLocked) {
     return (
       <button
         type="button"
@@ -153,7 +163,12 @@ export default function SongInfoSidebar() {
   }
 
   return (
-    <aside className="song-info-sidebar song-info-sidebar--open" aria-label="Informacion de la cancion actual">
+    <aside
+      className={`song-info-sidebar ${albumFirstListenLocked ? "song-info-sidebar--locked-hidden" : "song-info-sidebar--open"}`}
+      aria-label="Informacion de la cancion actual"
+      aria-hidden={albumFirstListenLocked}
+      inert={albumFirstListenLocked}
+    >
       <header className="song-info-sidebar__header">
         <button type="button" onClick={hidePanel} title="Plegar panel">
           <ChevronRightIcon size={18} />
@@ -177,7 +192,7 @@ export default function SongInfoSidebar() {
               <img src={advancedCoverUrl} alt="" loading="lazy" />
             )}
             <div className="song-info-sidebar__advanced-cover-info">
-              <SongArtwork src={currentTrack.iconUrl} alt={currentTrack.name} className="song-info-sidebar__advanced-cover-artwork" />
+              <SongArtwork src={currentTrack.iconUrl} alt={currentTrack.name} className="song-info-sidebar__advanced-cover-artwork" sizes="160px" eager />
               <div className="song-info-sidebar__advanced-cover-text">
                 <h2>{currentTrack.name}</h2>
               </div>
@@ -192,7 +207,7 @@ export default function SongInfoSidebar() {
             </button>
           </div>
         ) : (
-          <SongArtwork src={currentTrack.iconUrl} alt={currentTrack.name} className="song-info-sidebar__artwork" />
+          <SongArtwork src={currentTrack.iconUrl} alt={currentTrack.name} className="song-info-sidebar__artwork" sizes="420px" eager />
         )}
 
         {!advancedCoverUrl && (
@@ -255,6 +270,15 @@ export default function SongInfoSidebar() {
             <strong>{formatCreatedAt(currentTrack.createdAt)}</strong>
           </div>
         </section>
+
+        <SongDiscoverySections
+          track={currentTrack}
+          onPlaySong={(song) => toggleTrack({ ...song, url: getMediaUrl(song.url) }, [{ ...song, url: getMediaUrl(song.url) }], {
+            id: song.id,
+            name: "Cancion suelta",
+            type: "song",
+          })}
+        />
       </div>
     </aside>
   );
