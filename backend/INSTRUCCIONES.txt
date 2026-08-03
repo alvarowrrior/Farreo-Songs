@@ -1,0 +1,57 @@
+--------------------------------------------------------------
+🎵 INSTRUCCIONES PARA EL SERVIDOR DE MÚSICA FARREO (UBUNTU) 🎵
+--------------------------------------------------------------
+
+Esta carpeta convierte tu ordenador en el servidor de música de Farreo.
+Al tener un dominio DDNS, el creador de Farreo puede conectarse siempre
+al mismo dominio aunque cambie tu IP.
+
+REQUISITOS PREVIOS
+------------------------------------------
+- Puerto 3001 abierto y redirigido en tu router hacia este ordenador.
+- Puerto 80 abierto temporalmente (solo para obtener el certificado HTTPS).
+- Tu cliente de DDNS configurado y corriendo (welite.ddns.net).
+
+PASO 1: ABRIR FIREWALL (Solo la primera vez)
+------------------------------------------
+  sudo ufw allow 3001
+  sudo ufw allow 80
+  sudo ufw reload
+
+PASO 2: DAR PERMISOS A LOS SCRIPTS (Solo la primera vez)
+------------------------------------------
+  chmod +x 1-instalar.sh 2-encender-y-exponer.sh
+
+PASO 3: INSTALAR DEPENDENCIAS (Solo la primera vez)
+------------------------------------------
+  ./1-instalar.sh
+
+PASO 4: OBTENER CERTIFICADO HTTPS (Solo la primera vez)
+------------------------------------------
+Este paso es CRUCIAL. Sin él, la web no puede conectarse al servidor.
+Ejecuta (puedes poner cualquier email tuyo):
+
+  sudo certbot certonly --standalone -d welite.ddns.net --email tu@email.com --agree-tos
+
+Si todo va bien, verás "Successfully received certificate".
+Los certificados se renuevan automáticamente cada 90 días.
+
+PASO 5: ENCENDER EL SERVIDOR
+------------------------------------------
+  sudo ./2-encender-y-exponer.sh
+
+NOTA: Se necesita "sudo" porque los certificados están en /etc/letsencrypt/
+y solo root puede leerlos.
+
+El servidor arrancará en HTTPS en el puerto 3001. Verás:
+  🎵 Servidor de Música Farreo iniciado (HTTPS 🔒)
+
+NOTAS IMPORTANTES
+------------------------------------------
+- Esta ventana debe quedarse ABIERTA mientras queráis usar Farreo.
+  Si la cierras, la música dejará de funcionar.
+- Para añadir canciones sin usar la web, arrastra archivos .mp3
+  a la carpeta "almacenamiento_compartido/audios/".
+- Los certificados se renuevan solos. Si alguna vez fallan:
+  sudo certbot renew
+--------------------------------------------------------------
