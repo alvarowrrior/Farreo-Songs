@@ -22,6 +22,7 @@ import {
   ShareIcon,
   ShieldIcon,
   TrashIcon,
+  WrenchIcon,
 } from "lucide-react";
 import { auth } from "@/lib/firebase";
 import { getMediaUrl, radioGet, type ApiPlaylistInfo, type ApiSong } from "@/lib/radioApi";
@@ -611,6 +612,14 @@ export default function AppSidebar() {
           >
             <RadioIcon size={20} />
             <span>Radio</span>
+          </Link>
+          <Link
+            href="/tools"
+            className={`app-sidebar__nav-item ${pathname.startsWith("/tools") ? "app-sidebar__nav-item--active" : ""}`}
+            title="Herramientas"
+          >
+            <WrenchIcon size={20} />
+            <span>Herramientas</span>
           </Link>
         </div>
 

@@ -13,6 +13,7 @@
     "android:build:debug": "cd android && gradlew assembleDebug"
   },
   "dependencies": {
+    "@breezystack/lamejs": "^1.2.7",
     "@capacitor/android": "^8.4.1",
     "@capacitor/cli": "^8.4.1",
     "@capacitor/core": "^8.4.1",
@@ -22,6 +23,7 @@
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "sass": "^1.97.3",
+    "soundtouchjs": "^0.3.0",
     "three": "^0.185.1"
   },
   "devDependencies": {

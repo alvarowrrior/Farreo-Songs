@@ -6,7 +6,13 @@ export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const userAgent = request.headers.get("user-agent") || "";
 
-  if (!MOBILE_USER_AGENT.test(userAgent) || pathname === "/mobile" || pathname.startsWith("/recommendation/")) {
+  // /tools no tiene equivalente en la UI movil: se sirve tal cual en cualquier dispositivo.
+  if (
+    !MOBILE_USER_AGENT.test(userAgent) ||
+    pathname === "/mobile" ||
+    pathname.startsWith("/tools") ||
+    pathname.startsWith("/recommendation/")
+  ) {
     return NextResponse.next();
   }
 

@@ -1985,6 +1985,12 @@ songThemeStore.registerRoutes({
 });
 
 // ==========================================
+// RUTAS DE DESCARGA DE YOUTUBE
+// ==========================================
+const { registerYoutubeRoutes } = require('./youtube');
+registerYoutubeRoutes({ app, requireAdmin: albumApi.requireAdmin });
+
+// ==========================================
 // RUTAS DE RADIO
 // ==========================================
 

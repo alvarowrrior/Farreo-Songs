@@ -1,0 +1,424 @@
+@use "../utils/mixins" as mx;
+@use "../variables" as vars;
+
+.tools-page {
+    max-width: 780px;
+    margin: 0 auto;
+    padding: 3rem 1.5rem 4rem;
+
+    &__header {
+        margin-bottom: 2rem;
+    }
+
+    &__title {
+        font-size: vars.$font-size-3xl;
+        font-weight: 900;
+        color: vars.$text-white;
+        letter-spacing: -0.02em;
+    }
+
+    &__subtitle {
+        font-size: vars.$font-size-sm;
+        color: vars.$text-gray-400;
+        margin-top: 0.35rem;
+    }
+
+    &__tabs {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: 1.5rem;
+        overflow-x: auto;
+        scrollbar-width: none;
+
+        &::-webkit-scrollbar {
+            display: none;
+        }
+    }
+
+    &__tab {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        flex: 0 0 auto;
+        padding: 0.6rem 1.1rem;
+        border-radius: 999px;
+        border: 1px solid vars.$border-color;
+        background-color: rgba(24, 24, 27, 0.5);
+        color: vars.$text-gray-400;
+        font-size: vars.$font-size-sm;
+        font-weight: 600;
+        cursor: pointer;
+        transition: color 0.2s ease, border-color 0.2s ease, background-color 0.2s ease;
+
+        &:hover {
+            color: vars.$text-white;
+            border-color: vars.$border-hover;
+        }
+
+        &--active {
+            color: vars.$bg-dark;
+            background-color: vars.$color-primary;
+            border-color: vars.$color-primary;
+
+            &:hover {
+                color: vars.$bg-dark;
+                background-color: vars.$color-primary-hover;
+            }
+        }
+    }
+
+    &__panel {
+        background-color: rgba(24, 24, 27, 0.4);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        border-radius: 1.5rem;
+        padding: 2rem;
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+    }
+
+    @include mx.render-to(vars.$bp-sm) {
+        padding: 2rem 1rem 3rem;
+
+        &__panel {
+            padding: 1.25rem;
+            border-radius: 1rem;
+        }
+    }
+}
+
+// El estudio necesita más ancho que los formularios simples.
+.tools-page__panel--wide {
+    max-width: none;
+}
+
+.tools-page:has(.tools-page__panel--wide) {
+    max-width: 1100px;
+}
+
+// ---------------------------------------------------------------- formularios
+
+.tools-form {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+}
+
+.tools-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+
+    > label {
+        font-size: vars.$font-size-sm;
+        font-weight: 600;
+        color: vars.$text-gray-200;
+    }
+
+    input[type="text"] {
+        width: 100%;
+        padding: 0.75rem 1rem;
+        border-radius: 0.75rem;
+        border: 1px solid vars.$border-color;
+        background-color: rgba(9, 9, 11, 0.6);
+        color: vars.$text-white;
+        font-size: vars.$font-size-sm;
+        transition: border-color 0.2s ease;
+
+        &::placeholder {
+            color: rgba(161, 161, 170, 0.6);
+        }
+
+        &:focus {
+            outline: none;
+            border-color: vars.$color-primary;
+        }
+
+        &:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+    }
+}
+
+.tools-radio-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+}
+
+.tools-radio {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.55rem 0.9rem;
+    border-radius: 0.75rem;
+    border: 1px solid vars.$border-color;
+    background-color: rgba(9, 9, 11, 0.5);
+    color: vars.$text-gray-200;
+    font-size: vars.$font-size-sm;
+    cursor: pointer;
+
+    &:has(input:checked) {
+        border-color: vars.$color-primary;
+        color: vars.$text-white;
+    }
+
+    &:has(input:disabled) {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+
+    input {
+        accent-color: vars.$color-primary;
+    }
+}
+
+.tools-file {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+    padding: 1.75rem 1rem;
+    border-radius: 1rem;
+    border: 1px dashed vars.$border-hover;
+    background-color: rgba(9, 9, 11, 0.45);
+    color: vars.$text-gray-400;
+    cursor: pointer;
+    text-align: center;
+    transition: border-color 0.2s ease, background-color 0.2s ease;
+
+    &:hover {
+        border-color: vars.$color-primary;
+        background-color: rgba(245, 158, 11, 0.04);
+    }
+
+    input[type="file"] {
+        position: absolute;
+        inset: 0;
+        opacity: 0;
+        width: 100%;
+        height: 100%;
+        cursor: pointer;
+    }
+
+    &__name {
+        font-size: vars.$font-size-sm;
+        font-weight: 600;
+        color: vars.$text-white;
+        word-break: break-all;
+    }
+
+    &__hint {
+        font-size: vars.$font-size-xs;
+        color: vars.$text-gray-400;
+    }
+
+}
+
+// ------------------------------------------------------------------- botones
+
+.tools-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.7rem 1.2rem;
+    border-radius: 0.75rem;
+    border: 1px solid vars.$border-color;
+    background-color: rgba(255, 255, 255, 0.06);
+    color: vars.$text-white;
+    font-size: vars.$font-size-sm;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.2s ease, border-color 0.2s ease, opacity 0.2s ease;
+
+    &:hover:not(:disabled) {
+        background-color: rgba(255, 255, 255, 0.12);
+        border-color: vars.$border-hover;
+    }
+
+    &:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+    }
+
+    &--primary {
+        background-color: vars.$color-primary;
+        border-color: vars.$color-primary;
+        color: vars.$bg-dark;
+
+        &:hover:not(:disabled) {
+            background-color: vars.$color-primary-hover;
+            border-color: vars.$color-primary-hover;
+        }
+    }
+
+    &--ghost {
+        background-color: transparent;
+    }
+
+    &--block {
+        width: 100%;
+    }
+}
+
+// --------------------------------------------------------------- feedback UI
+
+.tools-status {
+    font-size: vars.$font-size-sm;
+    color: vars.$text-gray-400;
+    text-align: center;
+}
+
+.tools-hint {
+    font-size: vars.$font-size-xs;
+    color: vars.$text-gray-400;
+    line-height: 1.6;
+
+    code {
+        padding: 0.1rem 0.35rem;
+        border-radius: 0.3rem;
+        background-color: rgba(255, 255, 255, 0.08);
+        font-size: 0.95em;
+    }
+}
+
+.tools-error {
+    padding: 0.75rem 1rem;
+    border-radius: 0.75rem;
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    background-color: rgba(239, 68, 68, 0.1);
+    color: #fca5a5;
+    font-size: vars.$font-size-sm;
+}
+
+.tools-notice {
+    padding: 0.75rem 1rem;
+    border-radius: 0.75rem;
+    border: 1px solid vars.$border-color;
+    background-color: rgba(255, 255, 255, 0.04);
+    color: vars.$text-gray-200;
+    font-size: vars.$font-size-sm;
+    line-height: 1.55;
+
+    &--warning {
+        border-color: rgba(245, 158, 11, 0.35);
+        background-color: rgba(245, 158, 11, 0.08);
+    }
+
+    strong {
+        color: vars.$text-white;
+    }
+}
+
+// -------------------------------------------------------------------- estudio
+
+.tools-studio {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+
+    &__viz {
+        width: 100%;
+        height: 96px;
+        border-radius: 0.75rem;
+        border: 1px solid vars.$border-color;
+        background-color: rgba(9, 9, 11, 0.6);
+    }
+
+    &__transport {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.6rem;
+    }
+
+    &__groups {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        gap: 1rem;
+    }
+
+    &__group {
+        border: 1px solid vars.$border-color;
+        border-radius: 1rem;
+        padding: 1rem 1.1rem 1.1rem;
+        background-color: rgba(9, 9, 11, 0.35);
+        min-width: 0;
+
+        legend {
+            padding: 0 0.5rem;
+            font-size: vars.$font-size-xs;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: vars.$color-primary;
+        }
+    }
+
+    &__toggle {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-bottom: 0.75rem;
+        font-size: vars.$font-size-sm;
+        color: vars.$text-gray-200;
+        cursor: pointer;
+
+        input {
+            accent-color: vars.$color-primary;
+        }
+    }
+
+    &__slider {
+        display: grid;
+        grid-template-columns: minmax(0, 7.5rem) minmax(0, 1fr) 4rem 1.75rem;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.28rem 0;
+
+        > label {
+            font-size: vars.$font-size-xs;
+            color: vars.$text-gray-400;
+            @include mx.text-truncate;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            accent-color: vars.$color-primary;
+            cursor: pointer;
+        }
+    }
+
+    &__num {
+        width: 100%;
+        padding: 0.3rem 0.4rem;
+        border-radius: 0.4rem;
+        border: 1px solid vars.$border-color;
+        background-color: rgba(9, 9, 11, 0.6);
+        color: vars.$text-white;
+        font-size: vars.$font-size-xs;
+        text-align: right;
+
+        &:focus {
+            outline: none;
+            border-color: vars.$color-primary;
+        }
+    }
+
+    &__unit {
+        font-size: vars.$font-size-xs;
+        color: vars.$text-gray-400;
+    }
+
+    @include mx.render-to(vars.$bp-sm) {
+        &__groups {
+            grid-template-columns: 1fr;
+        }
+
+        &__slider {
+            grid-template-columns: minmax(0, 6rem) minmax(0, 1fr) 3.25rem 1.5rem;
+        }
+    }
+}

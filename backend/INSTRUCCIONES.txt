@@ -46,6 +46,39 @@ y solo root puede leerlos.
 El servidor arrancará en HTTPS en el puerto 3001. Verás:
   🎵 Servidor de Música Farreo iniciado (HTTPS 🔒)
 
+PASO 6 (OPCIONAL): DESCARGA DE YOUTUBE
+------------------------------------------
+Solo si quieres que funcione el apartado "Herramientas > Desde YouTube"
+de la web. Si te saltas este paso, todo lo demas sigue funcionando y esa
+pestana simplemente aparece desactivada.
+
+  sudo apt install pipx ffmpeg
+  pipx install yt-dlp
+  sudo ln -s ~/.local/bin/yt-dlp /usr/local/bin/yt-dlp
+
+Comprueba que el servidor los encuentra:
+
+  which yt-dlp
+  which ffmpeg
+
+Sin ffmpeg la descarga sigue funcionando, pero el audio se baja en M4A
+sin convertir en vez de MP3.
+
+IMPORTANTE: YouTube rompe los extractores de yt-dlp cada pocas semanas.
+Si algun dia deja de funcionar, actualizalo con:
+
+  pipx upgrade yt-dlp
+
+Quien puede usarlo: solo los administradores de Farreo (los emails de
+NEXT_PUBLIC_ADMIN_EMAILS). Se comprueba con el token de Firebase, igual
+que el panel de albumes. Esto es a proposito: sin esa restriccion
+cualquiera que descubriera la URL podria usar tu conexion para bajar
+videos.
+
+Ojo con el ancho de banda: un video son 50-200 MB que salen por la misma
+linea que sirve la musica. Si notas cortes mientras alguien descarga,
+baja YOUTUBE_MAX_CONCURRENT a 1 en el .env.
+
 NOTAS IMPORTANTES
 ------------------------------------------
 - Esta ventana debe quedarse ABIERTA mientras queráis usar Farreo.
