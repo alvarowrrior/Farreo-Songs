@@ -994,6 +994,21 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       playNext();
       return;
     }
+    // Una pista de album con primera escucha pendiente necesita preguntar al
+    // servidor si el pitch va bloqueado, y esa consulta es asincrona. Este
+    // intercambio es sincrono a proposito, asi que la mandamos por startTrack,
+    // que ya sabe hacerlo. Sin esto la primera escucha se saltaba el bloqueo
+    // cuando la cancion entraba encadenada en vez de elegida a mano.
+    if (next.firstListenPending && next.albumId && next.albumEntryId) {
+      playNext();
+      return;
+    }
+    // Venimos de una pista con el pitch bloqueado: hay que soltarlo. El
+    // bloqueo solo se ponia y quitaba en startTrack, asi que al encadenar
+    // automaticamente se quedaba activo y dejaba el slider muerto para el
+    // resto de la cola.
+    pitchLockedRef.current = false;
+    setIsPitchLocked(false);
     if (currentTrack) setHistory((prev) => [...prev, currentTrack]);
     if (isShuffle) {
       shuffleRemainingRef.current = shuffleRemainingRef.current.filter((id) => id !== next.id);

@@ -331,6 +331,10 @@ async function loadSharpModule() {
     return sharpModulePromise;
 }
 
+// Iconos que ya son mas pequenos que el tamano pedido: no hay variante que
+// cachear en disco, asi que recordamos aqui que van tal cual.
+const songIconPassthrough = new Set();
+
 app.get('/song-icon/:size/:fileName', async (req, res, next) => {
     try {
         const requestedSize = Number(req.params.size);
@@ -342,28 +346,40 @@ app.get('/song-icon/:size/:fileName', async (req, res, next) => {
         }
 
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-        const sharp = await loadSharpModule();
-        if (!sharp) return res.sendFile(sourcePath);
 
+        // La clave de cache sale del stat, que es barato. Comprobamos el acierto
+        // ANTES de tocar sharp: antes se decodificaba la cabecera de la imagen
+        // en CADA peticion, y una lista de movil pide decenas de portadas a la
+        // vez, asi que se iba toda la CPU en releer imagenes ya convertidas.
         const sourceStats = fs.statSync(sourcePath);
-        const sourceMetadata = await sharp(sourcePath, { animated: false }).metadata();
-        const width = Number(sourceMetadata.width) || 0;
-        const height = Number(sourceMetadata.height) || 0;
-        if ((width && width <= size) && (height && height <= size)) return res.sendFile(sourcePath);
-
         const cacheKey = crypto.createHash('sha1')
             .update(`${fileName}:${sourceStats.mtimeMs}:${sourceStats.size}:${size}`)
             .digest('hex');
         const outputPath = path.join(SONG_ICON_VARIANTS_DIR, `${cacheKey}.webp`);
-        if (!fs.existsSync(outputPath)) {
-            const temporaryPath = `${outputPath}.${process.pid}.tmp`;
-            await sharp(sourcePath, { animated: false })
-                .rotate()
-                .resize({ width: size, height: size, fit: 'inside', withoutEnlargement: true })
-                .webp({ quality: Math.min(82, ICON_WEBP_QUALITY) })
-                .toFile(temporaryPath);
-            fs.renameSync(temporaryPath, outputPath);
+        if (fs.existsSync(outputPath)) return res.type('image/webp').sendFile(outputPath);
+        // Los originales mas pequenos que el tamano pedido no generan variante,
+        // asi que nunca acertarian en la cache de disco. Recordamos esa decision
+        // en memoria para no medirlos una y otra vez.
+        if (songIconPassthrough.has(cacheKey)) return res.sendFile(sourcePath);
+
+        const sharp = await loadSharpModule();
+        if (!sharp) return res.sendFile(sourcePath);
+
+        const sourceMetadata = await sharp(sourcePath, { animated: false }).metadata();
+        const width = Number(sourceMetadata.width) || 0;
+        const height = Number(sourceMetadata.height) || 0;
+        if ((width && width <= size) && (height && height <= size)) {
+            songIconPassthrough.add(cacheKey);
+            return res.sendFile(sourcePath);
         }
+
+        const temporaryPath = `${outputPath}.${process.pid}.tmp`;
+        await sharp(sourcePath, { animated: false })
+            .rotate()
+            .resize({ width: size, height: size, fit: 'inside', withoutEnlargement: true })
+            .webp({ quality: Math.min(82, ICON_WEBP_QUALITY) })
+            .toFile(temporaryPath);
+        fs.renameSync(temporaryPath, outputPath);
         return res.type('image/webp').sendFile(outputPath);
     } catch (error) {
         next(error);
