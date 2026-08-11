@@ -40,10 +40,22 @@ yarn-error.log*
 # vercel
 .vercel
 
+# Backend: versionamos el codigo, pero no secretos,
+# dependencias ni almacenamiento generado.
+
+/backend/node_modules/
+/backend/almacenamiento_compartido/
+
+/backend/*.json
+!/backend/package.json
+!/backend/package-lock.json
+
+/backend/.env
+!/backend/.env.example
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
-/backend/
 /backend_bot_discord/
 
 # Android SDK path is machine-specific.
