@@ -348,6 +348,7 @@
   &--revealing {
     pointer-events: none;
     isolation: isolate;
+    overflow: hidden;
   }
 
   &__reveal-overlay {

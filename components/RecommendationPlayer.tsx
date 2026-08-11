@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { SparklesIcon } from "lucide-react";
+import { CompassIcon } from "lucide-react";
 import PlaylistSongTable from "@/components/PlaylistSongTable";
+import RecommendationArtwork from "@/components/RecommendationArtwork";
 import { useMusicPlayer } from "@/components/MusicPlayerProvider";
 import { auth } from "@/lib/firebase";
 import { addSongToPrivatePlaylist, listOwnPrivatePlaylists, type PrivatePlaylist } from "@/lib/privatePlaylists";
@@ -30,7 +31,7 @@ export default function RecommendationPlayer({ token }: { token: string }) {
     <main className="playlist-admin recommendation-player">
       <div className="playlist-admin__content">
         <header className="recommendation-player__header">
-          <SparklesIcon size={30} />
+          {recommendation ? <RecommendationArtwork songs={recommendation.songs} className="recommendation-player__artwork" sizes="160px" /> : <CompassIcon size={30} />}
           <div><small>Seleccion semanal</small><h1>{recommendation?.name || (error ? "Recomendacion no disponible" : "Preparando recomendacion...")}</h1></div>
         </header>
         {error ? <p className="playlist-admin__empty">{error}</p> : (

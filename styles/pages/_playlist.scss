@@ -283,6 +283,8 @@
   }
 
   &__recommendation-card {
+    position: relative;
+    overflow: hidden;
     min-width: 0;
     height: 72px;
     padding: 0.45rem;
@@ -304,6 +306,7 @@
 
     > .song-artwork,
     > img,
+    > .playlist-admin__recommendation-artwork,
     .playlist-admin__recommendation-collage {
       width: 56px;
       height: 56px;
@@ -311,11 +314,13 @@
       object-fit: cover;
     }
 
-    > span:last-child {
+    > span:last-child,
+    > .playlist-admin__recommendation-copy {
       min-width: 0;
       display: flex;
       flex-direction: column;
       gap: 0.2rem;
+      overflow: hidden;
     }
 
     strong,
@@ -333,6 +338,100 @@
   &__recommendation-card--daily {
     border-color: rgba(30, 215, 96, 0.25);
     background: rgba(30, 215, 96, 0.075);
+  }
+
+  &__recommendation-artwork {
+    position: relative;
+    display: block;
+    overflow: hidden;
+
+    .song-artwork {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+  }
+
+  &__recommendation-play-state {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.38);
+    opacity: 0.82;
+    transition: opacity 140ms ease;
+  }
+
+  &__recommendation-card--daily:hover &__recommendation-play-state,
+  &__recommendation-card--daily:focus-visible &__recommendation-play-state {
+    opacity: 1;
+  }
+
+  &__recommendation-card--playing &__recommendation-play-state {
+    opacity: 1;
+  }
+
+  &__recommendation-reveal {
+    position: absolute;
+    z-index: 3;
+    inset: 0;
+    // Debe coincidir exactamente con la tarjeta real para que el texto no
+    // salte unos pixeles cuando termina el fundido de revelacion.
+    padding: 0.45rem;
+    border-radius: inherit;
+    display: grid !important;
+    grid-template-columns: 56px minmax(0, 1fr);
+    align-items: center;
+    gap: 0.7rem;
+    overflow: hidden;
+    color: #fff;
+    background: linear-gradient(100deg, rgba(12, 39, 24, 0.99), rgba(11, 18, 14, 0.99));
+
+    > svg {
+      justify-self: center;
+      color: #42e982;
+      filter: drop-shadow(0 0 10px rgba(66, 233, 130, 0.42));
+    }
+
+    > span:not(.playlist-admin__recommendation-reveal-particles) {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.18rem;
+    }
+  }
+
+  &__recommendation-card--revealing &__recommendation-reveal {
+    animation: daily-recommendation-reveal 1.35s ease both;
+
+    > svg {
+      animation: daily-recommendation-disc 1.15s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+    }
+  }
+
+  &__recommendation-reveal-particles {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+
+    i {
+      position: absolute;
+      width: 4px;
+      height: 4px;
+      border-radius: 50%;
+      background: #49ed8a;
+      opacity: 0.45;
+    }
+
+    i:nth-child(1) { left: 14%; top: 68%; }
+    i:nth-child(2) { left: 38%; top: 31%; }
+    i:nth-child(3) { left: 67%; top: 70%; }
+    i:nth-child(4) { left: 88%; top: 28%; }
+  }
+
+  &__recommendation-card--revealing &__recommendation-reveal-particles i {
+    animation: daily-recommendation-particle 1.05s ease-out both;
   }
 
   &__recommendation-collage {
@@ -2110,11 +2209,18 @@
   align-items: flex-end;
   gap: 1rem;
 
-  > svg {
-    width: 78px;
-    height: 78px;
-    padding: 1.2rem;
+  > svg,
+  .recommendation-player__artwork {
+    width: 160px;
+    height: 160px;
+    min-width: 160px;
+    flex: 0 0 160px;
+    aspect-ratio: 1;
     border-radius: 7px;
+  }
+
+  > svg {
+    padding: 1.2rem;
     color: #1ed760;
     background: rgba(30, 215, 96, 0.12);
   }
@@ -2130,6 +2236,132 @@
     font-size: clamp(2rem, 5vw, 4rem);
     line-height: 1;
   }
+}
+
+.infinite-home-carousel {
+  --carousel-card-width: 190px;
+  position: relative;
+  width: 100%;
+
+  &__viewport {
+    width: 100%;
+    display: flex;
+    gap: 1.35rem;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 0.1rem 0 0.45rem;
+    scrollbar-width: none;
+    overscroll-behavior-inline: contain;
+
+    &::-webkit-scrollbar { display: none; }
+  }
+
+  &__set {
+    flex: 0 0 auto;
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: var(--carousel-card-width);
+    gap: 1.35rem;
+  }
+
+  &:not(&--looping) &__set {
+    width: 100%;
+    grid-template-columns: repeat(auto-fit, minmax(155px, var(--carousel-card-width)));
+    grid-auto-flow: row;
+    justify-content: start;
+  }
+
+  .playlist-admin__card {
+    width: 100%;
+    min-width: 0;
+  }
+
+  &__arrow {
+    position: absolute;
+    z-index: 5;
+    top: 50%;
+    width: 28px;
+    height: 38px;
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    border-radius: 7px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    color: rgba(255, 255, 255, 0.82);
+    background: rgba(9, 9, 9, 0.72);
+    backdrop-filter: blur(7px);
+    cursor: pointer;
+    opacity: 0.58;
+    transform: translateY(-58%);
+    transition: opacity 150ms ease, background 150ms ease;
+
+    &:hover,
+    &:focus-visible {
+      opacity: 1;
+      background: rgba(20, 20, 20, 0.92);
+    }
+
+    &--left { left: 5px; }
+    &--right { right: 5px; }
+  }
+
+  &--albums {
+    --carousel-card-width: 133px;
+    gap: 1rem;
+
+    .infinite-home-carousel__viewport,
+    .infinite-home-carousel__set { gap: 1rem; }
+    .playlist-admin__card { padding: 0.65rem; gap: 0.55rem; }
+    .playlist-admin__card-name { font-size: 0.86rem; }
+    .playlist-admin__card-count { font-size: 0.7rem; }
+  }
+
+  &--news {
+    --carousel-card-width: 95px;
+    gap: 0.75rem;
+
+    .infinite-home-carousel__viewport,
+    .infinite-home-carousel__set { gap: 0.75rem; }
+    .playlist-admin__card { padding: 0.45rem; gap: 0.42rem; }
+    .playlist-admin__card-name { font-size: 0.72rem; }
+    .playlist-admin__card-count { font-size: 0.62rem; }
+    .album-home-card__badge { font-size: 0.53rem; padding: 0.16rem 0.25rem; }
+  }
+}
+
+.playlist-admin__section--globals {
+  margin-bottom: 7rem;
+}
+
+.recommendation-artwork {
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  background: #080808;
+
+  .song-artwork {
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    border-radius: 0;
+    object-fit: cover;
+  }
+}
+
+@keyframes daily-recommendation-reveal {
+  0%, 62% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@keyframes daily-recommendation-disc {
+  48% { transform: scale(1.28) rotate(180deg); filter: brightness(1.8) drop-shadow(0 0 18px rgba(66, 233, 130, 0.8)); }
+  100% { transform: scale(0.75) rotate(420deg); opacity: 0; }
+}
+
+@keyframes daily-recommendation-particle {
+  55% { opacity: 1; transform: translateY(-11px) scale(2); }
+  100% { opacity: 0; transform: translateY(-25px) scale(0); }
 }
 
 .playlist-song-table__menu-item {

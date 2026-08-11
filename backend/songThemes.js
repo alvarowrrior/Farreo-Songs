@@ -192,23 +192,40 @@ function createSongThemeStore({ storage, songsDirectory }) {
                 return {
                     id: `weekly-${crypto.createHash('sha1').update(`${seed}:${index}`).digest('hex').slice(0, 12)}`,
                     name: 'Seleccion semanal',
-                    songs: shuffled(entries.map(entry => entry.song), random).slice(0, 24),
+                    songs: shuffled(entries.map(entry => entry.song), random).slice(0, 16),
                     themeNames: [],
                 };
             }
 
-            const chosenCount = Math.min(themes.length, 1 + Math.floor(random() * 3));
-            const chosen = shuffled(themes, random).slice(0, chosenCount);
+            const shuffledThemes = shuffled(themes, random);
+            const chosenCount = Math.min(shuffledThemes.length, 1 + Math.floor(random() * 3));
+            const chosen = shuffledThemes.slice(0, chosenCount);
+            const candidateCount = () => {
+                const ids = new Set(chosen.map(theme => theme.id));
+                return entries.filter(entry => entry.themeIds.some(id => ids.has(id))).length;
+            };
+
+            // La seleccion empieza con uno a tres gustos. Si no alcanzan para
+            // formar una playlist util, incorpora temas adicionales antes de
+            // recurrir a canciones de relleno.
+            while (chosen.length < shuffledThemes.length && candidateCount() < 8) {
+                chosen.push(shuffledThemes[chosen.length]);
+            }
+
             const chosenIds = new Set(chosen.map(theme => theme.id));
-            const candidates = entries
+            const scoredCandidates = entries
                 .map(entry => ({
                     ...entry,
                     score: entry.themeIds.filter(id => chosenIds.has(id)).length,
                     random: random(),
                 }))
                 .filter(entry => entry.score > 0)
-                .sort((left, right) => right.score - left.score || left.random - right.random)
-                .slice(0, 30)
+                .sort((left, right) => right.score - left.score || left.random - right.random);
+            const selectedIds = new Set(scoredCandidates.map(entry => entry.song.id));
+            const filler = shuffled(entries.filter(entry => !selectedIds.has(entry.song.id)), random)
+                .map(entry => ({ ...entry, score: 0, random: random() }));
+            const candidates = [...scoredCandidates, ...filler]
+                .slice(0, Math.min(16, entries.length))
                 .map(entry => entry.song);
             const names = chosen.map(theme => theme.name);
             const name = names.length === 1
@@ -257,8 +274,14 @@ function createSongThemeStore({ storage, songsDirectory }) {
                     ? req.body.heardSongIds.slice(0, 10000).map(String)
                     : []);
                 const now = new Date();
-                const dayKey = now.toISOString().slice(0, 10);
-                const weekKey = isoWeekKey(now);
+                const requestedDayKey = String(req.body && req.body.dayKey || '');
+                const requestedWeekKey = String(req.body && req.body.weekKey || '');
+                const dayKey = /^\d{4}-\d{2}-\d{2}$/.test(requestedDayKey)
+                    ? requestedDayKey
+                    : now.toISOString().slice(0, 10);
+                const weekKey = /^\d{4}-\d{2}-\d{2}$/.test(requestedWeekKey)
+                    ? requestedWeekKey
+                    : isoWeekKey(now);
                 const entries = await publicSongData();
                 const dailyPool = entries.filter(entry => !heardIds.has(entry.song.id));
                 const dailyCandidates = dailyPool.length > 0 ? dailyPool : entries;
@@ -292,7 +315,7 @@ function createSongThemeStore({ storage, songsDirectory }) {
                 });
                 const albumRandom = seededRandom(`${clientSeed}:${weekKey}:album`);
                 const weeklyAlbum = albums.length > 0 ? albums[Math.floor(albumRandom() * albums.length)] : null;
-                res.json({ dayKey, weekKey, dailySong, weeklyPlaylists, weeklyAlbum });
+                res.json({ dayKey, weekKey, dailySong, dailySongUnheard: dailyPool.length > 0, weeklyPlaylists, weeklyAlbum });
             } catch (error) { next(error); }
         });
 

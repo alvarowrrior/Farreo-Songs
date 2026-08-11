@@ -352,6 +352,8 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
   }
 
   &__recommendation {
+    position: relative;
+    overflow: hidden;
     height: 62px;
     min-width: 0;
     padding: 0.35rem;
@@ -372,6 +374,7 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
 
     > .song-artwork,
     > img,
+    > .mobile-farreo__recommendation-artwork,
     .mobile-farreo__recommendation-collage {
       width: 48px;
       height: 48px;
@@ -379,11 +382,13 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
       object-fit: cover;
     }
 
-    > span:last-child {
+    > span:last-child,
+    > .mobile-farreo__recommendation-copy {
       min-width: 0;
       display: flex;
       flex-direction: column;
       gap: 0.12rem;
+      overflow: hidden;
     }
 
     strong,
@@ -407,6 +412,93 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
       border-color: rgba(30, 215, 96, 0.28);
       background: rgba(30, 215, 96, 0.08);
     }
+  }
+
+  &__recommendation-artwork {
+    position: relative;
+    display: block;
+    overflow: hidden;
+
+    .song-artwork {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+  }
+
+  &__recommendation-play-state {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.36);
+    opacity: 0.82;
+  }
+
+  &__recommendation--playing &__recommendation-play-state {
+    opacity: 1;
+  }
+
+  &__recommendation-reveal {
+    position: absolute;
+    z-index: 3;
+    inset: 0;
+    // Misma geometria que la tarjeta inferior durante todo el fundido.
+    padding: 0.35rem;
+    border-radius: inherit;
+    display: grid !important;
+    grid-template-columns: 48px minmax(0, 1fr);
+    align-items: center;
+    gap: 0.48rem;
+    overflow: hidden;
+    color: #fff;
+    background: linear-gradient(100deg, rgba(11, 38, 23, 0.99), rgba(10, 17, 13, 0.99));
+
+    > svg {
+      justify-self: center;
+      color: #42e982;
+      filter: drop-shadow(0 0 8px rgba(66, 233, 130, 0.44));
+    }
+
+    > span:not(.mobile-farreo__recommendation-reveal-particles) {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.1rem;
+    }
+  }
+
+  &__recommendation--revealing &__recommendation-reveal {
+    animation: daily-recommendation-reveal 1.35s ease both;
+
+    > svg {
+      animation: daily-recommendation-disc 1.15s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+    }
+  }
+
+  &__recommendation-reveal-particles {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+
+    i {
+      position: absolute;
+      width: 3px;
+      height: 3px;
+      border-radius: 50%;
+      background: #49ed8a;
+      opacity: 0.45;
+    }
+
+    i:nth-child(1) { left: 13%; top: 70%; }
+    i:nth-child(2) { left: 39%; top: 27%; }
+    i:nth-child(3) { left: 68%; top: 72%; }
+    i:nth-child(4) { left: 88%; top: 25%; }
+  }
+
+  &__recommendation--revealing &__recommendation-reveal-particles i {
+    animation: daily-recommendation-particle 1.05s ease-out both;
   }
 
   &__recommendation-collage {
@@ -457,6 +549,18 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
   &__album-carousel {
     cursor: auto;
     scroll-snap-type: x proximity;
+  }
+
+  &__news-carousel {
+    grid-auto-columns: clamp(92px, 26vw, 112px);
+
+    .mobile-farreo__playlist-card {
+      padding: 0.45rem;
+      gap: 0.45rem;
+    }
+
+    .mobile-farreo__playlist-title { font-size: 0.76rem; }
+    .mobile-farreo__playlist-meta { font-size: 0.66rem; }
   }
 
   &__playlist-card {
@@ -693,6 +797,21 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
     &--album {
       object-fit: contain;
       background: #111;
+    }
+
+    &--recommendation {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      grid-template-rows: 1fr 1fr;
+      overflow: hidden;
+
+      .song-artwork {
+        width: 100%;
+        height: 100%;
+        min-width: 0;
+        border-radius: 0;
+        object-fit: cover;
+      }
     }
   }
 
@@ -1007,14 +1126,21 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
     z-index: 4;
     inset: 0 42px 0 0;
     display: grid;
-    grid-template-columns: 54px minmax(0, 1fr);
+    // Replica la cuadricula de song-row--playlist que ya esta renderizada
+    // debajo, evitando cualquier salto al terminar el fade.
+    grid-template-columns: 58px minmax(0, 1fr);
     align-items: center;
-    gap: 0.75rem;
-    padding: 0.55rem;
+    gap: 0.8rem;
+    padding: 0.45rem 0;
     overflow: hidden;
     border-radius: 10px;
     background: linear-gradient(90deg, rgba(11, 31, 20, 0.99), rgba(12, 16, 14, 0.99));
     animation: mobile-album-reveal-overlay 1.35s ease both;
+
+    .mobile-farreo__album-mystery-art {
+      width: 58px;
+      height: 58px;
+    }
 
     > span:nth-child(2) {
       min-width: 0;

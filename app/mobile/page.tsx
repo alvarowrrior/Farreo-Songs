@@ -7,6 +7,7 @@ import {
   ArrowUpIcon,
   AudioLinesIcon,
   ChevronDownIcon,
+  CompassIcon,
   DicesIcon,
   Disc3Icon,
   Globe2Icon,
@@ -31,7 +32,6 @@ import {
   RotateCcwIcon,
   SearchIcon,
   Share2Icon,
-  SparklesIcon,
   ShuffleIcon,
   SkipBackIcon,
   SkipForwardIcon,
@@ -40,6 +40,7 @@ import {
   XIcon,
 } from "lucide-react";
 import SongArtwork from "@/components/SongArtwork";
+import RecommendationArtwork from "@/components/RecommendationArtwork";
 import AlbumDiscBackdrop from "@/components/AlbumDiscBackdrop";
 import SongDiscoverySections from "@/components/SongDiscoverySections";
 import {
@@ -100,14 +101,29 @@ import {
   type AlbumDetail,
   type AlbumTrackEntry,
 } from "@/lib/albums";
-import { getHomeRecommendations, recommendationHref, type HomeRecommendations } from "@/lib/recommendations";
+import { getHomeRecommendations, isDailyRecommendationRevealed, markDailyRecommendationRevealed, millisecondsUntilNextRecommendationDay, recommendationHref, type HomeRecommendations, type WeeklyRecommendation } from "@/lib/recommendations";
 import { recordSongListened } from "@/lib/listeningHistory";
+import { playRevealSound } from "@/lib/revealSound";
 
 type MobileTab = "home" | "radio" | "playlist" | "search" | "account";
 type MobilePlaylist =
   | { kind: "private"; id: string; name: string; iconUrl?: string | null; count: number; visibility?: "private" | "public"; activityAt?: string | null }
   | { kind: "global"; id: string; name: string; iconUrl?: string | null; count: number; followed?: boolean; activityAt?: string | null }
-  | { kind: "album"; id: string; name: string; iconUrl?: string | null; count: number; followed?: boolean; activityAt?: string | null; revelationEnabled?: boolean };
+  | { kind: "album"; id: string; name: string; iconUrl?: string | null; count: number; followed?: boolean; activityAt?: string | null; revelationEnabled?: boolean }
+  | { kind: "recommendation"; id: string; name: string; iconUrl?: string | null; count: number; songs: ApiSong[]; shareToken: string };
+
+const mobilePlaylistSourceType = (playlist: MobilePlaylist): MusicPlaylistSource["type"] =>
+  playlist.kind === "recommendation" ? "song" : playlist.kind;
+
+const toMobileRecommendation = (weekly: WeeklyRecommendation): MobilePlaylist => ({
+  kind: "recommendation",
+  id: weekly.id,
+  name: weekly.name,
+  iconUrl: weekly.songs[0]?.iconUrl,
+  count: weekly.songs.length,
+  songs: weekly.songs,
+  shareToken: weekly.shareToken,
+});
 
 interface ApiPlaylist {
   id?: string;
@@ -399,6 +415,7 @@ export default function MobilePage() {
   const [globalPlaylists, setGlobalPlaylists] = useState<ApiPlaylistInfo[]>([]);
   const [albums, setAlbums] = useState<AlbumCard[]>([]);
   const [recommendations, setRecommendations] = useState<HomeRecommendations | null>(null);
+  const [dailyRecommendationRevealing, setDailyRecommendationRevealing] = useState(false);
   const [followedIds, setFollowedIds] = useState<Set<string>>(new Set());
   const [followedActivity, setFollowedActivity] = useState<Map<string, string | null>>(new Map());
   const [privatePlaylists, setPrivatePlaylists] = useState<PrivatePlaylist[]>([]);
@@ -631,7 +648,7 @@ export default function MobilePage() {
   const selectedPlaylistIsActive = Boolean(
     selectedPlaylist &&
     activeSource?.id === selectedPlaylist.id &&
-    activeSource.type === selectedPlaylist.kind &&
+    activeSource.type === mobilePlaylistSourceType(selectedPlaylist) &&
     activeTrack,
   );
   const albumDiscActive = Boolean(
@@ -642,6 +659,13 @@ export default function MobilePage() {
     activeTrack,
   );
   const albumPageVisible = tab === "playlist" && selectedPlaylist?.kind === "album";
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      getHomeRecommendations(true).then(setRecommendations).catch(() => undefined);
+    }, millisecondsUntilNextRecommendationDay());
+    return () => window.clearTimeout(timer);
+  }, [recommendations?.dayKey]);
 
   useEffect(() => {
     if (activeSource?.type !== "album" || !activeTrack?.albumEntryId || activeTrack.firstListenPending !== false) return;
@@ -1418,6 +1442,11 @@ export default function MobilePage() {
           ));
           void touchPrivatePlaylist(playlist.id).catch(() => undefined);
         }
+      } else if (playlist.kind === "recommendation") {
+        setSelectedAlbum(null);
+        tracks = playlist.songs.map((song) => mapSongToTrack(song));
+        resolvedPlaylist = { ...playlist, count: tracks.length };
+        source = { id: playlist.id, name: playlist.name, type: "song" };
       } else {
         const data = await getAlbum(playlist.id);
         setSelectedAlbum(data);
@@ -1513,6 +1542,17 @@ export default function MobilePage() {
     await playTracks([track], { id: song.id, name: "Cancion suelta", type: "song" }, 0, { shuffle: false });
   }, [playTracks]);
 
+  const revealDailyRecommendation = useCallback(() => {
+    const song = recommendations?.dailySong;
+    if (!song || !recommendations || dailyRecommendationRevealing) return;
+    setDailyRecommendationRevealing(true);
+    markDailyRecommendationRevealed(recommendations.dayKey, song.id);
+    playRevealSound(activeVolume);
+    window.setTimeout(() => {
+      setDailyRecommendationRevealing(false);
+    }, 1350);
+  }, [activeVolume, dailyRecommendationRevealing, recommendations]);
+
   useEffect(() => {
     if (!requestedSongId || songs.length === 0) return;
     const key = `song:${requestedSongId}`;
@@ -1545,8 +1585,10 @@ export default function MobilePage() {
   };
 
   const sharePlaylist = (playlist: MobilePlaylist) => {
-    const path = playlist.kind === "global" ? "playlist" : playlist.kind === "album" ? "album" : "user-playlist";
-    void shareUrl(`${window.location.origin}/${path}/${encodeURIComponent(playlist.id)}`, playlist.name);
+    const href = playlist.kind === "recommendation"
+      ? recommendationHref(playlist.shareToken)
+      : `/${playlist.kind === "global" ? "playlist" : playlist.kind === "album" ? "album" : "user-playlist"}/${encodeURIComponent(playlist.id)}`;
+    void shareUrl(`${window.location.origin}${href}`, playlist.name);
   };
 
   const copyShareLink = async (value: string, successMessage: string) => {
@@ -2039,6 +2081,15 @@ export default function MobilePage() {
       return;
     }
 
+    if (playlist.kind === "recommendation") {
+      setActionSheet({
+        title: playlist.name,
+        subtitle: "Seleccion semanal",
+        items: commonItems,
+      });
+      return;
+    }
+
     setActionSheet({
       title: playlist.name,
       subtitle: "Playlist global",
@@ -2062,7 +2113,7 @@ export default function MobilePage() {
           void playTracks(playbackTracks, {
             id: selectedPlaylist.id,
             name: selectedPlaylist.name,
-            type: selectedPlaylist.kind,
+            type: mobilePlaylistSourceType(selectedPlaylist),
           }, Math.max(0, playbackIndex), { shuffle: false });
         } else {
           const apiSong = songs.find((entry) => entry.id === song.id);
@@ -2161,7 +2212,7 @@ export default function MobilePage() {
     const source: MusicPlaylistSource = {
       id: selectedPlaylist.id,
       name: selectedPlaylist.name,
-      type: selectedPlaylist.kind,
+      type: mobilePlaylistSourceType(selectedPlaylist),
     };
 
     return (
@@ -2175,13 +2226,17 @@ export default function MobilePage() {
               <ArrowLeftIcon size={24} />
             </button>
             <div className="mobile-farreo__playlist-hero-content">
-              <SongArtwork src={selectedPlaylist.iconUrl} alt={selectedPlaylist.name} className={`mobile-farreo__playlist-hero-art ${selectedPlaylist.kind === "album" ? "mobile-farreo__playlist-hero-art--album" : ""}`} />
+              {selectedPlaylist.kind === "recommendation" ? (
+                <RecommendationArtwork songs={selectedPlaylist.songs} className="mobile-farreo__playlist-hero-art mobile-farreo__playlist-hero-art--recommendation" sizes="194px" />
+              ) : (
+                <SongArtwork src={selectedPlaylist.iconUrl} alt={selectedPlaylist.name} className={`mobile-farreo__playlist-hero-art ${selectedPlaylist.kind === "album" ? "mobile-farreo__playlist-hero-art--album" : ""}`} />
+              )}
               <div className="mobile-farreo__playlist-hero-copy">
                 <span className="mobile-farreo__eyebrow">{selectedPlaylist.kind === "private"
                   ? "Playlist propia"
                   : selectedPlaylist.kind === "album"
                     ? selectedPlaylist.revelationEnabled ? "Album en Revelacion" : "Album"
-                    : "Playlist global"}</span>
+                    : selectedPlaylist.kind === "recommendation" ? "Seleccion semanal" : "Playlist global"}</span>
                 <h1>{selectedPlaylist.name}</h1>
                 <p>
                   {selectedPlaylist.count} canciones, {formatPlaylistDuration(selectedTracks)} · {selectedPlaylist.kind === "private"
@@ -2577,21 +2632,35 @@ export default function MobilePage() {
           {recommendations && (
             <div className="mobile-farreo__recommendation-block">
               <div className="mobile-farreo__section-title mobile-farreo__section-title--spaced">
-                <SparklesIcon size={18} />
+                <CompassIcon size={18} />
                 <h2>Recomendaciones</h2>
               </div>
               <div className="mobile-farreo__recommendations" aria-label="Recomendaciones de Farreo">
                 {recommendations.dailySong && (() => {
                   const song = recommendations.dailySong;
+                  const isCurrentDaily = activeTrack?.id === song.id;
+                  const concealedDaily = recommendations.dailySongUnheard && (dailyRecommendationRevealing || !isDailyRecommendationRevealed(recommendations.dayKey, song.id));
                   return (
                     <button
                       type="button"
-                      className="mobile-farreo__recommendation mobile-farreo__recommendation--daily"
-                      onClick={() => void playSong(song)}
-                      {...longPressProps(() => openSongActions(song))}
+                      className={`mobile-farreo__recommendation mobile-farreo__recommendation--daily ${isCurrentDaily && activeIsPlaying ? "mobile-farreo__recommendation--playing" : ""} ${concealedDaily ? "mobile-farreo__recommendation--concealed" : ""} ${dailyRecommendationRevealing ? "mobile-farreo__recommendation--revealing" : ""}`}
+                      onClick={() => void (concealedDaily ? revealDailyRecommendation() : isCurrentDaily ? toggleMobilePlayback() : playSong(song))}
+                      {...(concealedDaily ? {} : longPressProps(() => openSongActions(song)))}
                     >
-                      <SongArtwork src={song.iconUrl} alt={song.name} />
-                      <span><strong>Cancion del dia</strong><small>{song.name}</small></span>
+                      <span className="mobile-farreo__recommendation-artwork">
+                        <SongArtwork src={song.iconUrl} alt={song.name} />
+                        <span className="mobile-farreo__recommendation-play-state" aria-hidden="true">
+                          {isCurrentDaily && activeIsPlaying ? <PauseIcon size={17} fill="currentColor" /> : <PlayIcon size={17} fill="currentColor" />}
+                        </span>
+                      </span>
+                      <span className="mobile-farreo__recommendation-copy"><strong>Cancion del dia</strong><small>{song.name}</small></span>
+                      {concealedDaily && (
+                        <span className="mobile-farreo__recommendation-reveal" aria-hidden="true">
+                          <Disc3Icon size={19} />
+                          <span><strong>Cancion del dia</strong><small>{dailyRecommendationRevealing ? "Revelando..." : "Toca para descubrirla"}</small></span>
+                          <span className="mobile-farreo__recommendation-reveal-particles"><i /><i /><i /><i /></span>
+                        </span>
+                      )}
                     </button>
                   );
                 })()}
@@ -2600,17 +2669,14 @@ export default function MobilePage() {
                     key={weekly.id}
                     type="button"
                     className="mobile-farreo__recommendation"
-                    onClick={() => {
-                      const tracks = weekly.songs.map(song => mapSongToTrack(song));
-                      if (tracks[0]) void playTracks(tracks, { id: weekly.id, name: weekly.name, type: "song" }, 0, { shuffle: false });
-                    }}
+                    onClick={() => void loadPlaylist(toMobileRecommendation(weekly))}
                     {...longPressProps(() => setActionSheet({
                       title: weekly.name,
                       subtitle: "Seleccion semanal",
                       items: [{ label: "Compartir", icon: <Share2Icon size={18} />, onSelect: () => shareUrl(`${window.location.origin}${recommendationHref(weekly.shareToken)}`, weekly.name) }],
                     }))}
                   >
-                    <span className="mobile-farreo__recommendation-collage">{weekly.songs.slice(0, 4).map(song => <SongArtwork key={song.id} src={song.iconUrl} alt="" />)}</span>
+                    <RecommendationArtwork songs={weekly.songs} className="mobile-farreo__recommendation-collage" sizes="48px" />
                     <span><strong>{weekly.name}</strong><small>Semanal</small></span>
                   </button>
                 ))}
@@ -2630,11 +2696,8 @@ export default function MobilePage() {
                 })() : recommendations.weeklyPlaylists[2] ? (() => {
                   const weekly = recommendations.weeklyPlaylists[2];
                   return (
-                    <button type="button" className="mobile-farreo__recommendation" onClick={() => {
-                      const tracks = weekly.songs.map(song => mapSongToTrack(song));
-                      if (tracks[0]) void playTracks(tracks, { id: weekly.id, name: weekly.name, type: "song" }, 0, { shuffle: false });
-                    }}>
-                      <span className="mobile-farreo__recommendation-collage">{weekly.songs.slice(0, 4).map(song => <SongArtwork key={song.id} src={song.iconUrl} alt="" />)}</span>
+                    <button type="button" className="mobile-farreo__recommendation" onClick={() => void loadPlaylist(toMobileRecommendation(weekly))}>
+                      <RecommendationArtwork songs={weekly.songs} className="mobile-farreo__recommendation-collage" sizes="48px" />
                       <span><strong>{weekly.name}</strong><small>Semanal</small></span>
                     </button>
                   );
@@ -2643,18 +2706,37 @@ export default function MobilePage() {
             </div>
           )}
 
-          <div className="mobile-farreo__section-title mobile-farreo__section-title--spaced">
-            <Disc3Icon size={18} />
-            <h2>Albumes</h2>
-          </div>
-          <div className="mobile-farreo__global-carousel mobile-farreo__album-carousel" aria-label="Albumes">
-            {allAlbumCards.map((album) => (
-              <div key={`home-album-${album.id}`} className="mobile-farreo__global-slide">
-                {renderPlaylistCard(album)}
+          {allAlbumCards.some((album) => album.kind === "album" && album.revelationEnabled) && (
+            <>
+              <div className="mobile-farreo__section-title mobile-farreo__section-title--spaced">
+                <Disc3Icon size={18} />
+                <h2>Novedades</h2>
               </div>
-            ))}
-            {allAlbumCards.length === 0 && <div className="mobile-farreo__empty">Todavia no hay albumes.</div>}
-          </div>
+              <div className="mobile-farreo__global-carousel mobile-farreo__news-carousel" aria-label="Álbumes en revelación">
+                {allAlbumCards.filter((album) => album.kind === "album" && album.revelationEnabled).map((album) => (
+                  <div key={`home-news-${album.id}`} className="mobile-farreo__global-slide">
+                    {renderPlaylistCard(album)}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          {allAlbumCards.length > 0 && (
+            <>
+              <div className="mobile-farreo__section-title mobile-farreo__section-title--spaced">
+                <Disc3Icon size={18} />
+                <h2>Albumes</h2>
+              </div>
+              <div className="mobile-farreo__global-carousel mobile-farreo__album-carousel" aria-label="Albumes">
+                {allAlbumCards.map((album) => (
+                  <div key={`home-album-${album.id}`} className="mobile-farreo__global-slide">
+                    {renderPlaylistCard(album)}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
 
           <div className="mobile-farreo__section-title mobile-farreo__section-title--spaced">
             <Globe2Icon size={18} />

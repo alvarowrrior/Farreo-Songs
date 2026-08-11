@@ -30,6 +30,7 @@ import AlbumAdminPanel from "@/components/AlbumAdminPanel";
 import SongThemeSelector from "@/components/SongThemeSelector";
 import { createSongTheme, deleteSongTheme, listAdminSongs, listSongThemes, type SongTheme } from "@/lib/songThemes";
 import HomeRecommendations from "@/components/HomeRecommendations";
+import InfiniteHomeCarousel from "@/components/InfiniteHomeCarousel";
 
 const ADMIN_EMAILS = (process.env.NEXT_PUBLIC_ADMIN_EMAILS || "").split(",");
 
@@ -1521,16 +1522,55 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
 
           {!adminMode && <HomeRecommendations userId={currentUser?.uid} />}
 
+          {!adminMode && albums.some((album) => album.revelationEnabled) && (
+            <section className="playlist-admin__section playlist-admin__section--news">
+              <div className="playlist-admin__section-header">
+                <h2 className="playlist-admin__section-title"><Disc3Icon size={20} /> Novedades</h2>
+              </div>
+              <InfiniteHomeCarousel className="infinite-home-carousel--news" ariaLabel="Álbumes en revelación">
+                {albums.filter((album) => album.revelationEnabled).map((album) => (
+                  <div
+                    key={`news-${album.id}`}
+                    className="playlist-admin__card playlist-admin__card--global album-home-card"
+                    onClick={() => router.push(`/album/${encodeURIComponent(album.id)}`)}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      setPlaylistContextMenu({
+                        x: event.clientX,
+                        y: event.clientY,
+                        items: [
+                          { label: "Compartir", icon: <ShareIcon size={15} />, onSelect: () => void navigator.clipboard.writeText(`${window.location.origin}/album/${encodeURIComponent(album.id)}`) },
+                          {
+                            label: album.isFollowing ? "Dejar de seguir" : "Seguir",
+                            icon: <HeartIcon size={15} fill={album.isFollowing ? "currentColor" : "none"} />,
+                            disabled: !currentUser,
+                            onSelect: () => void (album.isFollowing ? unfollowAlbum(album.id) : followAlbum(album.id)).then(loadAlbums),
+                          },
+                        ],
+                      });
+                    }}
+                  >
+                    <div className="playlist-admin__card-icon">
+                      <SongArtwork src={getMediaUrl(album.iconUrl)} alt={album.nombre} className="playlist-admin__playlist-icon playlist-admin__playlist-icon--large" />
+                      <span className="album-home-card__badge">Revelación</span>
+                    </div>
+                    <div className="playlist-admin__card-info">
+                      <span className="playlist-admin__card-name">{album.nombre}</span>
+                      <span className="playlist-admin__card-count">{album.numCanciones} canciones</span>
+                    </div>
+                  </div>
+                ))}
+              </InfiniteHomeCarousel>
+            </section>
+          )}
+
           {/* Sección Playlists */}
-          {!adminMode && (
+          {!adminMode && albums.length > 0 && (
             <section className="playlist-admin__section">
               <div className="playlist-admin__section-header">
                 <h2 className="playlist-admin__section-title"><Disc3Icon size={20} /> Álbumes</h2>
               </div>
-              {albums.length === 0 ? (
-                <p className="playlist-admin__empty">Todavía no hay álbumes.</p>
-              ) : (
-                <div className="playlist-admin__grid playlist-admin__grid--global">
+              <InfiniteHomeCarousel className="infinite-home-carousel--albums" ariaLabel="Álbumes" autoDirection="right">
                   {albums.map((album) => (
                     <div
                       key={album.id}
@@ -1563,14 +1603,13 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
                       </div>
                     </div>
                   ))}
-                </div>
-              )}
+              </InfiniteHomeCarousel>
             </section>
           )}
 
           {adminMode && <AlbumAdminPanel songs={allCanciones} onMessage={(type, text) => setMessage({ type, text })} onChanged={loadAlbums} />}
 
-          <section className="playlist-admin__section">
+          <section className="playlist-admin__section playlist-admin__section--globals">
             <div className="playlist-admin__section-header">
               <h2 className="playlist-admin__section-title">
                 <GlobeIcon size={20} /> Playlists Globales
@@ -1586,33 +1625,21 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
               <p className="playlist-admin__empty">Cargando playlists...</p>
             ) : playlists.length === 0 ? (
               <p className="playlist-admin__empty">No hay playlists. ¡Crea una!</p>
-            ) : (
-              <div className={adminMode ? "playlist-admin__list" : "playlist-admin__grid playlist-admin__grid--global"}>
-                {adminMode && (
+            ) : adminMode ? (
+                <div className="playlist-admin__list">
                   <div className="playlist-admin__list-header playlist-admin__list-header--playlists">
                     <div>#</div>
                     <div>Playlist</div>
                     <div>Canciones</div>
                     <div style={{ textAlign: "right" }}>Acciones</div>
                   </div>
-                )}
-                {playlists.map((pl) => (
+                  {playlists.map((pl) => (
                   <div
                     key={pl.id}
-                    className={adminMode ? "playlist-admin__item playlist-admin__item--playlist" : "playlist-admin__card playlist-admin__card--global"}
-                    onContextMenu={(event) => {
-                      if (!adminMode) openPlaylistContextMenu(event, globalPlaylistContextItems(pl));
-                    }}
-                    onClick={() => {
-                      if (adminMode) {
-                        openAdminPlaylistSongs(pl);
-                      } else {
-                        router.push(`/playlist/${encodeURIComponent(pl.id)}`);
-                      }
-                    }}
+                    className="playlist-admin__item playlist-admin__item--playlist"
+                    onClick={() => openAdminPlaylistSongs(pl)}
                   >
-                    {adminMode ? (
-                      <>
+                    <>
                         <div className="playlist-admin__item-index">
                           {pl.iconUrl ? (
                             // eslint-disable-next-line @next/next/no-img-element
@@ -1642,27 +1669,34 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
                             <TrashIcon size={16} />
                           </button>
                         </div>
-                      </>
-                    ) : (
-                      <>
-                        <div className="playlist-admin__card-icon">
-                          {pl.iconUrl ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img src={getMediaUrl(pl.iconUrl)} alt="" className="playlist-admin__playlist-icon playlist-admin__playlist-icon--large" />
-                          ) : (
-                            <ListMusicIcon size={32} />
-                          )}
-                        </div>
-                        <div className="playlist-admin__card-info">
-                          <span className="playlist-admin__card-name">{pl.nombre}</span>
-                          <span className="playlist-admin__card-count">{pl.numCanciones} canciones</span>
-                        </div>
-                      </>
-                    )}
+                    </>
                   </div>
-                ))}
-              </div>
-            )}
+                  ))}
+                </div>
+              ) : (
+                <InfiniteHomeCarousel className="infinite-home-carousel--globals" ariaLabel="Playlists globales" autoDirection="left">
+                  {playlists.map((pl) => (
+                    <div
+                      key={pl.id}
+                      className="playlist-admin__card playlist-admin__card--global"
+                      onContextMenu={(event) => openPlaylistContextMenu(event, globalPlaylistContextItems(pl))}
+                      onClick={() => router.push(`/playlist/${encodeURIComponent(pl.id)}`)}
+                    >
+                      <div className="playlist-admin__card-icon">
+                        {pl.iconUrl ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={getMediaUrl(pl.iconUrl)} alt="" className="playlist-admin__playlist-icon playlist-admin__playlist-icon--large" />
+                        ) : <ListMusicIcon size={32} />}
+                      </div>
+                      <div className="playlist-admin__card-info">
+                        <span className="playlist-admin__card-name">{pl.nombre}</span>
+                        <span className="playlist-admin__card-count">{pl.numCanciones} canciones</span>
+                      </div>
+                    </div>
+                  ))}
+                </InfiniteHomeCarousel>
+              )
+            }
           </section>
 
           {adminMode && (

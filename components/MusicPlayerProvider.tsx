@@ -108,6 +108,56 @@ interface StoredPlayerState {
   lyricsEnabled: boolean;
 }
 
+// La respuesta de una playlist incluye letras y otros metadatos que pueden ser
+// bastante grandes. Persistirlos una vez por cada elemento de la cola puede
+// superar facilmente la cuota de localStorage en playlists largas.
+const compactQueuedTrack = (track: MusicTrack): MusicTrack => ({
+  id: track.id,
+  name: track.name,
+  url: track.url,
+  duration: track.duration,
+  iconUrl: track.iconUrl,
+  addedAt: track.addedAt,
+  createdAt: track.createdAt,
+  albumId: track.albumId,
+  albumEntryId: track.albumEntryId,
+  firstListenPending: track.firstListenPending,
+});
+
+const writeStoredPlayerState = (
+  storage: Storage,
+  key: string,
+  state: Partial<StoredPlayerState>,
+) => {
+  try {
+    storage.setItem(key, JSON.stringify(state));
+    return;
+  } catch {
+    // Un estado antiguo puede estar ocupando casi toda la cuota. Lo retiramos
+    // antes de intentar la version minima para que este fallo nunca alcance a
+    // React como una excepcion no controlada.
+    try {
+      storage.removeItem(key);
+      storage.setItem(key, JSON.stringify({
+        currentTrack: state.currentTrack ? compactQueuedTrack(state.currentTrack) : null,
+        currentSource: state.currentSource ?? null,
+        currentTime: state.currentTime ?? 0,
+        playbackPitch: state.playbackPitch ?? 1,
+        volume: state.volume ?? 0.8,
+        lastNonZeroVolume: state.lastNonZeroVolume ?? 0.8,
+        isShuffle: state.isShuffle ?? true,
+        autoRandomPitch: state.autoRandomPitch ?? true,
+        lyricsEnabled: state.lyricsEnabled ?? true,
+        queue: [],
+        queueSource: null,
+      }));
+    } catch {
+      // El reproductor sigue siendo usable aunque el navegador no permita
+      // guardar nada (modo privado, cuota agotada o almacenamiento bloqueado).
+    }
+  }
+};
+
 interface LyricCue {
   id: string;
   start: number;
@@ -1343,7 +1393,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       currentTrack,
       // En movil la lista se recarga desde Farreo al volver a abrirla: asi no
       // persistimos una copia larga y potencialmente desactualizada.
-      queue: keepOnlyMobilePlaylistReference ? [] : queue,
+      queue: keepOnlyMobilePlaylistReference ? [] : queue.map(compactQueuedTrack),
       queueSource: keepOnlyMobilePlaylistReference ? null : queueSource,
       currentSource,
       currentTime: persistedTime,
@@ -1355,7 +1405,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       lyricsEnabled,
     };
 
-    window.localStorage.setItem(playerStorageKey, JSON.stringify(state));
+    writeStoredPlayerState(window.localStorage, playerStorageKey, state);
   }, [autoRandomPitch, currentSource, isMobileRoute, persistedTime, currentTrack, isShuffle, lastNonZeroVolume, lyricsEnabled, playbackPitch, playerMode, playerStorageKey, queue, queueSource, storageReady, volume]);
 
   useEffect(() => {
@@ -1364,16 +1414,16 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     try {
       const rawState = window.localStorage.getItem(playerStorageKey);
       const state = rawState ? JSON.parse(rawState) as Partial<StoredPlayerState> : {};
-      window.localStorage.setItem(playerStorageKey, JSON.stringify({
+      writeStoredPlayerState(window.localStorage, playerStorageKey, {
         ...state,
         volume,
         lastNonZeroVolume,
-      }));
+      });
     } catch {
-      window.localStorage.setItem(playerStorageKey, JSON.stringify({
+      writeStoredPlayerState(window.localStorage, playerStorageKey, {
         volume,
         lastNonZeroVolume,
-      }));
+      });
     }
   }, [lastNonZeroVolume, playerStorageKey, storageReady, volume]);
 

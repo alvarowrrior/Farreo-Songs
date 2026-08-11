@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import Link from "next/link";
 import { ChevronDownIcon, Disc3Icon, HeartIcon, ListMusicIcon, PlusIcon, Share2Icon } from "lucide-react";
 import FarreoContextMenu, { type FarreoContextMenuItem } from "@/components/FarreoContextMenu";
@@ -23,10 +23,20 @@ interface SongDiscoverySectionsProps {
 
 const copy = (value: string) => navigator.clipboard.writeText(value);
 
-function Collapsible({ title, icon, children }: { title: string; icon: ReactNode; children: ReactNode }) {
+function Collapsible({ title, icon, children, revealOnOpen = false }: { title: string; icon: ReactNode; children: ReactNode; revealOnOpen?: boolean }) {
   const [open, setOpen] = useState(false);
+  const sectionRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!open || !revealOnOpen) return;
+    const frame = window.requestAnimationFrame(() => {
+      sectionRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [open, revealOnOpen]);
+
   return (
-    <section className={`song-discovery ${open ? "song-discovery--open" : ""}`}>
+    <section ref={sectionRef} className={`song-discovery ${open ? "song-discovery--open" : ""}`}>
       <button type="button" className="song-discovery__heading" onClick={() => setOpen(value => !value)} aria-expanded={open}>
         <span>{icon}{title}</span>
         <ChevronDownIcon size={17} />
@@ -111,7 +121,7 @@ export default function SongDiscoverySections({ track, onPlaySong, variant = "de
   return (
     <>
       {albums.length > 0 ? (
-        <Collapsible title="Albumes" icon={<Disc3Icon size={17} />}>
+        <Collapsible title="Albumes" icon={<Disc3Icon size={17} />} revealOnOpen={variant === "desktop"}>
           {albums.map(album => (
             <div
               key={album.id}
@@ -144,7 +154,7 @@ export default function SongDiscoverySections({ track, onPlaySong, variant = "de
       ) : null}
 
       {similar.length > 0 ? (
-        <Collapsible title="Canciones similares" icon={<ListMusicIcon size={17} />}>
+        <Collapsible title="Canciones similares" icon={<ListMusicIcon size={17} />} revealOnOpen={variant === "desktop"}>
           {similar.map(song => (
             <div
               key={song.id}
