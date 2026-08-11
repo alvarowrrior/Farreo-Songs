@@ -7,6 +7,7 @@ export type FarreoNativeEvent =
   | "state"
   | "progress"
   | "trackChanged"
+  | "firstListenStarted"
   | "ended"
   | "error"
   | "frequency";
@@ -34,6 +35,7 @@ export interface FarreoNativeState {
   pitch: number;
   shuffle: boolean;
   autoRandomPitch?: boolean;
+  isPitchLocked?: boolean;
   canPlayNext?: boolean;
   canPlayPrev?: boolean;
   radioState?: RadioState | null;
@@ -57,6 +59,8 @@ type NativePlugin = {
   enterRadio: (payload?: { apiUrl?: string }) => Promise<FarreoNativeState>;
   leaveRadio: () => Promise<FarreoNativeState>;
   getState: () => Promise<FarreoNativeState>;
+  getPendingFirstPlays?: () => Promise<{ items: Array<{ albumId: string; albumEntryId: string }> }>;
+  confirmFirstPlay?: (payload: { albumId: string; albumEntryId: string; forcePitch?: boolean }) => Promise<FarreoNativeState>;
   getAppInfo: () => Promise<{ version: string; build: number }>;
   openExternalUrl?: (payload: { url: string }) => Promise<void>;
   enableVisualization: () => Promise<{ enabled: boolean }>;

@@ -7,6 +7,7 @@ import { onAuthStateChanged, signOut, type User } from "firebase/auth";
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
+  Disc3Icon,
   GlobeIcon,
   HouseIcon,
   LibraryIcon,
@@ -21,6 +22,7 @@ import {
   ShareIcon,
   ShieldIcon,
   TrashIcon,
+  WrenchIcon,
 } from "lucide-react";
 import { auth } from "@/lib/firebase";
 import { getMediaUrl, radioGet, type ApiPlaylistInfo, type ApiSong } from "@/lib/radioApi";
@@ -38,6 +40,7 @@ import FarreoContextMenu, { type FarreoContextMenuItem } from "@/components/Farr
 import SongArtwork from "@/components/SongArtwork";
 import { useHiddenSongs } from "@/lib/useHiddenSongs";
 import { useMusicPlayer, type MusicTrack } from "@/components/MusicPlayerProvider";
+import { listAlbums, unfollowAlbum, type AlbumCard } from "@/lib/albums";
 
 const ADMIN_EMAILS = (process.env.NEXT_PUBLIC_ADMIN_EMAILS || "")
   .split(",")
@@ -124,6 +127,7 @@ export default function AppSidebar() {
   const [user, setUser] = useState<User | null>(null);
   const [privatePlaylists, setPrivatePlaylists] = useState<PrivatePlaylist[]>([]);
   const [followedPlaylists, setFollowedPlaylists] = useState<ApiPlaylistInfo[]>([]);
+  const [followedAlbums, setFollowedAlbums] = useState<AlbumCard[]>([]);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [shareSongTarget, setShareSongTarget] = useState<ApiSong | null>(null);
   const [copiedLink, setCopiedLink] = useState<"normal" | "internal" | null>(null);
@@ -202,21 +206,25 @@ export default function AppSidebar() {
     if (!activeUser) {
       setPrivatePlaylists([]);
       setFollowedPlaylists([]);
+      setFollowedAlbums([]);
       return;
     }
 
     try {
-      const [own, followedIds, globals] = await Promise.all([
+      const [own, followedIds, globals, albums] = await Promise.all([
         listOwnPrivatePlaylists(activeUser.uid),
         listFollowedGlobalPlaylistIds(activeUser.uid),
         radioGet<ApiPlaylistInfo[]>("/playlists"),
+        listAlbums().catch(() => []),
       ]);
       const followedSet = new Set(followedIds);
       setPrivatePlaylists(own);
       setFollowedPlaylists(globals.filter((playlist) => followedSet.has(playlist.id)));
+      setFollowedAlbums(albums.filter((album) => album.isFollowing));
     } catch {
       setPrivatePlaylists([]);
       setFollowedPlaylists([]);
+      setFollowedAlbums([]);
     }
   }, [user]);
 
@@ -348,6 +356,20 @@ export default function AppSidebar() {
   const followedContextItems = (playlist: ApiPlaylistInfo): FarreoContextMenuItem[] => [
     { label: "Compartir", icon: <ShareIcon size={15} />, onSelect: () => shareGlobalPlaylist(playlist) },
     { label: "Dejar de seguir", icon: <TrashIcon size={15} />, danger: true, onSelect: () => void unfollowPlaylist(playlist) },
+  ];
+
+  const followedAlbumContextItems = (album: AlbumCard): FarreoContextMenuItem[] => [
+    {
+      label: "Compartir",
+      icon: <ShareIcon size={15} />,
+      onSelect: () => void navigator.clipboard.writeText(`${window.location.origin}/album/${encodeURIComponent(album.id)}`),
+    },
+    {
+      label: "Dejar de seguir",
+      icon: <TrashIcon size={15} />,
+      danger: true,
+      onSelect: () => void unfollowAlbum(album.id).then(() => reloadLibrary()),
+    },
   ];
 
   const songAddContextItems = (song: ApiSong): FarreoContextMenuItem[] => {
@@ -507,7 +529,7 @@ export default function AppSidebar() {
                 </button>
               )}
 
-              <div className={`app-sidebar__playlist-list ${(privatePlaylists.length + followedPlaylists.length) > 6 ? "app-sidebar__playlist-list--scroll" : ""}`}>
+              <div className={`app-sidebar__playlist-list ${(privatePlaylists.length + followedPlaylists.length + followedAlbums.length) > 6 ? "app-sidebar__playlist-list--scroll" : ""}`}>
                 {privatePlaylists.map((playlist) => (
                   <Link
                     key={playlist.id}
@@ -542,13 +564,30 @@ export default function AppSidebar() {
                   </Link>
                 ))}
 
+                {followedAlbums.map((album) => (
+                  <Link
+                    key={`album-${album.id}`}
+                    href={`/album/${album.id}`}
+                    className="app-sidebar__playlist"
+                    onContextMenu={(event) => openContextMenu(event, followedAlbumContextItems(album))}
+                  >
+                    {album.iconUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={getMediaUrl(album.iconUrl)} alt="" />
+                    ) : (
+                      <span className="app-sidebar__playlist-fallback"><Disc3Icon size={16} /></span>
+                    )}
+                    <span>{album.nombre}</span>
+                  </Link>
+                ))}
+
                 {!user && (
                   <Link href="/login" className="app-sidebar__empty-link">
                     Inicia sesión para ver tu librería
                   </Link>
                 )}
 
-                {user && privatePlaylists.length === 0 && followedPlaylists.length === 0 && (
+                {user && privatePlaylists.length === 0 && followedPlaylists.length === 0 && followedAlbums.length === 0 && (
                   <span className="app-sidebar__empty">Sin playlists guardadas</span>
                 )}
               </div>
@@ -573,6 +612,14 @@ export default function AppSidebar() {
           >
             <RadioIcon size={20} />
             <span>Radio</span>
+          </Link>
+          <Link
+            href="/tools"
+            className={`app-sidebar__nav-item ${pathname.startsWith("/tools") ? "app-sidebar__nav-item--active" : ""}`}
+            title="Herramientas"
+          >
+            <WrenchIcon size={20} />
+            <span>Herramientas</span>
           </Link>
         </div>
 

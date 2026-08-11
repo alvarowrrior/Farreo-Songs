@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { onAuthStateChanged } from "firebase/auth";
 import { auth } from "@/lib/firebase";
-import { hideSong, listHiddenSongIds, unhideSong } from "@/lib/hiddenSongs";
+import { hideSong, listHiddenSongIds, subscribeHiddenSongIds, unhideSong } from "@/lib/hiddenSongs";
 
 const ADMIN_EMAILS = (process.env.NEXT_PUBLIC_ADMIN_EMAILS || "").split(",");
 
@@ -39,30 +39,26 @@ export function useHiddenSongs(): UseHiddenSongs {
 
   useEffect(() => {
     let active = true;
-
-    listHiddenSongIds()
-      .then((ids) => {
-        if (active) setHiddenIds(new Set(ids));
-      })
-      .catch(() => {
-        // Keep whatever we had; absence of data shouldn't hide everything.
-      })
-      .finally(() => {
+    const unsubscribeHidden = subscribeHiddenSongIds(
+      (ids) => {
+        if (!active) return;
+        setHiddenIds(new Set(ids));
+        setLoading(false);
+      },
+      () => {
         if (active) setLoading(false);
-      });
+      },
+    );
+    const unsubscribeAuth = auth
+      ? onAuthStateChanged(auth, (user) => {
+        setIsAdmin(Boolean(user?.email && ADMIN_EMAILS.includes(user.email)));
+      })
+      : () => undefined;
 
-    if (!auth) {
-      return () => {
-        active = false;
-      };
-    }
-
-    const unsub = onAuthStateChanged(auth, (user) => {
-      setIsAdmin(Boolean(user?.email && ADMIN_EMAILS.includes(user.email)));
-    });
     return () => {
       active = false;
-      unsub();
+      unsubscribeHidden();
+      unsubscribeAuth();
     };
   }, [refresh]);
 

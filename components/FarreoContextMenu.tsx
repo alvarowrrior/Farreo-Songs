@@ -9,6 +9,7 @@ export interface FarreoContextMenuItem {
   danger?: boolean;
   disabled?: boolean;
   onSelect: () => void;
+  children?: FarreoContextMenuItem[];
 }
 
 interface FarreoContextMenuProps {
@@ -44,21 +45,44 @@ export default function FarreoContextMenu({ x, y, items, onClose }: FarreoContex
       role="menu"
     >
       {items.map((item) => (
-        <button
-          key={item.label}
-          type="button"
-          className={`farreo-context-menu__item ${item.danger ? "farreo-context-menu__item--danger" : ""}`}
-          disabled={item.disabled}
-          onClick={() => {
-            if (item.disabled) return;
-            item.onSelect();
-            onClose();
-          }}
-          role="menuitem"
-        >
-          {item.icon}
-          <span>{item.label}</span>
-        </button>
+        <div key={item.label} className="farreo-context-menu__entry">
+          <button
+            type="button"
+            className={`farreo-context-menu__item ${item.danger ? "farreo-context-menu__item--danger" : ""}`}
+            disabled={item.disabled}
+            onClick={() => {
+              if (item.disabled || item.children?.length) return;
+              item.onSelect();
+              onClose();
+            }}
+            role="menuitem"
+          >
+            {item.icon}
+            <span>{item.label}</span>
+            {item.children?.length ? <span aria-hidden="true">›</span> : null}
+          </button>
+          {item.children?.length ? (
+            <div className="farreo-context-menu__submenu" role="menu">
+              {item.children.map(child => (
+                <button
+                  key={child.label}
+                  type="button"
+                  className={`farreo-context-menu__item ${child.danger ? "farreo-context-menu__item--danger" : ""}`}
+                  disabled={child.disabled}
+                  onClick={() => {
+                    if (child.disabled) return;
+                    child.onSelect();
+                    onClose();
+                  }}
+                  role="menuitem"
+                >
+                  {child.icon}
+                  <span>{child.label}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
       ))}
     </div>,
     document.body

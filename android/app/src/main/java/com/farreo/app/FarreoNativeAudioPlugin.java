@@ -127,6 +127,28 @@ public class FarreoNativeAudioPlugin extends Plugin implements FarreoAudioContro
     }
 
     @PluginMethod
+    public void getPendingFirstPlays(PluginCall call) {
+        if (!requireController(call)) return;
+        getActivity().runOnUiThread(() -> {
+            JSObject result = new JSObject();
+            result.put("items", controller.getPendingFirstPlays());
+            call.resolve(result);
+        });
+    }
+
+    @PluginMethod
+    public void confirmFirstPlay(PluginCall call) {
+        String albumId = call.getString("albumId", "");
+        String entryId = call.getString("albumEntryId", "");
+        boolean forcePitch = call.getBoolean("forcePitch", true);
+        if (albumId.isEmpty() || entryId.isEmpty()) {
+            call.reject("Falta identificar la primera escucha.");
+            return;
+        }
+        resolveOnMain(call, () -> controller.confirmFirstPlay(albumId, entryId, forcePitch));
+    }
+
+    @PluginMethod
     public void getAppInfo(PluginCall call) {
         try {
             PackageInfo packageInfo = getContext().getPackageManager().getPackageInfo(getContext().getPackageName(), 0);

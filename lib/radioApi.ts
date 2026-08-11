@@ -12,6 +12,7 @@ export interface ApiSong {
   name: string;
   url: string;
   variantes?: string[];
+  themeIds?: string[];
   lyricsSrt?: string | null;
   lyricsUrl?: string | null;
   lyricsFileName?: string | null;
@@ -22,6 +23,9 @@ export interface ApiSong {
   advancedCoverType?: string | null;
   addedAt?: string | null;
   createdAt?: { seconds: number; nanoseconds: number } | string | null;
+  albumId?: string;
+  albumEntryId?: string;
+  firstListenPending?: boolean;
 }
 
 export interface ApiPlaylistInfo {
@@ -32,7 +36,7 @@ export interface ApiPlaylistInfo {
 }
 
 export interface RadioSource {
-  type: "song" | "global" | "private";
+  type: "song" | "global" | "private" | "album";
   id: string;
   name: string;
 }

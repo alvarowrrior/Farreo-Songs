@@ -14,6 +14,7 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
 .mobile-farreo {
   min-height: 100dvh;
   position: relative;
+  isolation: isolate;
   // `hidden` turns this wrapper into a scroll container in Chromium and
   // prevents playlist controls from staying sticky while the document moves.
   overflow-x: clip;
@@ -23,8 +24,53 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
     radial-gradient(circle at 10% -5%, rgba(30, 215, 96, 0.075), transparent 15rem),
     linear-gradient(180deg, #191b19 0%, #101110 28%, #070707 100%);
 
+  &::before {
+    content: "";
+    position: fixed;
+    z-index: 0;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0;
+    background:
+      radial-gradient(circle at 50% 10%, rgba(30, 215, 96, 0.07), transparent 19rem),
+      linear-gradient(180deg, #111412 0%, #090a09 44%, #060606 100%);
+    transition: opacity 520ms ease;
+  }
+
   &--with-player {
     padding-bottom: 12rem;
+  }
+
+  &--album-disc {
+    &::before {
+      opacity: 1;
+    }
+
+    .mobile-farreo__section {
+      position: relative;
+      z-index: 1;
+    }
+
+    .mobile-farreo__playlist-hero {
+      &::before {
+        opacity: 1;
+      }
+    }
+
+    .mobile-farreo__playlist-hero-backdrop {
+      opacity: 0.12;
+    }
+
+    .mobile-farreo__detail-actions {
+      background: rgba(8, 10, 9, 0.86);
+      backdrop-filter: blur(14px);
+    }
+
+    .mobile-farreo__song-row,
+    .mobile-farreo__album-track {
+      background-color: rgba(17, 20, 18, 0.76);
+      backdrop-filter: blur(8px);
+    }
   }
 
   &__app-loading {
@@ -285,6 +331,191 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
     }
   }
 
+  &__recommendation-block {
+    margin-top: 0.15rem;
+  }
+
+  &__recommendations {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(128px, 35vw);
+    gap: 0.55rem;
+    margin-right: -1rem;
+    padding: 0.05rem 1.8rem 0.25rem 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+    scroll-snap-type: x proximity;
+
+    &::-webkit-scrollbar {
+      display: none;
+    }
+  }
+
+  &__recommendation {
+    position: relative;
+    overflow: hidden;
+    height: 62px;
+    min-width: 0;
+    padding: 0.35rem;
+    border: 1px solid rgba(255, 255, 255, 0.075);
+    border-radius: 9px;
+    display: grid;
+    grid-template-columns: 48px minmax(0, 1fr);
+    align-items: center;
+    gap: 0.48rem;
+    background: rgba(255, 255, 255, 0.065);
+    color: #fff;
+    text-align: left;
+    scroll-snap-align: start;
+
+    &:active {
+      transform: scale(0.97);
+    }
+
+    > .song-artwork,
+    > img,
+    > .mobile-farreo__recommendation-artwork,
+    .mobile-farreo__recommendation-collage {
+      width: 48px;
+      height: 48px;
+      border-radius: 6px;
+      object-fit: cover;
+    }
+
+    > span:last-child,
+    > .mobile-farreo__recommendation-copy {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.12rem;
+      overflow: hidden;
+    }
+
+    strong,
+    small {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    strong {
+      font-size: 0.78rem;
+      line-height: 1.08;
+    }
+
+    small {
+      color: #a8a8a8;
+      font-size: 0.67rem;
+    }
+
+    &--daily {
+      border-color: rgba(30, 215, 96, 0.28);
+      background: rgba(30, 215, 96, 0.08);
+    }
+  }
+
+  &__recommendation-artwork {
+    position: relative;
+    display: block;
+    overflow: hidden;
+
+    .song-artwork {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+  }
+
+  &__recommendation-play-state {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.36);
+    opacity: 0.82;
+  }
+
+  &__recommendation--playing &__recommendation-play-state {
+    opacity: 1;
+  }
+
+  &__recommendation-reveal {
+    position: absolute;
+    z-index: 3;
+    inset: 0;
+    // Misma geometria que la tarjeta inferior durante todo el fundido.
+    padding: 0.35rem;
+    border-radius: inherit;
+    display: grid !important;
+    grid-template-columns: 48px minmax(0, 1fr);
+    align-items: center;
+    gap: 0.48rem;
+    overflow: hidden;
+    color: #fff;
+    background: linear-gradient(100deg, rgba(11, 38, 23, 0.99), rgba(10, 17, 13, 0.99));
+
+    > svg {
+      justify-self: center;
+      color: #42e982;
+      filter: drop-shadow(0 0 8px rgba(66, 233, 130, 0.44));
+    }
+
+    > span:not(.mobile-farreo__recommendation-reveal-particles) {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.1rem;
+    }
+  }
+
+  &__recommendation--revealing &__recommendation-reveal {
+    animation: daily-recommendation-reveal 1.35s ease both;
+
+    > svg {
+      animation: daily-recommendation-disc 1.15s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+    }
+  }
+
+  &__recommendation-reveal-particles {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+
+    i {
+      position: absolute;
+      width: 3px;
+      height: 3px;
+      border-radius: 50%;
+      background: #49ed8a;
+      opacity: 0.45;
+    }
+
+    i:nth-child(1) { left: 13%; top: 70%; }
+    i:nth-child(2) { left: 39%; top: 27%; }
+    i:nth-child(3) { left: 68%; top: 72%; }
+    i:nth-child(4) { left: 88%; top: 25%; }
+  }
+
+  &__recommendation--revealing &__recommendation-reveal-particles i {
+    animation: daily-recommendation-particle 1.05s ease-out both;
+  }
+
+  &__recommendation-collage {
+    overflow: hidden;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    background: #080808;
+
+    .song-artwork {
+      width: 100%;
+      height: 100%;
+      border-radius: 0;
+      object-fit: cover;
+    }
+  }
+
   &__global-carousel {
     display: grid;
     grid-auto-flow: column;
@@ -313,6 +544,23 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
 
   &__global-slide {
     scroll-snap-align: start;
+  }
+
+  &__album-carousel {
+    cursor: auto;
+    scroll-snap-type: x proximity;
+  }
+
+  &__news-carousel {
+    grid-auto-columns: clamp(92px, 26vw, 112px);
+
+    .mobile-farreo__playlist-card {
+      padding: 0.45rem;
+      gap: 0.45rem;
+    }
+
+    .mobile-farreo__playlist-title { font-size: 0.76rem; }
+    .mobile-farreo__playlist-meta { font-size: 0.66rem; }
   }
 
   &__playlist-card {
@@ -413,6 +661,11 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
     }
   }
 
+  &__playlist-card--album &__playlist-art {
+    object-fit: contain;
+    background: #111;
+  }
+
   &__playlist-title {
     min-width: 0;
     overflow: hidden;
@@ -472,6 +725,17 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
     isolation: isolate;
     background: linear-gradient(180deg, #303733 0%, #121212 76%, #0a0a0a 100%);
 
+    &::before {
+      content: "";
+      position: absolute;
+      z-index: 0;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0;
+      background: linear-gradient(180deg, rgba(28, 37, 32, 0.76) 0%, rgba(8, 11, 9, 0.72) 72%, rgba(8, 9, 8, 0.9) 100%);
+      transition: opacity 520ms ease;
+    }
+
     &::after {
       content: "";
       position: absolute;
@@ -487,6 +751,7 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
     inset: -2.6rem;
     overflow: hidden;
     opacity: 0.54;
+    transition: opacity 520ms ease;
 
     .song-artwork {
       width: 100%;
@@ -528,6 +793,26 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
     border-radius: 13px;
     object-fit: cover;
     box-shadow: 0 22px 52px rgba(0, 0, 0, 0.42);
+
+    &--album {
+      object-fit: contain;
+      background: #111;
+    }
+
+    &--recommendation {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      grid-template-rows: 1fr 1fr;
+      overflow: hidden;
+
+      .song-artwork {
+        width: 100%;
+        height: 100%;
+        min-width: 0;
+        border-radius: 0;
+        object-fit: cover;
+      }
+    }
   }
 
   &__playlist-hero-copy {
@@ -635,6 +920,7 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
     border-bottom: 1px solid rgba(255, 255, 255, 0.07);
     background: #0a0a0a;
     box-shadow: 0 12px 24px rgba(0, 0, 0, 0.15);
+    transition: background-color 420ms ease, backdrop-filter 420ms ease;
   }
 
   &__detail-utilities {
@@ -734,6 +1020,7 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
 
   &__playlist-song,
   &__search-result {
+    position: relative;
     display: grid;
     grid-template-columns: minmax(0, 1fr) 42px;
     align-items: stretch;
@@ -754,6 +1041,140 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
         box-shadow: inset 0 2px 0 #1ed760;
       }
     }
+  }
+
+  &__album-track {
+    position: relative;
+    width: 100%;
+    min-height: 72px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    display: grid;
+    grid-template-columns: 54px minmax(0, 1fr) 30px;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.55rem;
+    text-align: left;
+    color: #f5f5f5;
+    background: rgba(255, 255, 255, 0.045);
+    overflow: hidden;
+    transition: background-color 420ms ease, backdrop-filter 420ms ease;
+
+    strong,
+    small {
+      display: block;
+    }
+
+    small {
+      margin-top: 0.18rem;
+      color: #999;
+    }
+
+    &--scheduled {
+      color: #b9b9b9;
+      background: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.045) 0 8px, rgba(255, 255, 255, 0.018) 8px 16px);
+    }
+
+    &--mystery {
+      color: #eafff0;
+      background: radial-gradient(circle at 85% 30%, rgba(30, 215, 96, 0.18), transparent 34%), rgba(10, 18, 13, 0.94);
+    }
+
+    &--revealing {
+      pointer-events: none;
+    }
+
+    &--variant-0 .mobile-farreo__album-reveal-overlay .mobile-farreo__album-mystery-art {
+      animation: mobile-album-reveal-pulse 1.2s ease both;
+    }
+
+    &--variant-1 .mobile-farreo__album-reveal-overlay::after {
+      animation: mobile-album-reveal-sweep 1.15s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+    }
+
+    &--variant-2 .mobile-farreo__album-reveal-overlay .mobile-farreo__album-mystery-art {
+      animation: mobile-album-reveal-flip 1.15s ease both;
+    }
+  }
+
+  &__album-mystery-art {
+    width: 52px;
+    height: 52px;
+    border-radius: 9px;
+    display: grid;
+    place-items: center;
+    color: #1ed760;
+    background: rgba(0, 0, 0, 0.44);
+  }
+
+  &__album-symbol {
+    display: grid;
+    place-items: center;
+    color: #1ed760;
+
+    i {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 14px rgba(30, 215, 96, 0.7);
+    }
+  }
+
+  &__album-reveal-overlay {
+    position: absolute;
+    z-index: 4;
+    inset: 0 42px 0 0;
+    display: grid;
+    // Replica la cuadricula de song-row--playlist que ya esta renderizada
+    // debajo, evitando cualquier salto al terminar el fade.
+    grid-template-columns: 58px minmax(0, 1fr);
+    align-items: center;
+    gap: 0.8rem;
+    padding: 0.45rem 0;
+    overflow: hidden;
+    border-radius: 10px;
+    background: linear-gradient(90deg, rgba(11, 31, 20, 0.99), rgba(12, 16, 14, 0.99));
+    animation: mobile-album-reveal-overlay 1.35s ease both;
+
+    .mobile-farreo__album-mystery-art {
+      width: 58px;
+      height: 58px;
+    }
+
+    > span:nth-child(2) {
+      min-width: 0;
+      color: #effff4;
+    }
+
+    &::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      transform: translateX(-110%);
+      background: linear-gradient(90deg, transparent, rgba(46, 232, 119, 0.24), transparent);
+      pointer-events: none;
+    }
+  }
+
+  &__album-reveal-particles {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+
+    i {
+      position: absolute;
+      width: 4px;
+      height: 4px;
+      border-radius: 50%;
+      background: #53ec8e;
+      animation: album-reveal-mobile-particle 1.1s ease-out both;
+    }
+
+    i:nth-child(1) { left: 18%; top: 68%; }
+    i:nth-child(2) { left: 42%; top: 30%; animation-delay: 80ms; }
+    i:nth-child(3) { left: 68%; top: 72%; animation-delay: 150ms; }
+    i:nth-child(4) { left: 86%; top: 38%; animation-delay: 220ms; }
   }
 
   &__drag-handle {
@@ -786,6 +1207,7 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
     text-align: left;
     color: #fff;
     background: rgba(255, 255, 255, 0.07);
+    transition: background-color 420ms ease, backdrop-filter 420ms ease;
 
     &--static {
       pointer-events: none;
@@ -2044,10 +2466,43 @@ body:has(.mobile-farreo)::-webkit-scrollbar {
   }
 }
 
+@keyframes mobile-album-reveal-pulse {
+  0% { filter: brightness(1); transform: scale(1); }
+  38% { filter: brightness(2.4); transform: scale(0.97); }
+  72% { filter: brightness(1.35); transform: scale(1.025); }
+  100% { filter: brightness(1); transform: scale(1); }
+}
+
+@keyframes mobile-album-reveal-overlay {
+  0%, 62% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@keyframes album-reveal-mobile-particle {
+  0% { opacity: 0; transform: translateY(10px) scale(0.6); }
+  45% { opacity: 0.9; transform: translateY(-8px) scale(1.8); }
+  100% { opacity: 0; transform: translateY(-24px) scale(0.5); }
+}
+
+@keyframes mobile-album-reveal-sweep {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(110%); }
+}
+
+@keyframes mobile-album-reveal-flip {
+  0% { transform: perspective(500px) rotateX(0); opacity: 1; }
+  48% { transform: perspective(500px) rotateX(88deg); opacity: 0.5; }
+  52% { transform: perspective(500px) rotateX(-88deg); opacity: 0.5; }
+  100% { transform: perspective(500px) rotateX(0); opacity: 1; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .mobile-farreo__spinner,
   .mobile-farreo__playlist-loader img,
-  .mobile-farreo__loader-bars span {
+  .mobile-farreo__loader-bars span,
+  .mobile-farreo__album-track--revealing,
+  .mobile-farreo__album-reveal-overlay,
+  .mobile-farreo__album-reveal-overlay * {
     animation: none;
   }
 }
