@@ -38,6 +38,38 @@ const LIST_CACHE_TTL_MS = 60_000;
 const DOC_CACHE_TTL_MS = 30_000;
 const PRIVATE_ICON_MAX_BYTES = 2 * 1024 * 1024;
 const LEGACY_DATA_URL_PREFIX = "data:image/";
+const MUSIC_API_BASE = MUSIC_API_URL.replace(/\/+$/, "");
+
+/**
+ * Private playlist artwork is stored on the Linux media backend. Firestore
+ * keeps only a short /private-playlist-icons/... path, while UI components
+ * receive an absolute URL so legacy <img src={playlist.iconUrl}> call sites
+ * do not accidentally request the file from Vercel.
+ */
+const resolvePrivatePlaylistIconUrl = (value?: string | null): string | null => {
+  if (!value) return null;
+  if (/^(https?:|data:|blob:|\/\/)/i.test(value)) return value;
+  return `${MUSIC_API_BASE}${value.startsWith("/") ? value : `/${value}`}`;
+};
+
+/** Keep Firestore portable: never persist the Linux host when a managed icon
+ * can be represented by its short backend path. */
+const toStoredPrivatePlaylistIconUrl = (value?: string | null): string | null => {
+  if (!value) return null;
+  if (value.startsWith(LEGACY_DATA_URL_PREFIX)) return value;
+
+  try {
+    const parsed = new URL(value, `${MUSIC_API_BASE}/`);
+    const backend = new URL(`${MUSIC_API_BASE}/`);
+    if (parsed.origin === backend.origin && parsed.pathname.startsWith("/private-playlist-icons/")) {
+      return `${parsed.pathname}${parsed.search}`;
+    }
+  } catch {
+    // Fall through and preserve an unusual external URL unchanged.
+  }
+
+  return value;
+};
 
 const listCache = new Map<string, { expiresAt: number; playlists: PrivatePlaylist[] }>();
 const listPending = new Map<string, Promise<PrivatePlaylist[]>>();
@@ -88,7 +120,7 @@ const mapPrivatePlaylist = (id: string, data: Record<string, unknown>): PrivateP
     ownerId: String(data.ownerId || ""),
     ownerEmail: typeof data.ownerEmail === "string" ? data.ownerEmail : null,
     nombre: String(data.nombre || "Playlist sin nombre"),
-    iconUrl: typeof data.iconUrl === "string" ? data.iconUrl : null,
+    iconUrl: resolvePrivatePlaylistIconUrl(typeof data.iconUrl === "string" ? data.iconUrl : null),
     visibility: data.visibility === "public" ? "public" : "private",
     songIds: songEntries.map((entry) => entry.songId),
     songEntries,
@@ -109,7 +141,9 @@ const rememberPlaylist = (playlist: PrivatePlaylist) => {
 };
 
 const isLegacyEmbeddedIcon = (value?: string | null) => Boolean(value?.startsWith(LEGACY_DATA_URL_PREFIX));
-const isManagedPrivateIcon = (value?: string | null) => Boolean(value?.startsWith("/private-playlist-icons/"));
+const isManagedPrivateIcon = (value?: string | null) => Boolean(
+  toStoredPrivatePlaylistIconUrl(value)?.startsWith("/private-playlist-icons/"),
+);
 
 function dataUrlToBlob(dataUrl: string) {
   const [header, payload] = dataUrl.split(",", 2);
@@ -161,7 +195,7 @@ async function migrateLegacyPrivatePlaylistIcon(playlist: PrivatePlaylist): Prom
   if (pending) return pending;
 
   const migration = uploadPrivatePlaylistIcon(playlist.id, playlist.iconUrl!)
-    .then((iconUrl) => ({ ...playlist, iconUrl }))
+    .then((iconUrl) => ({ ...playlist, iconUrl: resolvePrivatePlaylistIconUrl(iconUrl) }))
     .catch(() => playlist)
     .finally(() => legacyMigrationPending.delete(playlist.id));
   legacyMigrationPending.set(playlist.id, migration);
@@ -204,7 +238,7 @@ export async function createPrivatePlaylist(input: {
     nombre: input.nombre,
     // Never put Base64 image data inside Firestore. The backend stores the
     // actual image and Firestore only keeps its short media URL.
-    iconUrl: embeddedIcon ? null : input.iconUrl || null,
+    iconUrl: embeddedIcon ? null : toStoredPrivatePlaylistIconUrl(input.iconUrl),
     visibility: input.visibility || "private",
     songIds: [],
     songEntries: [],
@@ -246,7 +280,7 @@ export async function updatePrivatePlaylist(id: string, input: {
       await removePrivatePlaylistIcon(id).catch(() => null);
       update.iconUrl = null;
     } else {
-      update.iconUrl = input.iconUrl;
+      update.iconUrl = toStoredPrivatePlaylistIconUrl(input.iconUrl);
     }
   }
 
