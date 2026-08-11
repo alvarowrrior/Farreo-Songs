@@ -3,9 +3,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { onAuthStateChanged } from "firebase/auth";
 import { auth } from "@/lib/firebase";
-import { hideSong, listHiddenSongIds, subscribeHiddenSongIds, unhideSong } from "@/lib/hiddenSongs";
+import { hideSong, listHiddenSongIds, unhideSong } from "@/lib/hiddenSongs";
 
-const ADMIN_EMAILS = (process.env.NEXT_PUBLIC_ADMIN_EMAILS || "").split(",");
+const ADMIN_EMAILS = (process.env.NEXT_PUBLIC_ADMIN_EMAILS || "")
+  .split(",")
+  .map((email) => email.trim().toLowerCase())
+  .filter(Boolean);
 
 export interface UseHiddenSongs {
   isAdmin: boolean;
@@ -19,48 +22,61 @@ export interface UseHiddenSongs {
 }
 
 /**
- * Shared hook for the "hidden songs" feature. Tracks admin state and the set
- * of hidden song ids (Firestore). Non-admins never see hidden songs; admins do.
- * If Firebase is not configured it degrades to "nothing hidden / not admin".
+ * Hidden songs are intentionally NOT observed with an onSnapshot listener.
+ * The old realtime listener created a fresh Firestore subscription in every
+ * mounted consumer. A shared read-through cache in hiddenSongs.ts is enough
+ * for Farreo and avoids background/reconnection reads.
  */
 export function useHiddenSongs(): UseHiddenSongs {
   const [isAdmin, setIsAdmin] = useState(false);
   const [hiddenIds, setHiddenIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
 
-  const refresh = useCallback(async () => {
+  const load = useCallback(async (force = false) => {
     try {
-      const ids = await listHiddenSongIds();
+      const ids = await listHiddenSongIds(force);
       setHiddenIds(new Set(ids));
     } catch {
-      // Keep whatever we had; absence of data shouldn't hide everything.
+      // Keep whatever we already had if Firestore is temporarily unavailable.
+    } finally {
+      setLoading(false);
     }
   }, []);
 
+  const refresh = useCallback(() => load(true), [load]);
+
   useEffect(() => {
     let active = true;
-    const unsubscribeHidden = subscribeHiddenSongIds(
-      (ids) => {
-        if (!active) return;
-        setHiddenIds(new Set(ids));
-        setLoading(false);
-      },
-      () => {
+    void listHiddenSongIds()
+      .then((ids) => {
+        if (active) setHiddenIds(new Set(ids));
+      })
+      .catch(() => undefined)
+      .finally(() => {
         if (active) setLoading(false);
-      },
-    );
+      });
+
     const unsubscribeAuth = auth
       ? onAuthStateChanged(auth, (user) => {
-        setIsAdmin(Boolean(user?.email && ADMIN_EMAILS.includes(user.email)));
+        const email = user?.email?.trim().toLowerCase() || "";
+        setIsAdmin(Boolean(email && ADMIN_EMAILS.includes(email)));
       })
       : () => undefined;
 
+    // Refresh when the user returns to the app, but only when the shared cache
+    // has expired. This gives other users' hide/unhide changes a natural sync
+    // point without keeping a paid realtime listener open all day.
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") void load(false);
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+
     return () => {
       active = false;
-      unsubscribeHidden();
       unsubscribeAuth();
+      document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [refresh]);
+  }, [load]);
 
   const isVisible = useCallback(
     (songId: string) => isAdmin || !hiddenIds.has(songId),
@@ -68,7 +84,7 @@ export function useHiddenSongs(): UseHiddenSongs {
   );
 
   const hide = useCallback(async (songId: string) => {
-    await hideSong(songId);
+    await hideSong(songId, auth?.currentUser?.email);
     setHiddenIds((prev) => new Set(prev).add(songId));
   }, []);
 

@@ -3,7 +3,6 @@ import {
   deleteDoc,
   doc,
   getDocs,
-  onSnapshot,
   serverTimestamp,
   setDoc,
   type DocumentData,
@@ -12,6 +11,11 @@ import {
 import { db } from "@/lib/firebase";
 
 const COLLECTION = "hiddenSongs";
+const CACHE_TTL_MS = 60_000;
+
+let cachedHiddenIds: string[] | null = null;
+let cacheExpiresAt = 0;
+let pendingHiddenIds: Promise<string[]> | null = null;
 
 const assertDb = () => {
   if (!db) throw new Error("Firebase no esta configurado.");
@@ -22,35 +26,59 @@ const hiddenIdsFromSnapshot = (snapshot: QuerySnapshot<DocumentData>) => snapsho
   .map((item) => (item.data().songId as string) ?? item.id)
   .filter((songId): songId is string => typeof songId === "string");
 
+const rememberHiddenIds = (ids: string[]) => {
+  cachedHiddenIds = [...new Set(ids)];
+  cacheExpiresAt = Date.now() + CACHE_TTL_MS;
+  return [...cachedHiddenIds];
+};
+
+export function invalidateHiddenSongsCache() {
+  cachedHiddenIds = null;
+  cacheExpiresAt = 0;
+  pendingHiddenIds = null;
+}
+
 export async function hideSong(songId: string, hiddenByEmail?: string | null) {
   await setDoc(doc(assertDb(), COLLECTION, songId), {
     songId,
     hiddenBy: hiddenByEmail || null,
     createdAt: serverTimestamp(),
   });
+
+  if (cachedHiddenIds) {
+    rememberHiddenIds([...cachedHiddenIds, songId]);
+  } else {
+    invalidateHiddenSongsCache();
+  }
 }
 
 export async function unhideSong(songId: string) {
   await deleteDoc(doc(assertDb(), COLLECTION, songId));
-}
 
-export async function listHiddenSongIds(): Promise<string[]> {
-  if (!db) return [];
-  const snap = await getDocs(collection(db, COLLECTION));
-  return hiddenIdsFromSnapshot(snap);
-}
-
-export function subscribeHiddenSongIds(
-  onChange: (songIds: string[]) => void,
-  onError?: () => void,
-) {
-  if (!db) {
-    onChange([]);
-    return () => undefined;
+  if (cachedHiddenIds) {
+    rememberHiddenIds(cachedHiddenIds.filter((id) => id !== songId));
+  } else {
+    invalidateHiddenSongsCache();
   }
-  return onSnapshot(
-    collection(db, COLLECTION),
-    (snapshot) => onChange(hiddenIdsFromSnapshot(snapshot)),
-    () => onError?.(),
-  );
+}
+
+export async function listHiddenSongIds(force = false): Promise<string[]> {
+  if (!db) return [];
+
+  if (!force && cachedHiddenIds && Date.now() < cacheExpiresAt) {
+    return [...cachedHiddenIds];
+  }
+
+  if (!force && pendingHiddenIds) {
+    return pendingHiddenIds.then((ids) => [...ids]);
+  }
+
+  const request = getDocs(collection(db, COLLECTION))
+    .then((snapshot) => rememberHiddenIds(hiddenIdsFromSnapshot(snapshot)))
+    .finally(() => {
+      if (pendingHiddenIds === request) pendingHiddenIds = null;
+    });
+
+  pendingHiddenIds = request;
+  return request.then((ids) => [...ids]);
 }

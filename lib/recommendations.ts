@@ -28,11 +28,11 @@ interface CachedRecommendations {
   data: HomeRecommendations;
 }
 
-// v2 invalida las selecciones antiguas, que podian superar el nuevo limite
-// semanal de 16 canciones.
+// v2 invalidates older selections that could exceed the weekly 16-song cap.
 const cacheKey = () => `farreo-home-recommendations-v2:${auth?.currentUser?.uid || "guest"}`;
 const revealKey = (dayKey: string, songId: string) => `farreo-daily-reveal-v1:${auth?.currentUser?.uid || "guest"}:${dayKey}:${songId}`;
 const volatileReveals = new Set<string>();
+let pendingRecommendations: Promise<HomeRecommendations> | null = null;
 
 const localDateKey = (date: Date) => [
   date.getFullYear(),
@@ -71,8 +71,7 @@ export function markDailyRecommendationRevealed(dayKey: string, songId: string) 
   try {
     window.localStorage.setItem(key, "1");
   } catch {
-    // La animacion sigue funcionando aunque el navegador no pueda recordar
-    // localmente el descubrimiento.
+    // The animation still works if local storage is blocked.
   }
 }
 
@@ -96,14 +95,7 @@ function normalizeRecommendations(data: HomeRecommendations): HomeRecommendation
   };
 }
 
-export async function getHomeRecommendations(force = false): Promise<HomeRecommendations> {
-  const cached = readCache();
-  const now = Date.now();
-  const keys = currentRecommendationKeys();
-  if (!force && cached && cached.data.dayKey === keys.dayKey && cached.data.weekKey === keys.weekKey) {
-    return normalizeRecommendations(cached.data);
-  }
-
+async function fetchRecommendations(cached: CachedRecommendations | null, now: number, keys: { dayKey: string; weekKey: string }) {
   const response = await fetch(`${MUSIC_API_URL}/recommendations`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -124,6 +116,7 @@ export async function getHomeRecommendations(force = false): Promise<HomeRecomme
     weeklyPlaylists: cached.data.weeklyPlaylists,
     weeklyAlbum: cached.data.weeklyAlbum,
   } : next);
+
   if (typeof window !== "undefined") {
     const key = cacheKey();
     const serialized = JSON.stringify({
@@ -134,20 +127,35 @@ export async function getHomeRecommendations(force = false): Promise<HomeRecomme
     try {
       window.localStorage.setItem(key, serialized);
     } catch {
-      // Las cuentas usadas anteriormente pueden acumular caches distintas.
-      // Son datos regenerables: retiramos las antiguas y reintentamos, pero
-      // nunca convertimos un fallo de cache en un fallo de recomendaciones.
       try {
         const staleKeys = Array.from({ length: window.localStorage.length }, (_, index) => window.localStorage.key(index))
           .filter((item): item is string => Boolean(item?.startsWith("farreo-home-recommendations-") && item !== key));
-        staleKeys.forEach(item => window.localStorage.removeItem(item));
+        staleKeys.forEach((item) => window.localStorage.removeItem(item));
         window.localStorage.setItem(key, serialized);
       } catch {
-        // Los datos recibidos se devuelven igualmente y se muestran en pantalla.
+        // Recommendations remain usable even if they cannot be persisted.
       }
     }
   }
   return data;
+}
+
+export async function getHomeRecommendations(force = false): Promise<HomeRecommendations> {
+  const cached = readCache();
+  const now = Date.now();
+  const keys = currentRecommendationKeys();
+  if (!force && cached && cached.data.dayKey === keys.dayKey && cached.data.weekKey === keys.weekKey) {
+    return normalizeRecommendations(cached.data);
+  }
+
+  // Desktop/mobile components can mount close together. Sharing the in-flight
+  // request prevents both from charging the same backend/Firestore work.
+  if (pendingRecommendations) return pendingRecommendations;
+  pendingRecommendations = fetchRecommendations(cached, now, keys)
+    .finally(() => {
+      pendingRecommendations = null;
+    });
+  return pendingRecommendations;
 }
 
 export async function getSharedRecommendation(token: string) {

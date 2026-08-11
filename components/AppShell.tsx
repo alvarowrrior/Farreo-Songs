@@ -2,6 +2,7 @@
 
 import { usePathname } from "next/navigation";
 import AppSidebar from "@/components/AppSidebar";
+import BackendAuthBridge from "@/components/BackendAuthBridge";
 import MusicWaveHeader from "@/components/MusicWaveHeader";
 import SongInfoSidebar from "@/components/SongInfoSidebar";
 
@@ -11,6 +12,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <>
+      <BackendAuthBridge />
       {!isSimplePage && <AppSidebar />}
       <MusicWaveHeader simple={isSimplePage} />
       {!isSimplePage && <SongInfoSidebar />}

@@ -4,7 +4,9 @@
   "description": "Mini servidor de almacenamiento de canciones para Farreo",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server-safe.js",
+    "start:unsafe": "node server.js",
+    "check:safety": "node --check farreoSafetyPreload.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
