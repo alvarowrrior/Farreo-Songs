@@ -70,7 +70,35 @@ const LyricsWindow = memo(function LyricsWindow({
 
   useEffect(() => {
     if (!autoFollow || activeLyricIndex < 0) return;
-    activeLyricRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+
+    const lyricsWindow = lyricsWindowRef.current;
+    const activeLyric = activeLyricRef.current;
+    if (!lyricsWindow || !activeLyric) return;
+
+    // No usamos scrollIntoView(): al haber dos ancestros con scroll
+    // (la ventana de lyrics y el sidebar completo), el navegador puede mover
+    // ambos. Calculamos la posición relativa y desplazamos SOLO las lyrics.
+    const windowRect = lyricsWindow.getBoundingClientRect();
+    const lyricRect = activeLyric.getBoundingClientRect();
+    const lyricCenterInsideWindow =
+      lyricsWindow.scrollTop
+      + (lyricRect.top - windowRect.top)
+      + (lyricRect.height / 2);
+
+    const requestedTop =
+      lyricCenterInsideWindow
+      - (lyricsWindow.clientHeight / 2);
+
+    const maxTop = Math.max(
+      0,
+      lyricsWindow.scrollHeight - lyricsWindow.clientHeight,
+    );
+    const nextTop = Math.max(0, Math.min(maxTop, requestedTop));
+
+    lyricsWindow.scrollTo({
+      top: nextTop,
+      behavior: "smooth",
+    });
   }, [activeLyricIndex, autoFollow]);
 
   useEffect(() => {
