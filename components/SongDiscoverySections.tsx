@@ -48,11 +48,14 @@ function Collapsible({
   }, [open, revealOnOpen]);
 
   const toggle = () => {
-    setOpen((current) => {
-      const next = !current;
-      if (next) onOpen?.();
-      return next;
-    });
+    const next = !open;
+    setOpen(next);
+
+    // onOpen puede actualizar estado del componente padre (por ejemplo,
+    // setSimilarLoading). Nunca debe ejecutarse dentro del updater de setOpen:
+    // React puede evaluar ese updater durante render y marcarlo como
+    // "setState while rendering a different component".
+    if (next) onOpen?.();
   };
 
   return (

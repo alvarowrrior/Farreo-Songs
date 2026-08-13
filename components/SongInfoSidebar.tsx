@@ -4,7 +4,7 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { ChevronLeftIcon, ChevronRightIcon, ListMusicIcon, Maximize2Icon, Minimize2Icon, PauseIcon, PlayIcon } from "lucide-react";
 import SongArtwork from "@/components/SongArtwork";
-import { useMusicPlayer, useMusicPlayerTime, type MusicPlaylistSource } from "@/components/MusicPlayerProvider";
+import { useMusicPlayer, useMusicPlayerTime, type MusicPlaylistSource, type MusicTrack } from "@/components/MusicPlayerProvider";
 import { getMediaUrl } from "@/lib/radioApi";
 import { parseSrt } from "@/lib/lyrics";
 import SongDiscoverySections from "@/components/SongDiscoverySections";
@@ -145,18 +145,41 @@ export default function SongInfoSidebar() {
   const [openedAlbumId, setOpenedAlbumId] = useState<string | null>(null);
   const [lyricsExpanded, setLyricsExpanded] = useState(false);
   const [autoFollow, setAutoFollow] = useState(true);
-  const dynamicLyrics = useMemo(() => parseSrt(currentTrack?.lyricsSrt), [currentTrack?.lyricsSrt]);
+  const [metadataOverride, setMetadataOverride] = useState<MusicTrack | null>(null);
+  const [metadataRevision, setMetadataRevision] = useState(0);
+
+  useEffect(() => {
+    setMetadataOverride(null);
+    setMetadataRevision(0);
+  }, [currentTrack?.id]);
+
+  useEffect(() => {
+    const handleMetadataUpdate = (event: Event) => {
+      const incoming = (event as CustomEvent<MusicTrack>).detail;
+      if (!incoming?.id || incoming.id !== currentTrack?.id) return;
+      setMetadataOverride((current) => ({
+        ...(current || currentTrack || incoming),
+        ...incoming,
+      }));
+      setMetadataRevision((value) => value + 1);
+    };
+    window.addEventListener("farreo:song-metadata-updated", handleMetadataUpdate);
+    return () => window.removeEventListener("farreo:song-metadata-updated", handleMetadataUpdate);
+  }, [currentTrack]);
+
+  const displayTrack = metadataOverride?.id === currentTrack?.id ? metadataOverride : currentTrack;
+  const dynamicLyrics = useMemo(() => parseSrt(displayTrack?.lyricsSrt), [displayTrack?.lyricsSrt]);
   const staticLyrics = useMemo(() => (
-    currentTrack?.staticLyrics
+    displayTrack?.staticLyrics
       ?.replace(/\r/g, "")
       .split("\n")
       .map((line) => line.trim())
       .filter(Boolean) || []
-  ), [currentTrack?.staticLyrics]);
+  ), [displayTrack?.staticLyrics]);
   const sourceHref = getSourceHref(currentSource);
   const activeLyricIndex = dynamicLyrics.findIndex((cue) => visualCurrentTime >= cue.start && visualCurrentTime <= cue.end);
-  const advancedCoverUrl = currentTrack?.advancedCoverUrl ? getMediaUrl(currentTrack.advancedCoverUrl) : "";
-  const advancedCoverIsVideo = Boolean(currentTrack?.advancedCoverType?.startsWith("video/"));
+  const advancedCoverUrl = displayTrack?.advancedCoverUrl ? getMediaUrl(displayTrack.advancedCoverUrl) : "";
+  const advancedCoverIsVideo = Boolean(displayTrack?.advancedCoverType?.startsWith("video/"));
   const albumFirstListenLocked = currentSource?.type === "album" && isPitchLocked;
   const open = currentSource?.type === "album"
     ? openedAlbumId === currentSource.id && preferredOpen
@@ -175,7 +198,7 @@ export default function SongInfoSidebar() {
     if (currentSource?.type === "album") setOpenedAlbumId(currentSource.id);
   };
 
-  if (!currentTrack) return null;
+  if (!displayTrack) return null;
 
   if (!open && !albumFirstListenLocked) {
     return (
@@ -220,9 +243,9 @@ export default function SongInfoSidebar() {
               <img src={advancedCoverUrl} alt="" loading="lazy" />
             )}
             <div className="song-info-sidebar__advanced-cover-info">
-              <SongArtwork src={currentTrack.iconUrl} alt={currentTrack.name} className="song-info-sidebar__advanced-cover-artwork" sizes="160px" eager />
+              <SongArtwork src={displayTrack.iconUrl} alt={displayTrack.name} className="song-info-sidebar__advanced-cover-artwork" sizes="160px" eager />
               <div className="song-info-sidebar__advanced-cover-text">
-                <h2>{currentTrack.name}</h2>
+                <h2>{displayTrack.name}</h2>
               </div>
             </div>
             <button
@@ -235,13 +258,13 @@ export default function SongInfoSidebar() {
             </button>
           </div>
         ) : (
-          <SongArtwork src={currentTrack.iconUrl} alt={currentTrack.name} className="song-info-sidebar__artwork" sizes="420px" eager />
+          <SongArtwork src={displayTrack.iconUrl} alt={displayTrack.name} className="song-info-sidebar__artwork" sizes="420px" eager />
         )}
 
         {!advancedCoverUrl && (
           <section className="song-info-sidebar__song">
             <div>
-              <h2>{currentTrack.name}</h2>
+              <h2>{displayTrack.name}</h2>
             </div>
             <button
               type="button"
@@ -279,7 +302,7 @@ export default function SongInfoSidebar() {
           </div>
 
           <LyricsWindow
-            trackId={currentTrack.id}
+            trackId={displayTrack.id}
             dynamicLyrics={dynamicLyrics}
             staticLyrics={staticLyrics}
             activeLyricIndex={activeLyricIndex}
@@ -295,12 +318,13 @@ export default function SongInfoSidebar() {
           </div>
           <div>
             <span>Anadida a Farreo</span>
-            <strong>{formatCreatedAt(currentTrack.createdAt)}</strong>
+            <strong>{formatCreatedAt(displayTrack.createdAt)}</strong>
           </div>
         </section>
 
         <SongDiscoverySections
-          track={currentTrack}
+          key={`${displayTrack.id}:${metadataRevision}`}
+          track={displayTrack}
           onPlaySong={(song) => toggleTrack({ ...song, url: getMediaUrl(song.url) }, [{ ...song, url: getMediaUrl(song.url) }], {
             id: song.id,
             name: "Cancion suelta",
