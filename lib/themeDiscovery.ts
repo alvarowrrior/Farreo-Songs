@@ -30,9 +30,13 @@ const pending = new Map<string, Promise<ThemeDiscoveryPayload>>();
 
 const viewerKey = () => auth?.currentUser?.uid || "guest";
 
-async function viewerHeaders() {
+async function viewerHeaders(): Promise<Record<string, string>> {
   const user = auth?.currentUser;
-  return user ? { Authorization: `Bearer ${await user.getIdToken()}` } : {};
+  if (!user) return {};
+
+  return {
+    Authorization: `Bearer ${await user.getIdToken()}`,
+  };
 }
 
 export function invalidateThemeDiscoveryCache() {
