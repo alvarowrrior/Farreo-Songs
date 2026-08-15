@@ -1,0 +1,326 @@
+.statsNav {
+  // Reuses the native sidebar nav-item styling; only mobile availability is new.
+}
+
+.filterButtonHost {
+  width: 28px;
+  height: 28px;
+}
+
+.searchFormWithFilter {
+  grid-template-columns: 20px minmax(0, 1fr) 28px 28px !important;
+}
+
+.filterButton {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #a2a2a7;
+  background: transparent;
+  cursor: pointer;
+
+  &:hover {
+    color: #1ed760;
+    background: rgba(30, 215, 96, 0.13);
+  }
+
+  i {
+    position: absolute;
+    right: -4px;
+    top: -5px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: 999px;
+    display: grid;
+    place-items: center;
+    color: #061109;
+    background: #5def90;
+    font-size: 9px;
+    font-style: normal;
+    font-weight: 950;
+    box-shadow: 0 3px 8px rgba(0, 0, 0, 0.32);
+  }
+}
+
+.filterButtonActive {
+  color: #1ed760;
+  background: rgba(30, 215, 96, 0.13);
+}
+
+.filterPanel {
+  padding: 0.58rem;
+  border: 1px solid rgba(255, 255, 255, 0.085);
+  border-radius: 8px;
+  background: rgba(14, 14, 15, 0.99);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.34);
+}
+
+.filterPanelHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-bottom: 0.52rem;
+
+  > div {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.08rem;
+  }
+
+  strong {
+    color: #fff;
+    font-size: 0.72rem;
+  }
+
+  small {
+    color: #6f6f74;
+    font-size: 0.55rem;
+    line-height: 1.3;
+  }
+
+  > button {
+    width: 25px;
+    height: 25px;
+    border: 0;
+    border-radius: 6px;
+    display: grid;
+    place-items: center;
+    color: #85858a;
+    background: rgba(255, 255, 255, 0.04);
+    cursor: pointer;
+
+    &:hover {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.09);
+    }
+  }
+}
+
+.themeSearch {
+  height: 32px;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0 0.5rem;
+  margin-bottom: 0.45rem;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 7px;
+  color: #77777d;
+  background: rgba(255, 255, 255, 0.035);
+
+  &:focus-within {
+    color: #4fe989;
+    border-color: rgba(30, 215, 96, 0.22);
+  }
+
+  input {
+    min-width: 0;
+    border: 0;
+    outline: 0;
+    color: #fff;
+    background: transparent;
+    font: inherit;
+    font-size: 0.64rem;
+
+    &::placeholder { color: #616166; }
+  }
+}
+
+.themeGrid {
+  max-height: 190px;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.28rem;
+  padding-right: 0.15rem;
+  scrollbar-width: thin;
+
+  &::-webkit-scrollbar { width: 5px; }
+  &::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.18);
+  }
+
+  > button {
+    min-width: 0;
+    min-height: 38px;
+    padding: 0.3rem 0.35rem;
+    border: 1px solid rgba(255, 255, 255, 0.055);
+    border-radius: 7px;
+    display: grid;
+    grid-template-columns: 7px minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    column-gap: 0.28rem;
+    align-items: center;
+    color: #9c9ca1;
+    background: rgba(255, 255, 255, 0.028);
+    text-align: left;
+    font: inherit;
+    cursor: pointer;
+
+    &:hover {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    > i {
+      width: 6px;
+      height: 6px;
+      grid-row: 1 / span 2;
+      border-radius: 50%;
+    }
+
+    > span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 0.57rem;
+      font-weight: 800;
+    }
+
+    > small {
+      color: #5f5f64;
+      font-size: 0.5rem;
+    }
+  }
+
+  > .themeSelected {
+    color: #071109;
+    border-color: transparent;
+    background: #5be98c;
+
+    > small { color: rgba(4, 20, 10, 0.58); }
+  }
+}
+
+.filterEmpty {
+  grid-column: 1 / -1;
+  padding: 0.8rem;
+  color: #77777b;
+  text-align: center;
+  font-size: 0.62rem;
+}
+
+.clearFilters {
+  width: 100%;
+  min-height: 30px;
+  margin-top: 0.45rem;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 7px;
+  color: #8d8d92;
+  background: rgba(255, 255, 255, 0.035);
+  font: inherit;
+  font-size: 0.58rem;
+  font-weight: 850;
+  cursor: pointer;
+
+  &:hover {
+    color: #fff;
+    background: rgba(255, 255, 255, 0.07);
+  }
+}
+
+.filteredResults {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  max-height: 310px;
+  overflow-y: auto;
+  margin-top: 0.35rem;
+  padding-right: 0.2rem;
+  scrollbar-width: thin;
+
+  &::-webkit-scrollbar { width: 6px; }
+  &::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.2);
+  }
+}
+
+.resultsMeta {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0 0.35rem;
+  color: #5de98e;
+  background: rgba(5, 5, 6, 0.98);
+  font-size: 0.57rem;
+  font-weight: 850;
+
+  small {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #77777d;
+    font-weight: 700;
+  }
+}
+
+.resultButton {
+  border: 0;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+
+  &:disabled {
+    opacity: 0.62;
+    cursor: wait;
+  }
+}
+
+.resultAction {
+  justify-self: center;
+  color: #4ee486;
+}
+
+.loadMore {
+  width: calc(100% - 0.2rem);
+  min-height: 34px;
+  margin: 0.25rem 0 0.1rem;
+  border: 1px solid rgba(30, 215, 96, 0.16);
+  border-radius: 7px;
+  color: #55e98a;
+  background: rgba(30, 215, 96, 0.055);
+  font: inherit;
+  font-size: 0.62rem;
+  font-weight: 850;
+  cursor: pointer;
+
+  &:hover {
+    color: #071109;
+    background: #5ae98c;
+  }
+}
+
+// While theme filters are active, the enhancer renders the result list itself.
+// The native name-only result list is left untouched and returns immediately
+// when the final theme filter is removed.
+.themeFilterActive :global(.app-sidebar__song-results) {
+  display: none !important;
+}
+
+@media (max-width: 720px) {
+  .statsNav {
+    display: none !important;
+  }
+
+  .themeGrid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}

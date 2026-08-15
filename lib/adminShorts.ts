@@ -4,6 +4,7 @@ import { auth } from "@/lib/firebase";
 import { MUSIC_API_URL, type ApiSong } from "@/lib/radioApi";
 
 const SESSION_STORAGE_KEY = "farreo-admin-shorts-session";
+const DEFERRED_STORAGE_PREFIX = "farreo-admin-shorts-deferred";
 
 export type AdminShortLyricsMode = "none" | "static" | "dynamic";
 
@@ -34,6 +35,11 @@ export interface AdminShortSongDraftPayload {
   iconFile?: File | null;
   advancedCoverFile?: File | null;
   lyrics?: AdminShortLyricsDraftPayload;
+}
+
+interface DeferredAdminShortsState {
+  round: number;
+  songIds: string[];
 }
 
 export class AdminShortsApiError extends Error {
@@ -76,6 +82,50 @@ const randomSessionId = () => {
   return `shorts-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 };
 
+const deferredStorageKey = (sessionId: string) => `${DEFERRED_STORAGE_PREFIX}:${sessionId}`;
+
+function readDeferredAdminShorts(sessionId: string): DeferredAdminShortsState | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(deferredStorageKey(sessionId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<DeferredAdminShortsState>;
+    const round = Number(parsed.round);
+    const songIds = Array.isArray(parsed.songIds)
+      ? [...new Set(parsed.songIds.map(String).filter(Boolean))]
+      : [];
+    if (!Number.isInteger(round) || round < 1) return null;
+    return { round, songIds };
+  } catch {
+    return null;
+  }
+}
+
+function writeDeferredAdminShorts(sessionId: string, state: DeferredAdminShortsState | null) {
+  if (typeof window === "undefined") return;
+  try {
+    const key = deferredStorageKey(sessionId);
+    if (!state || state.songIds.length === 0) {
+      window.sessionStorage.removeItem(key);
+      return;
+    }
+    window.sessionStorage.setItem(key, JSON.stringify(state));
+  } catch {
+    // Si sessionStorage no está disponible, la reserva del backend se libera
+    // igualmente; lo único que perdemos es recordar la posposición en esta pestaña.
+  }
+}
+
+export function rememberDeferredAdminShort(songId: string, sessionId: string, round: number) {
+  const existing = readDeferredAdminShorts(sessionId);
+  const songIds = existing?.round === round ? existing.songIds : [];
+  if (songIds.includes(songId)) return;
+  writeDeferredAdminShorts(sessionId, {
+    round,
+    songIds: [...songIds, songId],
+  });
+}
+
 export function getAdminShortsSessionId() {
   if (typeof window === "undefined") return randomSessionId();
   try {
@@ -97,10 +147,32 @@ export const isAdminShortClaimConflict = (error: unknown) => (
 
 export async function getAdminShortsState(sessionId: string) {
   const params = new URLSearchParams({ sessionId });
-  return parse<AdminShortsState>(await fetch(`${MUSIC_API_URL}/admin/shorts?${params.toString()}`, {
+  const state = await parse<AdminShortsState>(await fetch(`${MUSIC_API_URL}/admin/shorts?${params.toString()}`, {
     headers: await adminHeaders(),
     cache: "no-store",
   }));
+
+  const deferred = readDeferredAdminShorts(sessionId);
+  if (!deferred) return state;
+
+  if (deferred.round !== state.versionGlobal) {
+    writeDeferredAdminShorts(sessionId, null);
+    return state;
+  }
+
+  const deferredIds = new Set(deferred.songIds);
+  let availableDeferred = 0;
+  const songs = state.songs.filter((song) => {
+    if (!deferredIds.has(song.id)) return true;
+    availableDeferred += 1;
+    return false;
+  });
+
+  return {
+    ...state,
+    songs,
+    totalEligible: Math.max(0, state.totalEligible - availableDeferred),
+  };
 }
 
 export async function getAdminShortSong(songId: string) {
@@ -217,9 +289,6 @@ export async function saveAdminShortSong(songId: string, payload: AdminShortSong
     }),
   );
 
-  // Lyrics are intentionally persisted after the normal metadata pipeline so
-  // an embedded-lyrics scan can never overwrite a static text just entered in
-  // Admin Shorts.
   if (payload.lyrics?.changed) {
     await saveAdminShortLyrics(songId, payload.lyrics);
   }

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { onAuthStateChanged } from "firebase/auth";
 import { auth } from "@/lib/firebase";
 import AdminShorts from "@/components/AdminShorts";
+import AdminShortsDeferEnhancer from "@/components/AdminShortsDeferEnhancer";
 
 const ADMIN_EMAILS = (process.env.NEXT_PUBLIC_ADMIN_EMAILS || "")
   .split(",")
@@ -42,5 +43,10 @@ export default function AdminShortsPage() {
     );
   }
 
-  return <AdminShorts />;
+  return (
+    <>
+      <AdminShorts />
+      <AdminShortsDeferEnhancer />
+    </>
+  );
 }

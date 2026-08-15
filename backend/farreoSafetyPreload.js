@@ -54,6 +54,10 @@ const state = {
   visitorSecret: null,
   adminEmails: { expiresAt: 0, values: null },
   localSongs: { expiresAt: 0, items: null },
+  themeDiscovery: {
+    public: { expiresAt: 0, body: null, pending: null },
+    admin: { expiresAt: 0, body: null, pending: null },
+  },
 };
 
 function numberFromEnv(name, fallback, min = 1, max = 4096) {
@@ -527,7 +531,6 @@ function responseCachePolicy(req) {
   if (req.method !== 'GET') return null;
   const value = req.path || req.url.split('?')[0];
   if (/^\/songs\/[^/]+\/similar$/.test(value)) return 30_000;
-  if (value.startsWith('/recommendations/shared/')) return 60_000;
   return null;
 }
 
@@ -628,6 +631,79 @@ async function localSongEntries() {
 async function localPublicSongEntries() {
   const [entries, hidden] = await Promise.all([localSongEntries(), hiddenSongIds()]);
   return entries.filter((entry) => !hidden.has(entry.song.id));
+}
+
+function discoverySongSummary(baseDir, audiosDir, file, validThemeIds, isHidden = false) {
+  const metadata = readLocalSongMetadata(baseDir, file);
+  const themeIds = (metadata.themeIds || []).filter((id) => validThemeIds.has(id));
+  let statsValue = null;
+  try { statsValue = fs.statSync(path.join(audiosDir, file)); } catch { /* ignore */ }
+  const iconFile = metadata.manualIconFile || metadata.embeddedIconFile || null;
+  return {
+    id: file,
+    name: metadata.nombre,
+    variantes: metadata.variantes || [],
+    themeIds,
+    hidden: Boolean(isHidden),
+    url: `/audio/${file}`,
+    iconUrl: iconFile ? `/song-icons/${iconFile}` : null,
+    duration: typeof metadata.duration === 'number' && Number.isFinite(metadata.duration) ? metadata.duration : null,
+    createdAt: {
+      seconds: Math.floor((statsValue?.birthtimeMs || statsValue?.mtimeMs || Date.now()) / 1000),
+      nanoseconds: 0,
+    },
+  };
+}
+
+async function themeDiscoveryPayload(includeHidden = false) {
+  // Never share this cache between roles. An admin payload may contain hidden
+  // songs and therefore must not be reusable by a normal visitor.
+  const cache = includeHidden ? state.themeDiscovery.admin : state.themeDiscovery.public;
+  if (cache.body && cache.expiresAt > Date.now()) return cache.body;
+  if (cache.pending) return cache.pending;
+
+  cache.pending = (async () => {
+    const baseDir = path.join(__dirname, 'almacenamiento_compartido');
+    const audiosDir = path.join(baseDir, 'audios');
+    const themes = readThemeCatalog();
+    const validThemeIds = new Set(themes.map((theme) => theme.id));
+    const hidden = await hiddenSongIds();
+
+    const songs = fs.existsSync(audiosDir)
+      ? fs.readdirSync(audiosDir)
+        .filter((file) => /\.(mp3|mpeg|wav)$/i.test(file) && (includeHidden || !hidden.has(file)))
+        .map((file) => discoverySongSummary(baseDir, audiosDir, file, validThemeIds, hidden.has(file)))
+        .sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0))
+      : [];
+
+    const counts = new Map(themes.map((theme) => [theme.id, 0]));
+    songs.forEach((song) => {
+      song.themeIds.forEach((id) => counts.set(id, (counts.get(id) || 0) + 1));
+    });
+
+    const body = {
+      generatedAt: new Date().toISOString(),
+      isAdmin: includeHidden,
+      themes: themes.map((theme) => ({ ...theme, count: counts.get(theme.id) || 0 })),
+      songs,
+    };
+
+    cache.body = body;
+    cache.expiresAt = Date.now() + 15_000;
+    return body;
+  })().finally(() => {
+    cache.pending = null;
+  });
+
+  return cache.pending;
+}
+
+function invalidateThemeDiscovery() {
+  for (const cache of Object.values(state.themeDiscovery)) {
+    cache.expiresAt = 0;
+    cache.body = null;
+    cache.pending = null;
+  }
 }
 
 function seededRandom(seed) {
@@ -814,12 +890,14 @@ function installSafety(app) {
       if (routePath === '/upload' || routePath.startsWith('/cancion/')) {
         state.localSongs.expiresAt = 0;
         state.localSongs.items = null;
+        invalidateThemeDiscovery();
         state.responseCache.clear();
       }
 
       if (routePath.startsWith('/admin/song-themes')) {
         state.localSongs.expiresAt = 0;
         state.localSongs.items = null;
+        invalidateThemeDiscovery();
         state.responseCache.clear();
       }
 
@@ -835,6 +913,40 @@ function installSafety(app) {
       }
     });
     next();
+  });
+
+  // Public theme-discovery data for Statistics and sidebar search filters.
+  // This intentionally contains only compact list metadata: lyrics and advanced
+  // cover payloads are fetched lazily for the single song the user decides to
+  // play. Hidden songs are removed server-side before this response is built.
+  app.get('/theme-discovery', async (req, res, next) => {
+    try {
+      const isAdmin = Boolean(await adminUser(req));
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json(await themeDiscoveryPayload(isAdmin));
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  app.get('/theme-discovery/song/:songId', async (req, res, next) => {
+    try {
+      const songId = String(req.params.songId || '');
+      if (!songId) return res.status(404).json({ error: 'Cancion no encontrada.' });
+      const isAdmin = Boolean(await adminUser(req));
+      const hidden = await hiddenSongIds();
+      const entries = isAdmin ? await localSongEntries() : await localPublicSongEntries();
+      const entry = entries.find((item) => item.song.id === songId);
+      if (!entry) return res.status(404).json({ error: 'Cancion no encontrada.' });
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({
+        ...entry.song,
+        themeIds: entry.themeIds,
+        hidden: hidden.has(songId),
+      });
+    } catch (error) {
+      return next(error);
+    }
   });
 
   // Similar songs are computed entirely from the Linux song metadata. The only
@@ -884,7 +996,8 @@ function installSafety(app) {
         ? requestedWeekKey
         : isoWeekKey(now);
 
-      const entries = await localPublicSongEntries();
+      const isAdmin = Boolean(await adminUser(req));
+      const entries = isAdmin ? await localSongEntries() : await localPublicSongEntries();
       const dailyPool = entries.filter((entry) => !heardIds.has(entry.song.id));
       const dailyCandidates = dailyPool.length > 0 ? dailyPool : entries;
       const dailyRandom = seededRandom(`${clientSeed}:${dayKey}:daily`);
@@ -934,7 +1047,8 @@ function installSafety(app) {
       if (!payload || typeof payload.seed !== 'string' || typeof payload.week !== 'string' || !Number.isInteger(payload.index)) {
         return res.status(400).json({ error: 'Recomendacion no valida.' });
       }
-      const entries = await localPublicSongEntries();
+      const isAdmin = Boolean(await adminUser(req));
+      const entries = isAdmin ? await localSongEntries() : await localPublicSongEntries();
       return res.json(buildTastePlaylist(entries, `${payload.seed}:${payload.week}`, payload.index));
     } catch (error) {
       if (error instanceof SyntaxError) return res.status(400).json({ error: 'Recomendacion no valida.' });
@@ -1111,6 +1225,8 @@ function installSafety(app) {
           responseEntries: state.responseCache.size,
           userFollowEntries: state.userFollows.size,
           progressEntries: state.progress.size,
+          themeDiscoverySongsPublic: state.themeDiscovery.public.body?.songs?.length || 0,
+          themeDiscoverySongsAdmin: state.themeDiscovery.admin.body?.songs?.length || 0,
         },
       });
     } catch (error) {

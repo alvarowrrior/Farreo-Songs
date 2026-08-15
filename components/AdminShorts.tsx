@@ -50,6 +50,7 @@ import {
   ZapIcon,
 } from "lucide-react";
 import SongArtwork from "@/components/SongArtwork";
+import SongThemeSelector from "@/components/SongThemeSelector";
 import AlbumDiscBackdrop from "@/components/AlbumDiscBackdrop";
 import {
   LyricsDisplay,
@@ -78,6 +79,7 @@ import {
 } from "@/lib/adminShorts";
 import {
   createSongTheme,
+  deleteSongTheme,
   listSongThemes,
   type SongTheme,
 } from "@/lib/songThemes";
@@ -338,8 +340,6 @@ export default function AdminShorts() {
   const [activeEditor, setActiveEditor] = useState<EditorKind>(null);
   const [aliasInput, setAliasInput] = useState("");
   const [aliasError, setAliasError] = useState<string | null>(null);
-  const [newThemeName, setNewThemeName] = useState("");
-  const [creatingTheme, setCreatingTheme] = useState(false);
   const [passedIds, setPassedIds] = useState<Set<string>>(new Set());
   const [pendingNavigation, setPendingNavigation] = useState<PendingNavigation | null>(null);
   const [loading, setLoading] = useState(true);
@@ -388,7 +388,6 @@ export default function AdminShorts() {
     });
     setAliasInput("");
     setAliasError(null);
-    setNewThemeName("");
     setDynamicFileLineCount(null);
     setActiveEditor(null);
   }, []);
@@ -812,37 +811,29 @@ export default function AdminShorts() {
     setAliasError(null);
   };
 
-  const toggleTheme = (themeId: string) => {
-    if (!draft) return;
-    const selected = draft.themeIds.includes(themeId);
-    setDraft({
-      ...draft,
-      themeIds: selected ? draft.themeIds.filter((id) => id !== themeId) : [...draft.themeIds, themeId],
-    });
+  const createThemeFromSelector = async (name: string) => {
+    const result = await createSongTheme(name);
+    setThemes((current) => [...current.filter((theme) => theme.id !== result.theme.id), result.theme]
+      .sort((left, right) => left.name.localeCompare(right.name, "es", { sensitivity: "base" })));
+    setNotice({ type: "success", text: result.created ? "Tema creado ⚡" : "Ese tema ya existía." });
+    return result.theme;
   };
 
-  const createThemeInline = async () => {
-    const name = newThemeName.trim();
-    if (!name || !draft) return;
-    setCreatingTheme(true);
-    try {
-      const result = await createSongTheme(name);
-      setThemes((current) => {
-        const next = current.some((theme) => theme.id === result.theme.id)
-          ? current
-          : [...current, result.theme];
-        return next.sort((left, right) => left.name.localeCompare(right.name, "es", { sensitivity: "base" }));
-      });
-      if (!draft.themeIds.includes(result.theme.id)) {
-        setDraft({ ...draft, themeIds: [...draft.themeIds, result.theme.id] });
-      }
-      setNewThemeName("");
-      setNotice({ type: "success", text: result.created ? "Tema creado y marcado ⚡" : "Tema existente marcado." });
-    } catch (error) {
-      setNotice({ type: "error", text: error instanceof Error ? error.message : "No se pudo crear el tema." });
-    } finally {
-      setCreatingTheme(false);
+  const deleteThemeFromSelector = async (theme: SongTheme) => {
+    await deleteSongTheme(theme.id);
+    setThemes((current) => current.filter((item) => item.id !== theme.id));
+    if (draftRef.current?.themeIds.includes(theme.id)) {
+      setDraft((current) => current ? { ...current, themeIds: current.themeIds.filter((id) => id !== theme.id) } : current);
     }
+    setNotice({ type: "success", text: `Tema “${theme.name}” eliminado.` });
+  };
+
+  const syncThemeCatalog = (catalog: SongTheme[]) => {
+    setThemes(catalog);
+    const valid = new Set(catalog.map((theme) => theme.id));
+    setDraft((current) => current
+      ? { ...current, themeIds: current.themeIds.filter((id) => valid.has(id)) }
+      : current);
   };
 
   const chooseIcon = (file: File | null) => {
@@ -1228,28 +1219,14 @@ export default function AdminShorts() {
                   )}
 
                   {activeEditor === "themes" && (
-                    <div className={styles.themeEditor}>
-                      <div className={styles.themeCloud}>
-                        {themes.map((theme) => {
-                          const selected = draft.themeIds.includes(theme.id);
-                          return (
-                            <button key={theme.id} className={selected ? styles.themeSelected : ""} onClick={() => toggleTheme(theme.id)}>
-                              {selected && <CheckIcon size={13} />}{theme.name}
-                            </button>
-                          );
-                        })}
-                      </div>
-                      <div className={styles.inlineComposer}>
-                        <SparklesIcon size={17} />
-                        <input
-                          value={newThemeName}
-                          onChange={(event) => setNewThemeName(event.target.value)}
-                          onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void createThemeInline(); } }}
-                          placeholder="Crear tema nuevo"
-                        />
-                        <button onClick={() => void createThemeInline()} disabled={creatingTheme}>{creatingTheme ? "..." : "Crear"}</button>
-                      </div>
-                    </div>
+                    <SongThemeSelector
+                      themes={themes}
+                      selectedIds={draft.themeIds}
+                      onChange={(themeIds) => setDraft({ ...draft, themeIds })}
+                      onCreate={createThemeFromSelector}
+                      onDelete={deleteThemeFromSelector}
+                      onCatalogChange={syncThemeCatalog}
+                    />
                   )}
 
 

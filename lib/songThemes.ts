@@ -27,12 +27,14 @@ async function adminHeaders(json = false) {
 export async function listSongThemes() {
   return parse<SongTheme[]>(await fetch(`${MUSIC_API_URL}/admin/song-themes`, {
     headers: await adminHeaders(),
+    cache: "no-store",
   }));
 }
 
 export async function listAdminSongs() {
   return parse<ApiSong[]>(await fetch(`${MUSIC_API_URL}/admin/canciones`, {
     headers: await adminHeaders(),
+    cache: "no-store",
   }));
 }
 

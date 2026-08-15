@@ -1,8 +1,18 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { CheckIcon, ChevronDownIcon, PlusIcon, SearchIcon, TagIcon, Trash2Icon, XIcon } from "lucide-react";
-import type { SongTheme } from "@/lib/songThemes";
+import { useEffect, useMemo, useState, type MouseEvent, type PointerEvent } from "react";
+import {
+  CheckIcon,
+  PlusIcon,
+  RefreshCwIcon,
+  SearchIcon,
+  SparklesIcon,
+  TagIcon,
+  Trash2Icon,
+} from "lucide-react";
+import { createPortal } from "react-dom";
+import { listSongThemes, type SongTheme } from "@/lib/songThemes";
+import styles from "@/components/SongThemeSelector.module.scss";
 
 interface SongThemeSelectorProps {
   themes: SongTheme[];
@@ -10,6 +20,7 @@ interface SongThemeSelectorProps {
   onChange: (ids: string[]) => void;
   onCreate: (name: string) => Promise<SongTheme>;
   onDelete: (theme: SongTheme) => Promise<void>;
+  onCatalogChange?: (themes: SongTheme[]) => void;
 }
 
 const normalize = (value: string) => value
@@ -18,21 +29,67 @@ const normalize = (value: string) => value
   .toLowerCase()
   .trim();
 
-export default function SongThemeSelector({ themes, selectedIds, onChange, onCreate, onDelete }: SongThemeSelectorProps) {
-  const [open, setOpen] = useState(false);
+const sortThemes = (themes: SongTheme[]) => [...themes].sort((left, right) => (
+  left.name.localeCompare(right.name, "es", { sensitivity: "base" })
+));
+
+export default function SongThemeSelector({
+  themes,
+  selectedIds,
+  onChange,
+  onCreate,
+  onDelete,
+  onCatalogChange,
+}: SongThemeSelectorProps) {
+  const [catalog, setCatalog] = useState<SongTheme[]>(() => sortThemes(themes));
   const [query, setQuery] = useState("");
   const [creating, setCreating] = useState(false);
-  const [error, setError] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    theme: SongTheme;
+  } | null>(null);
+
+  useEffect(() => {
+    setCatalog(sortThemes(themes));
+  }, [themes]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("keydown", closeOnEscape);
+    window.addEventListener("blur", close);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("blur", close);
+    };
+  }, [contextMenu]);
+
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const normalizedQuery = normalize(query);
-  const selectedThemes = themes.filter(theme => selectedSet.has(theme.id));
-  const filteredThemes = themes.filter(theme => !normalizedQuery || normalize(theme.name).includes(normalizedQuery));
-  const exactMatch = themes.some(theme => normalize(theme.name) === normalizedQuery);
+  const filteredThemes = useMemo(() => catalog.filter((theme) => (
+    !normalizedQuery || normalize(theme.name).includes(normalizedQuery)
+  )), [catalog, normalizedQuery]);
+  const exactMatch = catalog.some((theme) => normalize(theme.name) === normalizedQuery);
+
+  const publishCatalog = (nextCatalog: SongTheme[]) => {
+    const sorted = sortThemes(nextCatalog);
+    setCatalog(sorted);
+    onCatalogChange?.(sorted);
+    return sorted;
+  };
 
   const toggleTheme = (themeId: string) => {
     onChange(selectedSet.has(themeId)
-      ? selectedIds.filter(id => id !== themeId)
+      ? selectedIds.filter((id) => id !== themeId)
       : [...selectedIds, themeId]);
   };
 
@@ -43,6 +100,7 @@ export default function SongThemeSelector({ themes, selectedIds, onChange, onCre
     setError("");
     try {
       const theme = await onCreate(name);
+      publishCatalog([...catalog.filter((item) => item.id !== theme.id), theme]);
       if (!selectedSet.has(theme.id)) onChange([...selectedIds, theme.id]);
       setQuery("");
     } catch (cause) {
@@ -53,102 +111,160 @@ export default function SongThemeSelector({ themes, selectedIds, onChange, onCre
   };
 
   const handleDelete = async (theme: SongTheme) => {
-    if (deletingId || !window.confirm(`Borrar el tema "${theme.name}"? Se quitara de todas las canciones.`)) return;
+    if (deletingId) return;
+    if (!window.confirm(`Borrar el tema “${theme.name}”? Se quitará de todas las canciones.`)) return;
     setDeletingId(theme.id);
     setError("");
     try {
       await onDelete(theme);
+      const nextCatalog = publishCatalog(catalog.filter((item) => item.id !== theme.id));
+      const valid = new Set(nextCatalog.map((item) => item.id));
+      onChange(selectedIds.filter((id) => valid.has(id)));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "No se pudo borrar el tema.");
     } finally {
       setDeletingId(null);
+      setContextMenu(null);
     }
   };
 
+  const refreshCatalog = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    setError("");
+    try {
+      const fresh = publishCatalog(await listSongThemes());
+      const valid = new Set(fresh.map((theme) => theme.id));
+      const nextSelected = selectedIds.filter((id) => valid.has(id));
+      if (nextSelected.length !== selectedIds.length) onChange(nextSelected);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No se pudieron actualizar las etiquetas.");
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const placeDeleteMenu = (clientX: number, clientY: number, theme: SongTheme) => {
+    const width = 220;
+    const height = 48;
+    const x = typeof window === "undefined" ? clientX : Math.max(8, Math.min(clientX, window.innerWidth - width - 8));
+    const y = typeof window === "undefined" ? clientY : Math.max(8, Math.min(clientY, window.innerHeight - height - 8));
+    setContextMenu({ x, y, theme });
+  };
+
+  const openDeleteMenu = (event: MouseEvent, theme: SongTheme) => {
+    event.preventDefault();
+    event.stopPropagation();
+    placeDeleteMenu(event.clientX, event.clientY, theme);
+  };
+
+  const catchRightPointer = (event: PointerEvent<HTMLButtonElement>, theme: SongTheme) => {
+    if (event.button !== 2) return;
+    event.preventDefault();
+    event.stopPropagation();
+    placeDeleteMenu(event.clientX, event.clientY, theme);
+  };
+
   return (
-    <div className={`song-theme-selector${open ? " song-theme-selector--open" : ""}`}>
-      <button
-        type="button"
-        className="song-theme-selector__toggle"
-        onClick={() => setOpen(current => !current)}
-        aria-expanded={open}
-      >
-        <span className="song-theme-selector__toggle-label">
-          <TagIcon size={16} />
-          Temas
-          {selectedIds.length > 0 && <span className="song-theme-selector__count">{selectedIds.length}</span>}
-        </span>
-        <span className="song-theme-selector__summary">
-          <span>{selectedIds.length === 0 ? "Sin asignar" : selectedThemes.map(theme => theme.name).join(", ")}</span>
-          <ChevronDownIcon size={16} />
-        </span>
-      </button>
-
-      {open && (
-        <div className="song-theme-selector__panel">
-          <p className="song-theme-selector__hint">Solo son visibles en administración.</p>
-          {selectedThemes.length > 0 && (
-            <div className="song-theme-selector__selected" aria-label="Temas seleccionados">
-              {selectedThemes.map(theme => (
-                <button key={theme.id} type="button" onClick={() => toggleTheme(theme.id)}>
-                  {theme.name}<XIcon size={13} />
-                </button>
-              ))}
-            </div>
-          )}
-
-          <div className="song-theme-selector__search">
-            <SearchIcon size={16} />
-            <input
-              value={query}
-              onChange={event => { setQuery(event.target.value); setError(""); }}
-              onKeyDown={event => {
-                if (event.key === "Enter" && normalizedQuery && !exactMatch) {
-                  event.preventDefault();
-                  void handleCreate();
-                }
-              }}
-              placeholder="Buscar un tema"
-              maxLength={48}
-            />
-          </div>
-
-          <div className="song-theme-selector__results">
-            {filteredThemes.map(theme => (
-              <div key={theme.id} className="song-theme-selector__option-row">
-                <button
-                  type="button"
-                  className={selectedSet.has(theme.id) ? "song-theme-selector__option song-theme-selector__option--selected" : "song-theme-selector__option"}
-                  onClick={() => toggleTheme(theme.id)}
-                >
-                  <span>{theme.name}</span>
-                  {selectedSet.has(theme.id) && <CheckIcon size={16} />}
-                </button>
-                <button
-                  type="button"
-                  className="song-theme-selector__delete"
-                  onClick={() => void handleDelete(theme)}
-                  disabled={deletingId === theme.id}
-                  title={`Borrar ${theme.name}`}
-                  aria-label={`Borrar tema ${theme.name}`}
-                >
-                  <Trash2Icon size={15} />
-                </button>
-              </div>
-            ))}
-            {filteredThemes.length === 0 && (!normalizedQuery || exactMatch) && (
-              <p className="song-theme-selector__empty">No hay temas coincidentes.</p>
-            )}
-          </div>
-
-          {normalizedQuery && !exactMatch && (
-            <button type="button" className="song-theme-selector__create" onClick={() => void handleCreate()} disabled={creating}>
-              <PlusIcon size={16} />
-              {creating ? "Creando..." : `Crear “${query.trim()}”`}
-            </button>
-          )}
-          {error && <p className="song-theme-selector__error">{error}</p>}
+    <div className={styles.selector}>
+      <div className={styles.header}>
+        <div className={styles.title}>
+          <span className={styles.titleIcon}><TagIcon size={16} /></span>
+          <span>
+            <strong>Temas</strong>
+            <small>{selectedIds.length} seleccionados · {catalog.length} disponibles</small>
+          </span>
         </div>
+        <button
+          type="button"
+          className={styles.refresh}
+          onClick={() => void refreshCatalog()}
+          disabled={refreshing}
+          title="Volver a pedir las etiquetas al servidor"
+        >
+          <RefreshCwIcon size={15} className={refreshing ? styles.spin : ""} />
+          Actualizar
+        </button>
+      </div>
+
+      <div className={styles.searchRow}>
+        <div className={styles.search}>
+          <SearchIcon size={15} />
+          <input
+            value={query}
+            onChange={(event) => { setQuery(event.target.value); setError(""); }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && normalizedQuery && !exactMatch) {
+                event.preventDefault();
+                void handleCreate();
+              }
+            }}
+            placeholder="Buscar o crear una etiqueta..."
+            maxLength={48}
+          />
+        </div>
+        {normalizedQuery && !exactMatch && (
+          <button type="button" className={styles.create} onClick={() => void handleCreate()} disabled={creating}>
+            {creating ? <RefreshCwIcon size={15} className={styles.spin} /> : <PlusIcon size={15} />}
+            {creating ? "Creando" : "Crear"}
+          </button>
+        )}
+      </div>
+
+      <div className={styles.cloud} aria-label="Etiquetas disponibles">
+        {filteredThemes.map((theme) => {
+          const selected = selectedSet.has(theme.id);
+          return (
+            <button
+              key={theme.id}
+              type="button"
+              className={`${styles.chip} ${selected ? styles.chipSelected : ""}`}
+              onClick={() => toggleTheme(theme.id)}
+              onPointerDown={(event) => catchRightPointer(event, theme)}
+              onContextMenuCapture={(event) => openDeleteMenu(event, theme)}
+              title={`${selected ? "Quitar" : "Añadir"} ${theme.name} · click derecho para eliminar la etiqueta`}
+            >
+              {selected ? <CheckIcon size={13} /> : <SparklesIcon size={12} />}
+              <span>{theme.name}</span>
+            </button>
+          );
+        })}
+        {filteredThemes.length === 0 && (
+          <div className={styles.empty}>
+            {normalizedQuery ? "No hay etiquetas que coincidan." : "No hay etiquetas todavía."}
+          </div>
+        )}
+      </div>
+
+      <div className={styles.footer}>
+        <span>Click para marcar · click derecho para eliminar globalmente</span>
+        {selectedIds.length > 0 && (
+          <button type="button" onClick={() => onChange([])}>Quitar selección</button>
+        )}
+      </div>
+
+      {error && <p className={styles.error}>{error}</p>}
+
+      {contextMenu && typeof document !== "undefined" && createPortal(
+        <div
+          className={styles.contextMenu}
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onPointerDown={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
+          role="menu"
+        >
+          <button
+            type="button"
+            className={styles.contextDelete}
+            disabled={deletingId === contextMenu.theme.id}
+            onClick={() => void handleDelete(contextMenu.theme)}
+            role="menuitem"
+          >
+            <Trash2Icon size={15} />
+            <span>{deletingId === contextMenu.theme.id ? "Eliminando…" : `Eliminar “${contextMenu.theme.name}”`}</span>
+          </button>
+        </div>,
+        document.body,
       )}
     </div>
   );

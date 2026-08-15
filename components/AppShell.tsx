@@ -5,6 +5,7 @@ import AppSidebar from "@/components/AppSidebar";
 import BackendAuthBridge from "@/components/BackendAuthBridge";
 import MusicWaveHeader from "@/components/MusicWaveHeader";
 import SongInfoSidebar from "@/components/SongInfoSidebar";
+import ThemeDiscoverySidebarEnhancer from "@/components/ThemeDiscoverySidebarEnhancer";
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -14,6 +15,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     <>
       <BackendAuthBridge />
       {!isSimplePage && <AppSidebar />}
+      {!isSimplePage && <ThemeDiscoverySidebarEnhancer />}
       <MusicWaveHeader simple={isSimplePage} />
       {!isSimplePage && <SongInfoSidebar />}
       <main className={`app-main app-main--with-wave ${isSimplePage ? "app-main--simple" : "app-main--with-sidebar"}`}>
