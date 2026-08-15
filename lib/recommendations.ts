@@ -28,8 +28,9 @@ interface CachedRecommendations {
   data: HomeRecommendations;
 }
 
-// v2 invalidates older selections that could exceed the weekly 16-song cap.
-const cacheKey = () => `farreo-home-recommendations-v2:${auth?.currentUser?.uid || "guest"}`;
+// v3 unifies the daily recommendation across devices for the same signed-in account.
+// v2 invalidated older selections that could exceed the weekly 16-song cap.
+const cacheKey = () => `farreo-home-recommendations-v3:${auth?.currentUser?.uid || "guest"}`;
 const revealKey = (dayKey: string, songId: string) => `farreo-daily-reveal-v1:${auth?.currentUser?.uid || "guest"}:${dayKey}:${songId}`;
 const volatileReveals = new Set<string>();
 let pendingRecommendations: Promise<HomeRecommendations> | null = null;
@@ -45,6 +46,11 @@ const currentRecommendationKeys = (now = new Date()) => {
   monday.setHours(0, 0, 0, 0);
   monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
   return { dayKey: localDateKey(now), weekKey: localDateKey(monday) };
+};
+
+const recommendationSeed = () => {
+  const uid = auth?.currentUser?.uid;
+  return uid ? `account:${uid}` : getRecommendationSeed();
 };
 
 export function millisecondsUntilNextRecommendationDay(now = new Date()) {
@@ -96,12 +102,18 @@ function normalizeRecommendations(data: HomeRecommendations): HomeRecommendation
 }
 
 async function fetchRecommendations(cached: CachedRecommendations | null, now: number, keys: { dayKey: string; weekKey: string }) {
+  const heardSongIds = getListenedSongIds();
+  const signedIn = Boolean(auth?.currentUser?.uid);
+
   const response = await fetch(`${MUSIC_API_URL}/recommendations`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      clientSeed: getRecommendationSeed(),
-      heardSongIds: getListenedSongIds(),
+      clientSeed: recommendationSeed(),
+      // For a signed-in account the daily candidate pool must be identical on
+      // every device. The local history still determines the UI's "unheard"
+      // state below, but no longer changes which daily song is selected.
+      heardSongIds: signedIn ? [] : heardSongIds,
       dayKey: keys.dayKey,
       weekKey: keys.weekKey,
     }),
@@ -109,13 +121,21 @@ async function fetchRecommendations(cached: CachedRecommendations | null, now: n
   const next = await response.json().catch(() => ({})) as HomeRecommendations & { error?: string };
   if (!response.ok) throw new Error(next.error || "No se pudieron preparar las recomendaciones.");
 
+  const dailySongUnheard = next.dailySong
+    ? !heardSongIds.includes(next.dailySong.id)
+    : false;
+
   const keepWeekly = cached && cached.data.weekKey === keys.weekKey;
   const data = normalizeRecommendations(keepWeekly ? {
     ...next,
+    dailySongUnheard,
     weekKey: cached.data.weekKey,
     weeklyPlaylists: cached.data.weeklyPlaylists,
     weeklyAlbum: cached.data.weeklyAlbum,
-  } : next);
+  } : {
+    ...next,
+    dailySongUnheard,
+  });
 
   if (typeof window !== "undefined") {
     const key = cacheKey();
