@@ -47,6 +47,13 @@ export default function RecommendationPlayer({ token }: { token: string }) {
             onShare={track => void navigator.clipboard.writeText(`${window.location.origin}/play?song=${encodeURIComponent(track.id)}`)}
           />
         )}
+        <div
+          aria-hidden="true"
+          style={{
+            height: "calc(84px + 46px + 3rem)",
+            flex: "0 0 calc(84px + 46px + 3rem)",
+          }}
+        />
       </div>
     </main>
   );
