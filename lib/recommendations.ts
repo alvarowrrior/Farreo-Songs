@@ -20,6 +20,11 @@ export interface HomeRecommendations {
   dailySongUnheard: boolean;
   weeklyPlaylists: WeeklyRecommendation[];
   weeklyAlbum: AlbumCard | null;
+  weeklySnapshot?: {
+    persisted: boolean;
+    createdAt?: string | null;
+    scope?: "public" | "admin" | string;
+  };
 }
 
 interface CachedRecommendations {
@@ -28,9 +33,10 @@ interface CachedRecommendations {
   data: HomeRecommendations;
 }
 
-// v3 unifies the daily recommendation across devices for the same signed-in account.
-// v2 invalidated older selections that could exceed the weekly 16-song cap.
-const cacheKey = () => `farreo-home-recommendations-v3:${auth?.currentUser?.uid || "guest"}`;
+// v5 invalidates this week's previous cache after enforcing strict weekly
+// theme matching. Weekly playlists may now contain fewer than 16 tracks, but
+// every track must match at least one theme that names the playlist.
+const cacheKey = () => `farreo-home-recommendations-v5:${auth?.currentUser?.uid || "guest"}`;
 const revealKey = (dayKey: string, songId: string) => `farreo-daily-reveal-v1:${auth?.currentUser?.uid || "guest"}:${dayKey}:${songId}`;
 const volatileReveals = new Set<string>();
 let pendingRecommendations: Promise<HomeRecommendations> | null = null;
@@ -101,7 +107,11 @@ function normalizeRecommendations(data: HomeRecommendations): HomeRecommendation
   };
 }
 
-async function fetchRecommendations(cached: CachedRecommendations | null, now: number, keys: { dayKey: string; weekKey: string }) {
+async function fetchRecommendations(
+  cached: CachedRecommendations | null,
+  now: number,
+  keys: { dayKey: string; weekKey: string },
+) {
   const heardSongIds = getListenedSongIds();
   const signedIn = Boolean(auth?.currentUser?.uid);
 
@@ -110,14 +120,14 @@ async function fetchRecommendations(cached: CachedRecommendations | null, now: n
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       clientSeed: recommendationSeed(),
-      // For a signed-in account the daily candidate pool must be identical on
-      // every device. The local history still determines the UI's "unheard"
-      // state below, but no longer changes which daily song is selected.
+      // The daily song must be identical across devices for the same signed-in
+      // account. Local listening history only controls the "unheard" UI state.
       heardSongIds: signedIn ? [] : heardSongIds,
       dayKey: keys.dayKey,
       weekKey: keys.weekKey,
     }),
   });
+
   const next = await response.json().catch(() => ({})) as HomeRecommendations & { error?: string };
   if (!response.ok) throw new Error(next.error || "No se pudieron preparar las recomendaciones.");
 
@@ -125,31 +135,35 @@ async function fetchRecommendations(cached: CachedRecommendations | null, now: n
     ? !heardSongIds.includes(next.dailySong.id)
     : false;
 
-  const keepWeekly = cached && cached.data.weekKey === keys.weekKey;
-  const data = normalizeRecommendations(keepWeekly ? {
-    ...next,
-    dailySongUnheard,
-    weekKey: cached.data.weekKey,
-    weeklyPlaylists: cached.data.weeklyPlaylists,
-    weeklyAlbum: cached.data.weeklyAlbum,
-  } : {
+  const normalizedNext = normalizeRecommendations({
     ...next,
     dailySongUnheard,
   });
+
+  // Once v4 is active the server is authoritative for weekly selection. Do not
+  // preserve a device-local weekly set over the server snapshot.
+  const data = normalizedNext;
 
   if (typeof window !== "undefined") {
     const key = cacheKey();
     const serialized = JSON.stringify({
       dailyChosenAt: now,
-      weeklyChosenAt: keepWeekly ? cached.weeklyChosenAt : now,
+      weeklyChosenAt: cached?.data.weekKey === keys.weekKey
+        ? cached.weeklyChosenAt
+        : now,
       data,
     } satisfies CachedRecommendations);
+
     try {
       window.localStorage.setItem(key, serialized);
     } catch {
       try {
-        const staleKeys = Array.from({ length: window.localStorage.length }, (_, index) => window.localStorage.key(index))
-          .filter((item): item is string => Boolean(item?.startsWith("farreo-home-recommendations-") && item !== key));
+        const staleKeys = Array.from(
+          { length: window.localStorage.length },
+          (_, index) => window.localStorage.key(index),
+        ).filter((item): item is string => Boolean(
+          item?.startsWith("farreo-home-recommendations-") && item !== key,
+        ));
         staleKeys.forEach((item) => window.localStorage.removeItem(item));
         window.localStorage.setItem(key, serialized);
       } catch {
@@ -157,6 +171,7 @@ async function fetchRecommendations(cached: CachedRecommendations | null, now: n
       }
     }
   }
+
   return data;
 }
 
@@ -164,17 +179,25 @@ export async function getHomeRecommendations(force = false): Promise<HomeRecomme
   const cached = readCache();
   const now = Date.now();
   const keys = currentRecommendationKeys();
-  if (!force && cached && cached.data.dayKey === keys.dayKey && cached.data.weekKey === keys.weekKey) {
+
+  const signedIn = Boolean(auth?.currentUser?.uid);
+  if (
+    !force
+    && !signedIn
+    && cached
+    && cached.data.dayKey === keys.dayKey
+    && cached.data.weekKey === keys.weekKey
+  ) {
     return normalizeRecommendations(cached.data);
   }
 
-  // Desktop/mobile components can mount close together. Sharing the in-flight
-  // request prevents both from charging the same backend/Firestore work.
   if (pendingRecommendations) return pendingRecommendations;
+
   pendingRecommendations = fetchRecommendations(cached, now, keys)
     .finally(() => {
       pendingRecommendations = null;
     });
+
   return pendingRecommendations;
 }
 

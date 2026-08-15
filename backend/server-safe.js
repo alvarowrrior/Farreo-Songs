@@ -1,5 +1,8 @@
 'use strict';
 
-// Load the safety/cost layer before server.js imports Express/Multer.
+// Freeze weekly recommendations before the normal safety layer registers the
+// recommendation endpoint. The safety/cost layer still owns all auth guards,
+// caches and optimized catalogue reads.
+require('./recommendationSnapshotsPreload');
 require('./farreoSafetyPreload');
 require('./server');
