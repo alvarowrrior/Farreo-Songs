@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, type MouseEvent } from "react";
+import { onAuthStateChanged } from "firebase/auth";
 import { useRouter } from "next/navigation";
 import { CompassIcon, Disc3Icon, HeartIcon, ListMusicIcon, PauseIcon, PlayIcon, PlusIcon, Share2Icon } from "lucide-react";
 import FarreoContextMenu, { type FarreoContextMenuItem } from "@/components/FarreoContextMenu";
@@ -27,26 +28,99 @@ export default function HomeRecommendations({ userId }: HomeRecommendationsProps
   const router = useRouter();
   const { currentTrack, isPlaying, toggleTrack, volume } = useMusicPlayer();
   const [data, setData] = useState<RecommendationData | null>(null);
+  const [authReady, setAuthReady] = useState(!auth);
+  const [viewerUid, setViewerUid] = useState<string | null>(auth?.currentUser?.uid || null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [dailyRevealing, setDailyRevealing] = useState(false);
   const [privatePlaylists, setPrivatePlaylists] = useState<PrivatePlaylist[]>([]);
   const [menu, setMenu] = useState<{ x: number; y: number; items: FarreoContextMenuItem[] } | null>(null);
 
+  // The Home component mounts before Firebase has necessarily restored the
+  // previous session. Never request/show guest recommendations during that
+  // window: wait for the definitive auth state first.
   useEffect(() => {
+    if (!auth) {
+      setViewerUid(null);
+      setAuthReady(true);
+      return;
+    }
+
+    return onAuthStateChanged(auth, (user) => {
+      setData(null);
+      setLoading(true);
+      setLoadError("");
+      setViewerUid(user?.uid || null);
+      setAuthReady(true);
+    });
+  }, []);
+
+  const resolvedUserId = auth ? viewerUid : userId || null;
+
+  useEffect(() => {
+    if (!authReady) return;
+
     let active = true;
-    getHomeRecommendations().then(value => active && setData(value)).catch(() => active && setData(null));
-    const playlistsRequest = userId ? listOwnPrivatePlaylists(userId) : Promise.resolve([]);
-    playlistsRequest.then(value => active && setPrivatePlaylists(value)).catch(() => undefined);
-    return () => { active = false; };
-  }, [userId]);
+    setData(null);
+    setLoading(true);
+    setLoadError("");
+
+    getHomeRecommendations()
+      .then((value) => {
+        if (active) setData(value);
+      })
+      .catch((error) => {
+        if (active) {
+          setData(null);
+          setLoadError(error instanceof Error ? error.message : "No se pudieron cargar las recomendaciones.");
+        }
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+
+    if (resolvedUserId) {
+      listOwnPrivatePlaylists(resolvedUserId)
+        .then((value) => active && setPrivatePlaylists(value))
+        .catch(() => active && setPrivatePlaylists([]));
+    } else {
+      setPrivatePlaylists([]);
+    }
+
+    return () => {
+      active = false;
+    };
+  }, [authReady, resolvedUserId]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      getHomeRecommendations(true).then(setData).catch(() => undefined);
-    }, millisecondsUntilNextRecommendationDay());
-    return () => window.clearTimeout(timer);
-  }, [data?.dayKey]);
+    if (!authReady || !data) return;
 
-  if (!data) return null;
+    let active = true;
+    const timer = window.setTimeout(() => {
+      // Hide yesterday's cards while the new day's account snapshot is fetched.
+      setLoading(true);
+      setLoadError("");
+
+      getHomeRecommendations(true)
+        .then((value) => {
+          if (active) setData(value);
+        })
+        .catch((error) => {
+          if (active) {
+            setData(null);
+            setLoadError(error instanceof Error ? error.message : "No se pudieron actualizar las recomendaciones.");
+          }
+        })
+        .finally(() => {
+          if (active) setLoading(false);
+        });
+    }, millisecondsUntilNextRecommendationDay());
+
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [authReady, data?.dayKey, resolvedUserId]);
 
   const context = (event: MouseEvent, items: FarreoContextMenuItem[]) => {
     event.preventDefault();
@@ -54,8 +128,52 @@ export default function HomeRecommendations({ userId }: HomeRecommendationsProps
     setMenu({ x: event.clientX, y: event.clientY, items });
   };
 
+  const loadingView = (
+    <section className="playlist-admin__section playlist-admin__section--recommendations">
+      <div className="playlist-admin__section-header playlist-admin__section-header--library">
+        <h2 className="playlist-admin__section-title"><CompassIcon size={20} /> Recomendaciones</h2>
+      </div>
+      <div className="playlist-admin__recommendations" aria-live="polite" aria-busy="true">
+        <div
+          className="playlist-admin__recommendation-card"
+          style={{ cursor: "default", opacity: 0.72, pointerEvents: "none" }}
+        >
+          <CompassIcon size={24} />
+          <span>
+            <strong>Cargando recomendaciones...</strong>
+            <small>Preparando tu canción del día y selecciones semanales</small>
+          </span>
+        </div>
+      </div>
+    </section>
+  );
+
+  if (!authReady || loading) return loadingView;
+
+  if (!data) {
+    return (
+      <section className="playlist-admin__section playlist-admin__section--recommendations">
+        <div className="playlist-admin__section-header playlist-admin__section-header--library">
+          <h2 className="playlist-admin__section-title"><CompassIcon size={20} /> Recomendaciones</h2>
+        </div>
+        <div className="playlist-admin__recommendations">
+          <div
+            className="playlist-admin__recommendation-card"
+            style={{ cursor: "default", opacity: 0.72, pointerEvents: "none" }}
+          >
+            <CompassIcon size={24} />
+            <span>
+              <strong>Recomendaciones no disponibles</strong>
+              <small>{loadError || "No se pudieron cargar ahora mismo."}</small>
+            </span>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
   const revealDaily = (song: NonNullable<RecommendationData["dailySong"]>) => {
-    if (!data || dailyRevealing) return;
+    if (dailyRevealing) return;
     setDailyRevealing(true);
     markDailyRecommendationRevealed(data.dayKey, song.id);
     playRevealSound(volume);
