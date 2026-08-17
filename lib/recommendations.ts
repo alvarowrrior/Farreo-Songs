@@ -38,9 +38,10 @@ interface CachedRecommendations {
   data: HomeRecommendations;
 }
 
-// v6 invalidates any pre-fix cache that may contain a guest recommendation or
-// a daily song chosen before the server-side daily snapshot existed.
-const cacheKey = (viewer: string) => `farreo-home-recommendations-v6:${viewer}`;
+// v7 invalidates caches where dailySongUnheard could be false merely because
+// that song had been heard on a previous day. Reveal state is day-scoped and
+// must reset every day independently from listening history.
+const cacheKey = (viewer: string) => `farreo-home-recommendations-v7:${viewer}`;
 const revealKey = (dayKey: string, songId: string) => `farreo-daily-reveal-v1:${auth?.currentUser?.uid || "guest"}:${dayKey}:${songId}`;
 const volatileReveals = new Set<string>();
 const pendingRecommendations = new Map<string, Promise<HomeRecommendations>>();
@@ -121,6 +122,10 @@ function readCache(viewer: string): CachedRecommendations | null {
 function normalizeRecommendations(data: HomeRecommendations): HomeRecommendations {
   return {
     ...data,
+    // Reveal is a daily interaction, not a "have I ever heard this song?"
+    // interaction. Keeping this compatibility field true whenever a daily song
+    // exists makes both desktop and mobile consult the day-scoped reveal key.
+    dailySongUnheard: Boolean(data.dailySong),
     weeklyPlaylists: (data.weeklyPlaylists || []).map((playlist) => ({
       ...playlist,
       songs: (playlist.songs || []).slice(0, 16),
@@ -143,7 +148,7 @@ async function fetchRecommendations(
     body: JSON.stringify({
       clientSeed: recommendationSeed(viewer),
       // Signed-in selection is account-scoped. Device-local listening history
-      // still controls the reveal/unheard UI, but never changes the chosen song.
+      // never changes which daily song is selected.
       heardSongIds: signedIn ? [] : heardSongIds,
       dayKey: keys.dayKey,
       weekKey: keys.weekKey,
@@ -153,14 +158,7 @@ async function fetchRecommendations(
   const next = await response.json().catch(() => ({})) as HomeRecommendations & { error?: string };
   if (!response.ok) throw new Error(next.error || "No se pudieron preparar las recomendaciones.");
 
-  const dailySongUnheard = next.dailySong
-    ? !heardSongIds.includes(next.dailySong.id)
-    : false;
-
-  const data = normalizeRecommendations({
-    ...next,
-    dailySongUnheard,
-  });
+  const data = normalizeRecommendations(next);
 
   if (typeof window !== "undefined") {
     const key = cacheKey(viewer);
