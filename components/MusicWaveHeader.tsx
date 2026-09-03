@@ -34,7 +34,11 @@ export default function MusicWaveHeader({ simple = false }: { simple?: boolean }
 
   useEffect(() => {
     const syncAlbumDiscVisibility = () => {
-      setAlbumDiscVisible(Boolean(document.querySelector(".album-disc-backdrop--visible")));
+      // Only the real album-page disc owns the page ambience. Context discs
+      // placed underneath playlists must not suppress Farreo's normal wave.
+      setAlbumDiscVisible(Boolean(
+        document.querySelector(".album-page .album-disc-backdrop--visible"),
+      ));
     };
     syncAlbumDiscVisibility();
     window.addEventListener("farreo:album-disc-visibility", syncAlbumDiscVisibility);

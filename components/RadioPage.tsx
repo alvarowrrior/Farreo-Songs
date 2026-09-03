@@ -8,6 +8,7 @@ import {
   ChevronRightIcon,
   ChevronsUpIcon,
   DicesIcon,
+  EyeOffIcon,
   ListPlusIcon,
   PauseIcon,
   PlayIcon,
@@ -34,6 +35,9 @@ import {
   type RadioState,
 } from "@/lib/radioApi";
 import { addAlbumToRadio, getAlbum, listAlbums } from "@/lib/albums";
+import styles from "./RadioPageAdminControls.module.scss";
+
+const RADIO_ADMIN_HIDDEN_KEY = "farreo-radio-admin-show-hidden-v1";
 
 const formatTime = (seconds: number) => {
   if (!Number.isFinite(seconds) || seconds <= 0) return "0:00";
@@ -52,9 +56,6 @@ type SelectedRadioItem =
   | { type: "song"; song: ApiSong }
   | { type: "playlist"; playlist: PlaylistChoice };
 
-// Barra de progreso de la radio aislada: es lo unico que necesita el tiempo
-// de reproduccion, asi el tick del audio (~4/seg) solo re-renderiza esto y no
-// la pagina entera de la radio con todo el catalogo.
 function RadioProgress() {
   const { duration, playerMode, radioState } = useMusicPlayer();
   const { currentTime } = useMusicPlayerTime();
@@ -106,7 +107,7 @@ export default function RadioPage() {
     togglePlayPause,
     playNext,
   } = useMusicPlayer();
-  const { isVisible } = useHiddenSongs();
+  const { isAdmin, hiddenIds, isVisible } = useHiddenSongs();
 
   const [user, setUser] = useState<User | null>(null);
   const [songs, setSongs] = useState<ApiSong[]>([]);
@@ -123,13 +124,27 @@ export default function RadioPage() {
   const [pitch, setPitch] = useState(1);
   const [randomPitch, setRandomPitch] = useState(true);
   const [playlistShuffle, setPlaylistShuffle] = useState(false);
+  const [showHiddenForAdmin, setShowHiddenForAdmin] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return window.localStorage.getItem(RADIO_ADMIN_HIDDEN_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  const canDisplaySong = (songId: string) => {
+    if (!isAdmin) return isVisible(songId);
+    return showHiddenForAdmin || !hiddenIds.has(songId);
+  };
 
   const state = radioState;
   const currentItem = state?.currentItem ?? null;
   const queue = state?.queue || [];
-  const pendingQueue = queue.slice(1).filter((item) => isVisible(item.song.id));
+  const pendingQueue = queue.slice(1).filter((item) => canDisplaySong(item.song.id));
   const radioButtonPlaying = playerMode === "radio" ? isPlaying : state?.status === "playing";
+
   const handleRadioPlayPause = () => {
     if (playerMode !== "radio") {
       enableRadioMode().catch(() => {
@@ -140,6 +155,15 @@ export default function RadioPage() {
 
     togglePlayPause();
   };
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    try {
+      window.localStorage.setItem(RADIO_ADMIN_HIDDEN_KEY, showHiddenForAdmin ? "1" : "0");
+    } catch {
+      // Local preference only; storage failure must not affect the radio.
+    }
+  }, [isAdmin, showHiddenForAdmin]);
 
   useEffect(() => {
     enableRadioMode().catch(() => {
@@ -167,7 +191,6 @@ export default function RadioPage() {
     };
 
     load();
-    // enableRadioMode is provided by context and intentionally called only when entering /radio.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -280,7 +303,11 @@ export default function RadioPage() {
   ], [availableAlbums, globalPlaylists, privatePlaylists]);
 
   const filteredSongs = useMemo(() => {
-    const visibleSongs = songs.filter((song) => isVisible(song.id));
+    const visibleSongs = songs.filter((song) => (
+      !isAdmin
+        ? isVisible(song.id)
+        : showHiddenForAdmin || !hiddenIds.has(song.id)
+    ));
     const q = songQuery.trim().toLowerCase();
     if (!q) return visibleSongs.slice(0, 12);
     return visibleSongs
@@ -289,7 +316,7 @@ export default function RadioPage() {
         Boolean(song.variantes?.some((variant) => variant.toLowerCase().includes(q)))
       )
       .slice(0, 18);
-  }, [songQuery, songs, isVisible]);
+  }, [hiddenIds, isAdmin, isVisible, showHiddenForAdmin, songQuery, songs]);
 
   const filteredPlaylists = useMemo(() => {
     const q = playlistQuery.trim().toLowerCase();
@@ -305,9 +332,7 @@ export default function RadioPage() {
     return [resolvedUrlPlaylist, ...withoutDuplicate];
   }, [playlistChoices, playlistQuery, resolvedUrlPlaylist, resolvedUrlSource]);
 
-  const resolveInsertAt = (): RadioInsertAt => {
-    return insertChoice;
-  };
+  const resolveInsertAt = (): RadioInsertAt => insertChoice;
 
   const addOptions = () => ({
     insertAt: resolveInsertAt(),
@@ -417,6 +442,20 @@ export default function RadioPage() {
             </p>
           </div>
           <div className="playlist-admin__header-actions">
+            {isAdmin && (
+              <label className={styles.hiddenToggle} title="Preferencia local de este navegador">
+                <span className={styles.hiddenToggleCopy}>
+                  <EyeOffIcon size={15} />
+                  <span>Mostrar ocultas</span>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={showHiddenForAdmin}
+                  onChange={(event) => setShowHiddenForAdmin(event.target.checked)}
+                />
+                <i aria-hidden="true"><span /></i>
+              </label>
+            )}
             <button onClick={clearQueue} className="playlist-admin__btn-action playlist-admin__btn-action--danger">
               <TrashIcon size={16} /> Vaciar
             </button>
@@ -544,7 +583,10 @@ export default function RadioPage() {
                     >
                       <div>
                         <strong>{song.name}</strong>
-                        <span>{song.duration ? formatTime(song.duration) : "Sin duración"}</span>
+                        <span>
+                          {song.duration ? formatTime(song.duration) : "Sin duración"}
+                          {isAdmin && hiddenIds.has(song.id) ? " · Oculta" : ""}
+                        </span>
                       </div>
                     </button>
                   ))}

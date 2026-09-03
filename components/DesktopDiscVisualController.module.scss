@@ -1,0 +1,97 @@
+// Context discs outside albums are decoration only: they sit above the normal
+// page background/gradient and below every real piece of page UI.
+:global(html[data-farreo-disc-controller="background"] .playlist-admin) {
+  isolation: isolate;
+}
+
+:global(html[data-farreo-disc-controller="background"] .album-disc-backdrop--desktop) {
+  z-index: 0 !important;
+  pointer-events: none !important;
+}
+
+:global(html[data-farreo-disc-controller="background"] .album-disc-backdrop--desktop::after) {
+  display: none !important;
+}
+
+:global(html[data-farreo-disc-controller="background"] .playlist-admin__content),
+:global(html[data-farreo-disc-controller="background"] .recommendation-player__header),
+:global(html[data-farreo-disc-controller="background"] .playlist-song-table),
+:global(html[data-farreo-disc-controller="background"] .playlist-admin__message) {
+  position: relative;
+  z-index: 2;
+}
+
+// Crucially, do NOT recolor .playlist-admin and do NOT change its ::before
+// gradient here. The ordinary page ambience remains exactly the page's own.
+:global(html[data-farreo-disc-mode="never"] .album-disc-backdrop--desktop) {
+  display: none !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+}
+
+:global(html[data-farreo-disc-mode="never"] .album-page.album-page--disc-active) {
+  background-color: #121212;
+}
+
+:global(html[data-farreo-disc-mode="never"] .album-page.album-page--disc-active::before) {
+  opacity: 1;
+}
+
+:global(html[data-farreo-disc-mode="never"] .album-page.album-page--disc-active::after) {
+  opacity: 0;
+}
+
+.radioMiniDisc {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  display: inline-grid;
+  place-items: center;
+  margin-left: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  vertical-align: middle;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.13),
+    0 4px 10px rgba(0, 0, 0, 0.22);
+  animation: radio-mini-disc-spin 4.6s linear infinite;
+  animation-play-state: paused;
+
+  &[data-playing="true"] {
+    animation-play-state: running;
+  }
+
+  > i {
+    position: absolute;
+    inset: 50% auto auto 50%;
+    width: 5px;
+    height: 5px;
+    transform: translate(-50%, -50%);
+    border-radius: 999px;
+    background: #0f0f10;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25);
+    pointer-events: none;
+  }
+}
+
+.radioMiniArtwork {
+  width: 30px !important;
+  height: 30px !important;
+  border-radius: 999px !important;
+  object-fit: cover !important;
+}
+
+
+@keyframes radio-mini-disc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 759px) {
+  :global(html[data-farreo-disc-controller="background"] .album-disc-backdrop--desktop),
+  .radioMiniDisc {
+    display: none !important;
+  }
+}

@@ -4,6 +4,7 @@ import { useEffect, useId, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { onAuthStateChanged, updateProfile, type User } from "firebase/auth";
+import ProfileDiscPreference from "@/components/ProfileDiscPreference";
 import { auth } from "@/lib/firebase";
 
 export default function EditProfilePage() {
@@ -44,7 +45,6 @@ export default function EditProfilePage() {
 
     const nextName = displayName.trim();
 
-    // Evita llamadas inútiles
     if (nextName === (current.displayName ?? "")) {
       setMessage({ type: "success", text: "No hay cambios que guardar." });
       return;
@@ -53,15 +53,8 @@ export default function EditProfilePage() {
     setUpdating(true);
     try {
       await updateProfile(current, { displayName: nextName });
-
-      // Refrescamos el estado de React para que la UI responda al instante.
       setUser({ ...current });
-
       setMessage({ type: "success", text: "Perfil actualizado." });
-
-      // Opcional: si tu header depende de server components/caché
-      // router.refresh();
-
       window.setTimeout(() => setMessage(null), 2500);
     } catch (err) {
       console.error(err);
@@ -100,7 +93,7 @@ export default function EditProfilePage() {
       <section>
         <h1 className="profile-page__title">Mi perfil</h1>
         <p className="profile-page__subtitle">
-          Actualiza tu nombre visible.
+          Actualiza tu nombre visible y las preferencias locales de este navegador.
         </p>
 
         <div className="profile-page__card">
@@ -166,6 +159,8 @@ export default function EditProfilePage() {
             </fieldset>
           </form>
         </div>
+
+        <ProfileDiscPreference />
 
         <button
           type="button"

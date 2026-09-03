@@ -98,17 +98,33 @@ public class FarreoAudioController {
             @Override
             public void onMediaItemTransition(MediaItem mediaItem, int reason) {
                 int index = player.getCurrentMediaItemIndex();
-                boolean firstListenStarted = false;
                 if (index >= 0) {
+                    boolean wasPlaying = player.isPlaying();
+
+                    // Media3 can begin rendering the newly transitioned media item
+                    // before a playback-parameter update posted from this callback
+                    // reaches the audio sink. Pause the local player for the tiny
+                    // transition window, establish the target pitch first, then
+                    // resume. This prevents the first ~second of a new song from
+                    // leaking the previous song's pitch.
+                    if (!radioMode && wasPlaying && index != currentIndex) {
+                        player.pause();
+                    }
+
                     currentIndex = index;
-                    firstListenStarted = applyFirstListenPitch(index);
+                    boolean firstListenStarted = applyFirstListenPitch(index);
                     if (!radioMode && !firstListenPitchLocked && autoRandomPitch && index != lastPitchTrackIndex) {
-                        pitch = 0.8f + ((float) Math.random() * 0.4f);
+                        pitch = randomPitch();
                         player.setPlaybackParameters(new PlaybackParameters(pitch, pitch));
                     }
                     lastPitchTrackIndex = index;
+
+                    if (!radioMode && wasPlaying && !player.isPlaying()) {
+                        player.play();
+                    }
+
+                    if (firstListenStarted) notifyState("firstListenStarted");
                 }
-                if (firstListenStarted) notifyState("firstListenStarted");
                 notifyState("trackChanged");
                 refreshForegroundService();
             }
@@ -188,8 +204,15 @@ public class FarreoAudioController {
         currentIndex = Math.max(0, Math.min(startIndex, player.getMediaItemCount() - 1));
         firstListenLockedIndex = -1;
         firstListenPitchLocked = false;
-        lastPitchTrackIndex = currentIndex;
+
+        // Pick the pitch before prepare()/play() so the first audio frame of a
+        // manually selected track already uses the new random pitch.
         boolean firstListenStarted = applyFirstListenPitch(currentIndex);
+        if (!firstListenPitchLocked && autoRandomPitch) {
+            pitch = randomPitch();
+        }
+        lastPitchTrackIndex = currentIndex;
+
         player.setVolume(volume);
         player.setPlaybackParameters(new PlaybackParameters(pitch, pitch));
         player.setShuffleModeEnabled(shuffle);
@@ -640,6 +663,14 @@ public class FarreoAudioController {
     }
 
     private JSONObject getCurrentTrackOrNull() {
+        // Media3 is the source of truth. A state/playback callback can arrive
+        // before our mirrored currentIndex field has been updated by
+        // onMediaItemTransition; deriving from the player prevents stale
+        // notification titles/artwork during a song switch.
+        int playerIndex = player.getCurrentMediaItemIndex();
+        if (!radioMode && playerIndex >= 0 && playerIndex < tracks.length()) {
+            currentIndex = playerIndex;
+        }
         if (currentIndex < 0 || currentIndex >= tracks.length()) return null;
         return tracks.optJSONObject(currentIndex);
     }
@@ -770,6 +801,10 @@ public class FarreoAudioController {
             targetSong.put("url", resolveUrl(targetSong.optString("url", "")));
         } catch (JSONException ignored) {
         }
+    }
+
+    private float randomPitch() {
+        return 0.8f + ((float) Math.random() * 0.4f);
     }
 
     private float clamp(float value, float min, float max) {

@@ -7,6 +7,9 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.Drawable;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
@@ -14,10 +17,18 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.util.LruCache;
 
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.Arrays;
+import java.util.Comparator;
 
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
@@ -38,11 +49,25 @@ public class FarreoAudioService extends Service implements FarreoAudioController
 
     private static final String CHANNEL_ID = "farreo_playback";
     private static final int NOTIFICATION_ID = 4001;
+    private static final int MAX_ARTWORK_DOWNLOAD_BYTES = 8 * 1024 * 1024;
+    private static final int MAX_ARTWORK_DISK_FILES = 48;
 
     private FarreoAudioController controller;
     private MediaSessionCompat mediaSession;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+
+    // Keep several recently used covers in memory. A 512x512 ARGB bitmap is
+    // ~1 MB, so 12 MB is enough for normal playlist back/forward navigation
+    // without keeping an unbounded image cache alive.
+    private final LruCache<String, Bitmap> artworkMemoryCache = new LruCache<String, Bitmap>(12 * 1024) {
+        @Override
+        protected int sizeOf(String key, Bitmap value) {
+            return Math.max(1, value.getAllocationByteCount() / 1024);
+        }
+    };
+
     private Bitmap artwork;
+    private Bitmap fallbackArtwork;
     private String artworkUrl = "";
     private String artworkLoadingUrl = "";
     private long lastProgressNotificationAt = 0;
@@ -68,6 +93,9 @@ public class FarreoAudioService extends Service implements FarreoAudioController
         createChannel();
         controller = FarreoAudioController.get(this);
         controller.addListener(this);
+        fallbackArtwork = loadFallbackArtwork();
+        artwork = fallbackArtwork;
+
         mediaSession = new MediaSessionCompat(this, "Farreo");
         mediaSession.setActive(true);
         mediaSession.setCallback(new MediaSessionCompat.Callback() {
@@ -145,6 +173,7 @@ public class FarreoAudioService extends Service implements FarreoAudioController
             mediaSession.setActive(false);
             mediaSession.release();
         }
+        artworkMemoryCache.evictAll();
         super.onDestroy();
     }
 
@@ -172,10 +201,16 @@ public class FarreoAudioService extends Service implements FarreoAudioController
         if (stopping) return;
         long now = SystemClock.elapsedRealtime();
         if ("progress".equals(eventName) && now - lastProgressNotificationAt < 1000) return;
+
         updatePlaybackState();
+
+        // Track/state events immediately rebuild the text/MediaSession metadata
+        // from the controller's canonical current Media3 item. Artwork is
+        // resolved separately and never blocks the title from changing.
         if (!"progress".equals(eventName)) {
             refreshArtwork();
         }
+
         NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         manager.notify(NOTIFICATION_ID, buildNotification());
         lastProgressNotificationAt = now;
@@ -305,30 +340,62 @@ public class FarreoAudioService extends Service implements FarreoAudioController
     private void refreshArtwork() {
         if (controller == null) return;
         String nextUrl = controller.getNotificationArtworkUrl();
-        if (nextUrl.equals(artworkUrl) || nextUrl.equals(artworkLoadingUrl)) return;
 
         if (nextUrl.isEmpty()) {
-            artwork = null;
+            artwork = fallbackArtwork;
             artworkUrl = "";
             artworkLoadingUrl = "";
             updateMediaMetadata();
             return;
         }
 
-        // Nunca mostramos la portada anterior mientras llega la nueva. Ademas
-        // de ser confuso, Android puede cachearla como metadata de la pista nueva.
-        artwork = null;
+        if (nextUrl.equals(artworkUrl) && artwork != null) return;
+
+        Bitmap cached = artworkMemoryCache.get(nextUrl);
+        if (cached == null) {
+            cached = readDiskArtwork(nextUrl);
+            if (cached != null) artworkMemoryCache.put(nextUrl, cached);
+        }
+
+        if (cached != null) {
+            artwork = cached;
+            artworkUrl = nextUrl;
+            artworkLoadingUrl = "";
+            updateMediaMetadata();
+            return;
+        }
+
+        if (nextUrl.equals(artworkLoadingUrl)) {
+            // Text metadata can still change while an existing cover request is
+            // in flight. Do not start another network request.
+            updateMediaMetadata();
+            return;
+        }
+
+        // Never carry the PREVIOUS song's cover into metadata for the new song.
+        // Use the local Farreo icon until the correct cover arrives.
+        artwork = fallbackArtwork;
         artworkUrl = "";
         artworkLoadingUrl = nextUrl;
         updateMediaMetadata();
+
         new Thread(() -> {
             Bitmap nextArtwork = loadArtwork(nextUrl);
             mainHandler.post(() -> {
                 if (stopping) return;
-                if (!nextUrl.equals(controller.getNotificationArtworkUrl())) return;
-                artwork = nextArtwork;
-                artworkUrl = nextArtwork == null ? "" : nextUrl;
+                if (!nextUrl.equals(controller.getNotificationArtworkUrl())) {
+                    // The user already moved to another song. Keep the bitmap in
+                    // cache for later, but never apply it to the wrong metadata.
+                    if (nextArtwork != null) artworkMemoryCache.put(nextUrl, nextArtwork);
+                    if (nextUrl.equals(artworkLoadingUrl)) artworkLoadingUrl = "";
+                    return;
+                }
+
+                artwork = nextArtwork != null ? nextArtwork : fallbackArtwork;
+                artworkUrl = nextArtwork != null ? nextUrl : "";
                 artworkLoadingUrl = "";
+                if (nextArtwork != null) artworkMemoryCache.put(nextUrl, nextArtwork);
+
                 NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
                 manager.notify(NOTIFICATION_ID, buildNotification());
             });
@@ -337,41 +404,155 @@ public class FarreoAudioService extends Service implements FarreoAudioController
 
     private Bitmap loadArtwork(String url) {
         try {
+            Bitmap disk = readDiskArtwork(url);
+            if (disk != null) return disk;
+
+            byte[] bytes = downloadArtworkBytes(url);
+            if (bytes == null || bytes.length == 0) return null;
+
             BitmapFactory.Options bounds = new BitmapFactory.Options();
             bounds.inJustDecodeBounds = true;
-            decodeArtwork(url, bounds);
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.length, bounds);
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null;
 
             BitmapFactory.Options options = new BitmapFactory.Options();
             options.inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight, 512);
-            Bitmap decoded = decodeArtwork(url, options);
+            Bitmap decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, options);
             if (decoded == null) return null;
 
             int largest = Math.max(decoded.getWidth(), decoded.getHeight());
-            if (largest <= 512) return decoded;
-            float scale = 512f / largest;
-            Bitmap scaled = Bitmap.createScaledBitmap(
-                decoded,
-                Math.max(1, Math.round(decoded.getWidth() * scale)),
-                Math.max(1, Math.round(decoded.getHeight() * scale)),
-                true
-            );
-            if (scaled != decoded) decoded.recycle();
-            return scaled;
+            Bitmap result = decoded;
+            if (largest > 512) {
+                float scale = 512f / largest;
+                result = Bitmap.createScaledBitmap(
+                    decoded,
+                    Math.max(1, Math.round(decoded.getWidth() * scale)),
+                    Math.max(1, Math.round(decoded.getHeight() * scale)),
+                    true
+                );
+                if (result != decoded) decoded.recycle();
+            }
+
+            writeDiskArtwork(url, result);
+            return result;
         } catch (Exception ignored) {
             return null;
         }
     }
 
-    private Bitmap decodeArtwork(String url, BitmapFactory.Options options) throws Exception {
+    private byte[] downloadArtworkBytes(String url) throws Exception {
         HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
         connection.setConnectTimeout(6000);
         connection.setReadTimeout(6000);
         connection.setDoInput(true);
-        try (InputStream input = connection.getInputStream()) {
-            return BitmapFactory.decodeStream(input, null, options);
+        connection.setUseCaches(true);
+        try (InputStream input = connection.getInputStream();
+             ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[16 * 1024];
+            int total = 0;
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                total += read;
+                if (total > MAX_ARTWORK_DOWNLOAD_BYTES) return null;
+                output.write(buffer, 0, read);
+            }
+            return output.toByteArray();
         } finally {
             connection.disconnect();
+        }
+    }
+
+    private File artworkCacheDirectory() {
+        File directory = new File(getCacheDir(), "farreo-artwork-v1");
+        if (!directory.exists()) directory.mkdirs();
+        return directory;
+    }
+
+    private File artworkCacheFile(String url) {
+        return new File(artworkCacheDirectory(), sha256(url) + ".png");
+    }
+
+    private Bitmap readDiskArtwork(String url) {
+        try {
+            File file = artworkCacheFile(url);
+            if (!file.isFile()) return null;
+            Bitmap cached = BitmapFactory.decodeFile(file.getAbsolutePath());
+            if (cached == null) {
+                file.delete();
+                return null;
+            }
+            // Mark as recently used so pruning behaves like an on-disk LRU.
+            file.setLastModified(System.currentTimeMillis());
+            return cached;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private void writeDiskArtwork(String url, Bitmap bitmap) {
+        if (bitmap == null) return;
+        try {
+            File file = artworkCacheFile(url);
+            File temp = new File(file.getParentFile(), file.getName() + ".tmp");
+            try (FileOutputStream output = new FileOutputStream(temp)) {
+                bitmap.compress(Bitmap.CompressFormat.PNG, 92, output);
+            }
+            if (!temp.renameTo(file)) {
+                file.delete();
+                temp.renameTo(file);
+            }
+            file.setLastModified(System.currentTimeMillis());
+            pruneDiskArtwork();
+        } catch (Exception ignored) {
+            // Playback/notification metadata remain valid without disk caching.
+        }
+    }
+
+    private void pruneDiskArtwork() {
+        File[] files = artworkCacheDirectory().listFiles((dir, name) -> name.endsWith(".png"));
+        if (files == null || files.length <= MAX_ARTWORK_DISK_FILES) return;
+
+        Arrays.sort(files, Comparator.comparingLong(File::lastModified));
+        for (int index = 0; index < files.length - MAX_ARTWORK_DISK_FILES; index++) {
+            files[index].delete();
+        }
+    }
+
+    private String sha256(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest(value.getBytes(StandardCharsets.UTF_8));
+            StringBuilder result = new StringBuilder(bytes.length * 2);
+            for (byte b : bytes) result.append(String.format("%02x", b));
+            return result.toString();
+        } catch (Exception ignored) {
+            return Integer.toHexString(value.hashCode());
+        }
+    }
+
+    private Bitmap loadFallbackArtwork() {
+        try {
+            Drawable drawable = getApplicationInfo().loadIcon(getPackageManager());
+            if (drawable instanceof BitmapDrawable) {
+                Bitmap bitmap = ((BitmapDrawable) drawable).getBitmap();
+                if (bitmap != null) return bitmap;
+            }
+
+            int width = Math.max(1, drawable.getIntrinsicWidth());
+            int height = Math.max(1, drawable.getIntrinsicHeight());
+            int largest = Math.max(width, height);
+            if (largest > 256) {
+                float scale = 256f / largest;
+                width = Math.max(1, Math.round(width * scale));
+                height = Math.max(1, Math.round(height * scale));
+            }
+            Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+            Canvas canvas = new Canvas(bitmap);
+            drawable.setBounds(0, 0, width, height);
+            drawable.draw(canvas);
+            return bitmap;
+        } catch (Exception ignored) {
+            return null;
         }
     }
 

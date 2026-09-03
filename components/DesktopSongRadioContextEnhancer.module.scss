@@ -1,0 +1,235 @@
+.fallbackMenu {
+  position: fixed;
+  z-index: 710;
+  width: 202px;
+  padding: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 7px;
+  background: #202022;
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.46);
+}
+
+.menuEntry,
+.injectedEntry,
+.positionEntry {
+  position: relative;
+  width: 100%;
+}
+
+.injectedEntry {
+  // Igual que .farreo-context-menu__entry: sin padding horizontal propio.
+  // El padding ya pertenece al botón y al contenedor nativo del menú.
+  padding: 2px 0;
+}
+
+.menuButton,
+.injectedButton {
+  width: 100%;
+  min-height: 34px;
+  border: 0;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0 0.55rem;
+  color: #e8e8e8;
+  background: transparent;
+  font: inherit;
+  font-size: 0.84rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.menuButton > span:nth-child(2),
+.injectedButton > span:nth-child(2) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menuButton > span:last-child,
+.injectedButton > span:last-child {
+  margin-left: auto;
+}
+
+.pitchButton {
+  width: 100%;
+  min-height: 34px;
+  border: 0;
+  border-radius: 5px;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  padding: 0 9px;
+  color: #efeff1;
+  background: transparent;
+  font: inherit;
+  font-size: 0.76rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.menuButton:hover,
+.injectedButton:hover,
+.menuEntry:focus-within > .menuButton,
+.injectedEntry:focus-within > .injectedButton,
+.positionEntry:focus-within > .menuButton,
+.positionEntry:focus-within > .injectedButton,
+.pitchButton:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.rawLeading,
+.positionDot {
+  display: grid;
+  place-items: center;
+  color: #1ed760;
+  font-size: 0.66rem;
+}
+
+.radioSourceIcon {
+  display: block;
+  flex: 0 0 auto;
+  color: #9a9aa0;
+  opacity: 0.94;
+}
+
+.injectedArrow,
+.arrow {
+  color: #8b8b90;
+  font-size: 1rem;
+}
+
+.positionPanel,
+.pitchPanel {
+  position: absolute;
+  z-index: 720;
+  top: -4px;
+  left: calc(100% - 2px);
+  display: none;
+  width: 208px;
+  padding: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 7px;
+  background: #202022;
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.46);
+}
+
+.pitchPanel {
+  z-index: 730;
+  width: 220px;
+}
+
+.menuEntry:hover > .positionPanel,
+.menuEntry:focus-within > .positionPanel,
+.injectedEntry:hover > .positionPanel,
+.injectedEntry:focus-within > .positionPanel,
+.positionEntry:hover > .pitchPanel,
+.positionEntry:focus-within > .pitchPanel {
+  display: block;
+}
+
+
+.fallbackMenu[data-farreo-radio-flip="true"] .menuEntry > .positionPanel {
+  left: auto;
+  right: calc(100% - 2px);
+}
+
+.fallbackMenu[data-farreo-radio-flip="true"] .positionEntry > .pitchPanel {
+  left: auto;
+  right: calc(100% - 2px);
+}
+
+.injectedEntry[data-farreo-radio-flip="true"] > .positionPanel {
+  left: auto;
+  right: calc(100% - 2px);
+}
+
+.injectedEntry[data-farreo-radio-flip="true"] .positionEntry > .pitchPanel {
+  left: auto;
+  right: calc(100% - 2px);
+}
+
+.pitchButton {
+  grid-template-columns: 28px minmax(0, 1fr);
+  color: #d8d8dc;
+
+  > span:first-child {
+    color: #7de89f;
+    font-size: 0.68rem;
+    font-weight: 900;
+  }
+}
+
+.customPitch {
+  display: grid;
+  grid-template-columns: auto 62px auto;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+  padding: 7px 7px 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  color: #b9b9be;
+  font-size: 0.68rem;
+  font-weight: 750;
+
+  input {
+    min-width: 0;
+    height: 29px;
+    padding: 0 5px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 5px;
+    outline: 0;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.25);
+    font: inherit;
+
+    &:focus {
+      border-color: rgba(30, 215, 96, 0.55);
+    }
+  }
+
+  button {
+    height: 29px;
+    padding: 0 7px;
+    border: 0;
+    border-radius: 5px;
+    color: #061109;
+    background: #1ed760;
+    font-size: 0.64rem;
+    font-weight: 900;
+    cursor: pointer;
+
+    &:hover {
+      background: #42e77b;
+    }
+  }
+}
+
+.notice {
+  position: fixed;
+  z-index: 900;
+  left: 50%;
+  bottom: 104px;
+  transform: translateX(-50%);
+  max-width: min(560px, calc(100vw - 32px));
+  padding: 10px 14px;
+  border: 1px solid rgba(30, 215, 96, 0.28);
+  border-radius: 999px;
+  color: #dfffe8;
+  background: rgba(12, 24, 16, 0.96);
+  box-shadow: 0 14px 42px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(14px);
+  font-size: 0.76rem;
+  font-weight: 750;
+  pointer-events: none;
+}
+
+.noticeError {
+  border-color: rgba(255, 92, 104, 0.34);
+  color: #ffd9dd;
+  background: rgba(31, 13, 16, 0.96);
+}

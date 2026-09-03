@@ -18,23 +18,58 @@ export default function RecommendationPlayer({ token }: { token: string }) {
 
   useEffect(() => {
     let active = true;
-    getSharedRecommendation(token).then(value => active && setRecommendation(value)).catch(reason => active && setError(reason instanceof Error ? reason.message : "No se pudo abrir."));
+    getSharedRecommendation(token)
+      .then(value => active && setRecommendation(value))
+      .catch(reason => active && setError(reason instanceof Error ? reason.message : "No se pudo abrir."));
+
     const user = auth?.currentUser;
-    if (user) listOwnPrivatePlaylists(user.uid).then(value => active && setPlaylists(value)).catch(() => undefined);
-    return () => { active = false; };
+    if (user) {
+      listOwnPrivatePlaylists(user.uid)
+        .then(value => active && setPlaylists(value))
+        .catch(() => undefined);
+    }
+
+    return () => {
+      active = false;
+    };
   }, [token]);
 
-  const tracks = (recommendation?.songs || []).map(song => ({ ...song, url: getMediaUrl(song.url) }));
-  const source = recommendation ? { id: recommendation.id, name: recommendation.name, type: "song" as const } : null;
+  const tracks = (recommendation?.songs || []).map(song => ({
+    ...song,
+    url: getMediaUrl(song.url),
+  }));
+
+  // A weekly recommendation needs a unique playback identity so visual context
+  // can distinguish "this song is playing FROM the weekly selection" from the
+  // same song being played as a loose song or from another playlist.
+  const source = recommendation ? {
+    id: `recommendation:${token}`,
+    name: recommendation.name,
+    type: "song" as const,
+  } : null;
 
   return (
     <main className="playlist-admin recommendation-player">
       <div className="playlist-admin__content">
         <header className="recommendation-player__header">
-          {recommendation ? <RecommendationArtwork songs={recommendation.songs} className="recommendation-player__artwork" sizes="160px" /> : <CompassIcon size={30} />}
-          <div><small>Seleccion semanal</small><h1>{recommendation?.name || (error ? "Recomendacion no disponible" : "Preparando recomendacion...")}</h1></div>
+          {recommendation ? (
+            <RecommendationArtwork
+              songs={recommendation.songs}
+              className="recommendation-player__artwork"
+              sizes="160px"
+            />
+          ) : (
+            <CompassIcon size={30} />
+          )}
+          <div>
+            <small>Seleccion semanal</small>
+            <h1>{recommendation?.name || (error ? "Recomendacion no disponible" : "Preparando recomendacion...")}</h1>
+          </div>
         </header>
-        {error ? <p className="playlist-admin__empty">{error}</p> : (
+
+        {error ? (
+          <p className="playlist-admin__empty">{error}</p>
+        ) : (
           <PlaylistSongTable
             tracks={tracks}
             currentTrackId={currentTrack?.id}
@@ -47,6 +82,7 @@ export default function RecommendationPlayer({ token }: { token: string }) {
             onShare={track => void navigator.clipboard.writeText(`${window.location.origin}/play?song=${encodeURIComponent(track.id)}`)}
           />
         )}
+
         <div
           aria-hidden="true"
           style={{

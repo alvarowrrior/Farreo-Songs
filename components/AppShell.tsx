@@ -3,6 +3,10 @@
 import { usePathname } from "next/navigation";
 import AppSidebar from "@/components/AppSidebar";
 import BackendAuthBridge from "@/components/BackendAuthBridge";
+import DesktopDiscVisualController from "@/components/DesktopDiscVisualController";
+import DesktopRadioClientLayer from "@/components/DesktopRadioClientLayer";
+import DesktopSongRadioContextEnhancer from "@/components/DesktopSongRadioContextEnhancer";
+import MobileCurrentTrackClickFix from "@/components/MobileCurrentTrackClickFix";
 import MobileThemeSearchEnhancer from "@/components/MobileThemeSearchEnhancer";
 import MusicWaveHeader from "@/components/MusicWaveHeader";
 import SongInfoSidebar from "@/components/SongInfoSidebar";
@@ -18,6 +22,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       <BackendAuthBridge />
       {!isSimplePage && <AppSidebar />}
       {!isSimplePage && <ThemeDiscoverySidebarEnhancer />}
+      {!isSimplePage && <DesktopSongRadioContextEnhancer />}
+      {!isSimplePage && <DesktopRadioClientLayer />}
+      {!isSimplePage && <DesktopDiscVisualController />}
+      {isMobilePage && <MobileCurrentTrackClickFix />}
       {isMobilePage && <MobileThemeSearchEnhancer />}
       <MusicWaveHeader simple={isSimplePage} />
       {!isSimplePage && <SongInfoSidebar />}
