@@ -179,10 +179,15 @@ export default function DesktopRadioClientLayer() {
 
   useLayoutEffect(() => {
     if (!isDesktop) {
+      document.documentElement.classList.remove(styles.radioStyleMarker);
       delete document.documentElement.dataset.farreoRadioClient;
       delete document.documentElement.dataset.farreoRadioIsland;
       return;
     }
+
+    // The local CSS-module class lives on <html> so selectors can legally
+    // target Farreo's global layout while remaining "pure" for Next/css-loader.
+    document.documentElement.classList.add(styles.radioStyleMarker);
 
     if (playerMode === "radio") {
       document.documentElement.dataset.farreoRadioClient = "true";
@@ -194,6 +199,7 @@ export default function DesktopRadioClientLayer() {
     }
 
     return () => {
+      document.documentElement.classList.remove(styles.radioStyleMarker);
       delete document.documentElement.dataset.farreoRadioIsland;
     };
   }, [isDesktop, islandVisible, playerMode]);

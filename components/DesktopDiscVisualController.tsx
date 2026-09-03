@@ -110,6 +110,7 @@ export default function DesktopDiscVisualController() {
 
   useLayoutEffect(() => {
     if (!isDesktop) {
+      document.documentElement.classList.remove(styles.discStyleMarker);
       delete document.documentElement.dataset.farreoDiscMode;
       delete document.documentElement.dataset.farreoDiscController;
       setBackgroundHost(null);
@@ -117,6 +118,9 @@ export default function DesktopDiscVisualController() {
       return;
     }
 
+    // Same purity bridge as the Radio island: the hashed local class on <html>
+    // makes all global layout selectors valid CSS-module selectors.
+    document.documentElement.classList.add(styles.discStyleMarker);
     document.documentElement.dataset.farreoDiscMode = mode;
 
     if (showBackgroundDisc) {
@@ -134,6 +138,7 @@ export default function DesktopDiscVisualController() {
     }
 
     return () => {
+      document.documentElement.classList.remove(styles.discStyleMarker);
       delete document.documentElement.dataset.farreoDiscController;
     };
   }, [isDesktop, mode, pathname, showBackgroundDisc, showRadioMiniDisc]);

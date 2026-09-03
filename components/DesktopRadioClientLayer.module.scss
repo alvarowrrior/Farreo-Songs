@@ -2,24 +2,24 @@
   // Fuera de /radio la isla sustituye visualmente al player global, pero el
   // player local congelado sigue abajo. Dentro de /radio NO ocultamos el
   // player real: sus controles ya operan directamente sobre la Radio.
-  :global(html[data-farreo-radio-island="true"] .playlist-admin__player:not(.farreo-radio-local-snapshot)) {
+  :global(html[data-farreo-radio-island="true"]).radioStyleMarker :global(.playlist-admin__player:not(.farreo-radio-local-snapshot)) {
     display: none !important;
   }
 
-  :global(html[data-farreo-radio-island="true"] .playlist-admin__lyrics-bar) {
+  :global(html[data-farreo-radio-island="true"]).radioStyleMarker :global(.playlist-admin__lyrics-bar) {
     display: none !important;
   }
 
   // El hueco pertenece a la propia página, no a .app-main. De esta forma se
   // pinta con el fondo/gradiente normal de cada vista y no aparece una franja
   // negra independiente por encima del contenido.
-  :global(html[data-farreo-radio-island="true"] .app-main--with-sidebar > .playlist-admin) {
+  :global(html[data-farreo-radio-island="true"]).radioStyleMarker :global(.app-main--with-sidebar > .playlist-admin) {
     padding-top: calc(2rem + 130px);
     transition: padding-top 180ms ease;
   }
 
-  :global(html[data-farreo-radio-island="true"] .app-main--with-sidebar > .home-main),
-  :global(html[data-farreo-radio-island="true"] .app-main--with-sidebar > .profile-page) {
+  :global(html[data-farreo-radio-island="true"]).radioStyleMarker :global(.app-main--with-sidebar > .home-main),
+  :global(html[data-farreo-radio-island="true"]).radioStyleMarker :global(.app-main--with-sidebar > .profile-page) {
     padding-top: calc(4rem + 130px);
     transition: padding-top 180ms ease;
   }
@@ -243,4 +243,8 @@
   .localSnapshot {
     display: none !important;
   }
+}
+
+.radioStyleMarker {
+  // Marker applied to <html>; intentionally no visual styles.
 }

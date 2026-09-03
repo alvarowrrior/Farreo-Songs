@@ -1,43 +1,43 @@
 // Context discs outside albums are decoration only: they sit above the normal
 // page background/gradient and below every real piece of page UI.
-:global(html[data-farreo-disc-controller="background"] .playlist-admin) {
+:global(html[data-farreo-disc-controller="background"]).discStyleMarker :global(.playlist-admin) {
   isolation: isolate;
 }
 
-:global(html[data-farreo-disc-controller="background"] .album-disc-backdrop--desktop) {
+:global(html[data-farreo-disc-controller="background"]).discStyleMarker :global(.album-disc-backdrop--desktop) {
   z-index: 0 !important;
   pointer-events: none !important;
 }
 
-:global(html[data-farreo-disc-controller="background"] .album-disc-backdrop--desktop::after) {
+:global(html[data-farreo-disc-controller="background"]).discStyleMarker :global(.album-disc-backdrop--desktop::after) {
   display: none !important;
 }
 
-:global(html[data-farreo-disc-controller="background"] .playlist-admin__content),
-:global(html[data-farreo-disc-controller="background"] .recommendation-player__header),
-:global(html[data-farreo-disc-controller="background"] .playlist-song-table),
-:global(html[data-farreo-disc-controller="background"] .playlist-admin__message) {
+:global(html[data-farreo-disc-controller="background"]).discStyleMarker :global(.playlist-admin__content),
+:global(html[data-farreo-disc-controller="background"]).discStyleMarker :global(.recommendation-player__header),
+:global(html[data-farreo-disc-controller="background"]).discStyleMarker :global(.playlist-song-table),
+:global(html[data-farreo-disc-controller="background"]).discStyleMarker :global(.playlist-admin__message) {
   position: relative;
   z-index: 2;
 }
 
 // Crucially, do NOT recolor .playlist-admin and do NOT change its ::before
 // gradient here. The ordinary page ambience remains exactly the page's own.
-:global(html[data-farreo-disc-mode="never"] .album-disc-backdrop--desktop) {
+:global(html[data-farreo-disc-mode="never"]).discStyleMarker :global(.album-disc-backdrop--desktop) {
   display: none !important;
   opacity: 0 !important;
   visibility: hidden !important;
 }
 
-:global(html[data-farreo-disc-mode="never"] .album-page.album-page--disc-active) {
+:global(html[data-farreo-disc-mode="never"]).discStyleMarker :global(.album-page.album-page--disc-active) {
   background-color: #121212;
 }
 
-:global(html[data-farreo-disc-mode="never"] .album-page.album-page--disc-active::before) {
+:global(html[data-farreo-disc-mode="never"]).discStyleMarker :global(.album-page.album-page--disc-active::before) {
   opacity: 1;
 }
 
-:global(html[data-farreo-disc-mode="never"] .album-page.album-page--disc-active::after) {
+:global(html[data-farreo-disc-mode="never"]).discStyleMarker :global(.album-page.album-page--disc-active::after) {
   opacity: 0;
 }
 
@@ -90,8 +90,12 @@
 }
 
 @media (max-width: 759px) {
-  :global(html[data-farreo-disc-controller="background"] .album-disc-backdrop--desktop),
+  :global(html[data-farreo-disc-controller="background"]).discStyleMarker :global(.album-disc-backdrop--desktop),
   .radioMiniDisc {
     display: none !important;
   }
+}
+
+.discStyleMarker {
+  // Marker applied to <html>; intentionally no visual styles.
 }
