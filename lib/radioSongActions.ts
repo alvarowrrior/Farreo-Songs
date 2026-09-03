@@ -28,9 +28,9 @@ export async function addSongToRadioQueue(
   if (!songId) throw new Error("Canción no válida.");
 
   const randomPitch = options.pitch.kind === "random";
-  const pitch = randomPitch
-    ? undefined
-    : clampPitch(options.pitch.pitch);
+  const pitch = options.pitch.kind === "fixed"
+    ? clampPitch(options.pitch.pitch)
+    : undefined;
 
   return radioPost<RadioState>("/radio/queue/songs", {
     songIds: [songId],
