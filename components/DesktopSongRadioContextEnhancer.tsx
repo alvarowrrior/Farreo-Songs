@@ -33,14 +33,28 @@ const POSITIONS: Array<{
   { value: "now", label: "Reproducción inmediata", short: "en reproducción inmediata" },
 ];
 
-const SONG_HOST_SELECTOR = [
+// Hosts that are definitely a song interaction surface. These are the only
+// places where Farreo may create its own fallback menu when the page does not
+// already provide one.
+const STRICT_SONG_HOST_SELECTOR = [
   ".playlist-song-table__row",
   ".album-track",
   ".app-sidebar__song-result",
   ".song-discovery__row",
   ".playlist-admin__recommendation-card--daily",
-  ".song-info-sidebar__body",
   ".playlist-admin__now-playing",
+  ".song-info-sidebar__artwork",
+  ".song-info-sidebar__advanced-cover-artwork",
+  ".song-info-sidebar__song",
+].join(",");
+
+// Broader hosts are kept only so we can augment an EXISTING Farreo song menu.
+// They are deliberately forbidden from creating the radio-only fallback menu:
+// CSS-module class fragments such as "songCard" can occur on containers whose
+// empty/background regions are not themselves song interaction targets.
+const SONG_HOST_SELECTOR = [
+  STRICT_SONG_HOST_SELECTOR,
+  ".song-info-sidebar__body",
   "[class*='songResult']",
   "[class*='songRow']",
   "[class*='songCard']",
@@ -71,6 +85,11 @@ const comparableUrl = (value?: string | null) => {
 function findSongHost(target: EventTarget | null) {
   if (!(target instanceof Element)) return null;
   return target.closest<HTMLElement>(SONG_HOST_SELECTOR);
+}
+
+function isStrictSongTarget(target: EventTarget | null) {
+  if (!(target instanceof Element)) return false;
+  return Boolean(target.closest(STRICT_SONG_HOST_SELECTOR));
 }
 
 function candidateNames(host: HTMLElement) {
@@ -153,8 +172,15 @@ function visibleMenus() {
   });
 }
 
-function closestMenuToPoint(x: number, y: number) {
-  const menus = visibleMenus();
+function closestMenuToPoint(
+  x: number,
+  y: number,
+  menusVisibleBefore: Set<HTMLElement>,
+) {
+  // Only consider a menu that became visible because of THIS context-click.
+  // This prevents an already-open Farreo menu elsewhere on the page from being
+  // mistaken for the song menu we are trying to augment.
+  const menus = visibleMenus().filter((menu) => !menusVisibleBefore.has(menu));
   if (menus.length === 0) return null;
 
   return menus
@@ -524,11 +550,22 @@ export default function DesktopSongRadioContextEnhancer() {
 
   useEffect(() => {
     const handleContextMenu = (event: MouseEvent) => {
+      // A new context-click always invalidates a previous fallback menu.
+      setFallback(null);
+
       const host = findSongHost(event.target);
       if (!host) return;
       if (host.closest(".playlist-admin__recommendation-card--concealed")) return;
 
-      event.preventDefault();
+      const strictTarget = isStrictSongTarget(event.target);
+      const menusVisibleBefore = new Set(visibleMenus());
+
+      // Only suppress the browser menu when the click is definitely on a song
+      // surface for which we are allowed to provide our own fallback.
+      // Broader/ambiguous hosts are left untouched unless their own Farreo
+      // context menu appears later in this same event.
+      if (strictTarget) event.preventDefault();
+
       const serial = ++requestSerialRef.current;
       const point = { x: event.clientX, y: event.clientY };
 
@@ -540,14 +577,15 @@ export default function DesktopSongRadioContextEnhancer() {
 
           window.requestAnimationFrame(() => {
             if (requestSerialRef.current !== serial) return;
-            const menu = closestMenuToPoint(point.x, point.y);
+            const menu = closestMenuToPoint(point.x, point.y, menusVisibleBefore);
             if (menu) {
               injectIntoMenu(menu, song);
               setFallback(null);
               return;
             }
 
-            setFallback({ ...point, song });
+            // Never manufacture a radio-only menu from a fuzzy/broad match.
+            if (strictTarget) setFallback({ ...point, song });
           });
         })
         .catch(() => undefined);
