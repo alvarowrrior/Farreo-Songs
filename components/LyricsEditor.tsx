@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   ArrowLeftIcon,
+  DownloadIcon,
   PlayIcon,
   PauseIcon,
   RotateCcwIcon,
@@ -68,6 +69,7 @@ export default function LyricsEditor() {
   const [volume, setVolume] = useState(1);
   const lastNonZeroVolumeRef = useRef(1);
   const [pitch, setPitch] = useState(1);
+  const [globalShiftSeconds, setGlobalShiftSeconds] = useState("0.10");
 
   const [peaks, setPeaks] = useState<number[] | null>(null);
   const [waveformError, setWaveformError] = useState(false);
@@ -262,6 +264,45 @@ export default function LyricsEditor() {
       audioRef.current.preservesPitch = false;
       audioRef.current.playbackRate = p;
     }
+  };
+
+  const getGlobalShiftSeconds = () => {
+    const parsed = Number.parseFloat(globalShiftSeconds.replace(",", "."));
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0.1;
+  };
+
+  const normalizeGlobalShiftInput = () => {
+    setGlobalShiftSeconds(getGlobalShiftSeconds().toFixed(2));
+  };
+
+  const shiftAllCues = (direction: -1 | 1) => {
+    const requested = getGlobalShiftSeconds();
+    setGlobalShiftSeconds(requested.toFixed(2));
+
+    setCues((prev) => {
+      if (prev.length === 0) return prev;
+
+      const earliestStart = Math.min(...prev.map((cue) => cue.start));
+      const latestEnd = Math.max(...prev.map((cue) => cue.end));
+      const total = durationRef.current;
+
+      // The configured amount is atomic: either every node moves exactly that
+      // amount or nothing moves. This avoids a boundary click unexpectedly
+      // moving 0.03 s when the field says 0.10 s.
+      if (direction < 0 && earliestStart < requested) return prev;
+      if (direction > 0 && total > 0 && latestEnd + requested > total) return prev;
+
+      const delta = direction * requested;
+
+      // Lyrics are exported at millisecond precision, so normalising here
+      // avoids floating-point tails after many 0.1 s shifts.
+      const toMilliseconds = (value: number) => Math.round(value * 1000) / 1000;
+      return prev.map((cue) => ({
+        ...cue,
+        start: toMilliseconds(Math.max(0, cue.start + delta)),
+        end: toMilliseconds(Math.max(0, cue.end + delta)),
+      }));
+    });
   };
 
   // keep refs so the stable markCue/keyboard handlers read latest values
@@ -539,6 +580,40 @@ export default function LyricsEditor() {
     return () => cancelAnimationFrame(raf);
   }, []);
 
+  // ----- Download current editor lyrics -----
+  const downloadCurrentLyrics = () => {
+    if (!selectedSong || cues.length === 0) return;
+
+    const srt = buildSrt(cues);
+    if (!srt.trim()) {
+      setMessage({
+        type: "error",
+        text: "No hay nodos válidos con texto y tiempos para descargar.",
+      });
+      return;
+    }
+
+    const baseName = (selectedSong.name || selectedSong.id || "lyrics")
+      .replace(/[\\/:*?"<>|]+/g, "-")
+      .replace(/\s+/g, " ")
+      .trim() || "lyrics";
+
+    // UTF-8 BOM keeps accents readable in subtitle editors that still assume
+    // a legacy Windows encoding when opening .srt files directly.
+    const blob = new Blob([`\uFEFF${srt}`], {
+      type: "application/x-subrip;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${baseName}.srt`;
+    link.style.display = "none";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  };
+
   // ----- Save -----
   const saveLyrics = async (removeLyrics = false) => {
     if (!selectedSong) return;
@@ -601,6 +676,17 @@ export default function LyricsEditor() {
       (song.variantes && song.variantes.some((v) => v.toLowerCase().includes(q)))
     );
   });
+
+  const globalShiftAmount = getGlobalShiftSeconds();
+  const earliestCueStart = cues.length > 0
+    ? Math.min(...cues.map((cue) => cue.start))
+    : 0;
+  const latestCueEnd = cues.length > 0
+    ? Math.max(...cues.map((cue) => cue.end))
+    : 0;
+  const canShiftAllLeft = cues.length > 0 && earliestCueStart >= globalShiftAmount;
+  const canShiftAllRight = cues.length > 0
+    && (duration <= 0 || latestCueEnd + globalShiftAmount <= duration);
 
   return (
     <div className="lyrics-editor">
@@ -713,6 +799,85 @@ export default function LyricsEditor() {
                 title={`Velocidad/pitch: ${pitch.toFixed(2)}x`}
               />
               <span className="lyrics-editor__pitch-value">{pitch.toFixed(2)}x</span>
+            </div>
+
+            <div
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "0.4rem",
+                paddingLeft: "0.15rem",
+              }}
+            >
+              <span
+                style={{
+                  color: "#a1a1aa",
+                  fontSize: "0.78rem",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                Desplazar todos
+              </span>
+              <button
+                type="button"
+                onClick={() => shiftAllCues(-1)}
+                disabled={!canShiftAllLeft}
+                title={`Mover todos los nodos ${globalShiftAmount.toFixed(2)}s a la izquierda`}
+                aria-label="Mover todos los nodos a la izquierda"
+              >
+                ←
+              </button>
+              <label
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "0.28rem",
+                  color: "#a1a1aa",
+                  fontSize: "0.78rem",
+                }}
+              >
+                <input
+                  type="number"
+                  min={0.01}
+                  step={0.01}
+                  inputMode="decimal"
+                  value={globalShiftSeconds}
+                  onChange={(e) => setGlobalShiftSeconds(e.target.value)}
+                  onBlur={normalizeGlobalShiftInput}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      normalizeGlobalShiftInput();
+                      e.currentTarget.blur();
+                    }
+                  }}
+                  aria-label="Segundos a desplazar todos los nodos"
+                  title="Cantidad de segundos que desplaza cada botón"
+                  style={{
+                    width: "66px",
+                    height: "34px",
+                    boxSizing: "border-box",
+                    border: "1px solid rgba(255, 255, 255, 0.12)",
+                    borderRadius: "0.5rem",
+                    background: "#18181b",
+                    color: "#fff",
+                    padding: "0 0.45rem",
+                    textAlign: "center",
+                    font: "inherit",
+                    fontVariantNumeric: "tabular-nums",
+                    outline: "none",
+                  }}
+                />
+                s
+              </label>
+              <button
+                type="button"
+                onClick={() => shiftAllCues(1)}
+                disabled={!canShiftAllRight}
+                title={`Mover todos los nodos ${globalShiftAmount.toFixed(2)}s a la derecha`}
+                aria-label="Mover todos los nodos a la derecha"
+              >
+                →
+              </button>
             </div>
           </div>
 
@@ -887,6 +1052,15 @@ export default function LyricsEditor() {
               disabled={saving || cues.length === 0}
             >
               {saving ? "Guardando..." : "Guardar lyrics"}
+            </button>
+            <button
+              type="button"
+              className="lyrics-editor__secondary"
+              onClick={downloadCurrentLyrics}
+              disabled={cues.length === 0}
+              title="Descargar las lyrics actuales del editor como SRT"
+            >
+              <DownloadIcon size={16} /> Descargar lyrics
             </button>
             {selectedSong.lyricsSrt && (
               <button

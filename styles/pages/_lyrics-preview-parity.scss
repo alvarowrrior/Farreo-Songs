@@ -1,0 +1,26 @@
+@use "../variables" as vars;
+@use "../utils/mixins" as mx;
+
+// The editor already renders the exact same LyricsDisplay component and uses
+// the same computeCurrentLyric() selection logic as the production player.
+// This file only removes visual drift introduced by the editor's old inline
+// preview override.
+//
+// Keep the production bar and the editor preview on the same dimensions and
+// surface treatment. Positioning remains inline in the editor by design.
+.playlist-admin__lyrics-bar {
+  --farreo-lyrics-bar-height: 46px;
+  height: var(--farreo-lyrics-bar-height);
+
+  @include mx.render-to(vars.$bp-sm) {
+    --farreo-lyrics-bar-height: 42px;
+  }
+}
+
+.lyrics-editor__preview .playlist-admin__lyrics-bar {
+  height: var(--farreo-lyrics-bar-height);
+  background: rgba(10, 10, 10, 0.76);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(14px);
+}
