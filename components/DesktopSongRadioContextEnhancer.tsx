@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { RadioIcon } from "lucide-react";
+import { LibraryIcon, PlusIcon, RadioIcon, ShareIcon } from "lucide-react";
 import { onAuthStateChanged } from "firebase/auth";
 import { auth } from "@/lib/firebase";
 import {
@@ -9,6 +9,11 @@ import {
   type RadioSongInsertMode,
   type RadioSongPitchMode,
 } from "@/lib/radioSongActions";
+import {
+  addSongToPrivatePlaylist,
+  listOwnPrivatePlaylists,
+  type PrivatePlaylist,
+} from "@/lib/privatePlaylists";
 import { getMediaUrl } from "@/lib/radioApi";
 import {
   getThemeDiscovery,
@@ -21,6 +26,7 @@ type ContextPoint = {
   x: number;
   y: number;
   song: ThemeDiscoverySong;
+  common?: boolean;
 };
 
 const POSITIONS: Array<{
@@ -42,10 +48,9 @@ const STRICT_SONG_HOST_SELECTOR = [
   ".app-sidebar__song-result",
   ".song-discovery__row",
   ".playlist-admin__recommendation-card--daily",
-  ".playlist-admin__now-playing",
-  ".song-info-sidebar__artwork",
-  ".song-info-sidebar__advanced-cover-artwork",
-  ".song-info-sidebar__song",
+  // In the bottom player ONLY the song name is a song interaction target.
+  // Artwork, empty player space and controls must keep their normal behaviour.
+  ".playlist-admin__now-playing-title",
 ].join(",");
 
 // Broader hosts are kept only so we can augment an EXISTING Farreo song menu.
@@ -54,7 +59,6 @@ const STRICT_SONG_HOST_SELECTOR = [
 // empty/background regions are not themselves song interaction targets.
 const SONG_HOST_SELECTOR = [
   STRICT_SONG_HOST_SELECTOR,
-  ".song-info-sidebar__body",
   "[class*='songResult']",
   "[class*='songRow']",
   "[class*='songCard']",
@@ -94,6 +98,11 @@ function isStrictSongTarget(target: EventTarget | null) {
 
 function candidateNames(host: HTMLElement) {
   const values: Array<{ name: string; imageUrl?: string }> = [];
+
+  if (host.matches(".playlist-admin__now-playing-title")) {
+    const ownName = (host.textContent || "").trim();
+    if (ownName) values.push({ name: ownName });
+  }
 
   const images = Array.from(host.querySelectorAll<HTMLImageElement>("img[alt]"));
   if (host instanceof HTMLImageElement && host.alt) images.unshift(host);
@@ -201,11 +210,17 @@ function pitchLabel(pitch: RadioSongPitchMode) {
 
 function FallbackRadioMenu({
   point,
+  personalPlaylists,
   onAdd,
+  onAddToPlaylist,
+  onShare,
   onClose,
 }: {
   point: ContextPoint;
+  personalPlaylists: PrivatePlaylist[];
   onAdd: (insertAt: RadioSongInsertMode, pitch: RadioSongPitchMode) => void;
+  onAddToPlaylist: (playlistId: string) => void;
+  onShare: () => void;
   onClose: () => void;
 }) {
   const [customPitch, setCustomPitch] = useState("1.00");
@@ -236,6 +251,49 @@ function FallbackRadioMenu({
       onPointerDown={(event) => event.stopPropagation()}
       onContextMenu={(event) => event.preventDefault()}
     >
+      {point.common ? (
+        <>
+          <div className={styles.menuEntry}>
+            <button
+              type="button"
+              className={styles.menuButton}
+              onClick={onShare}
+            >
+              <ShareIcon size={16} />
+              <span>Compartir</span>
+              <span />
+            </button>
+          </div>
+
+          <div className={styles.menuEntry}>
+            <button type="button" className={styles.menuButton}>
+              <PlusIcon size={16} />
+              <span>Añadir a playlist</span>
+              <span className={styles.arrow}>›</span>
+            </button>
+
+            <div className={styles.positionPanel}>
+              {personalPlaylists.length === 0 ? (
+                <button type="button" className={styles.pitchButton} disabled>
+                  <LibraryIcon size={15} />
+                  <span>Sin playlists propias</span>
+                </button>
+              ) : personalPlaylists.map((playlist) => (
+                <button
+                  key={playlist.id}
+                  type="button"
+                  className={styles.pitchButton}
+                  onClick={() => onAddToPlaylist(playlist.id)}
+                >
+                  <LibraryIcon size={15} />
+                  <span>{playlist.nombre}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </>
+      ) : null}
+
       <div className={styles.menuEntry}>
         <button type="button" className={styles.menuButton}>
           <RadioIcon size={16} className={styles.radioSourceIcon} />
@@ -306,6 +364,7 @@ export default function DesktopSongRadioContextEnhancer() {
   const noticeTimerRef = useRef<number | null>(null);
 
   const [fallback, setFallback] = useState<ContextPoint | null>(null);
+  const [personalPlaylists, setPersonalPlaylists] = useState<PrivatePlaylist[]>([]);
   const [notice, setNotice] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   const showNotice = (type: "success" | "error", text: string) => {
@@ -315,6 +374,40 @@ export default function DesktopSongRadioContextEnhancer() {
       setNotice(null);
       noticeTimerRef.current = null;
     }, 2800);
+  };
+
+  const shareSong = async (song: ThemeDiscoverySong) => {
+    try {
+      await navigator.clipboard.writeText(
+        `${window.location.origin}/play?song=${encodeURIComponent(song.id)}`,
+      );
+      showNotice("success", `Enlace de “${song.name}” copiado.`);
+    } catch {
+      showNotice("error", "No se pudo copiar el enlace.");
+    } finally {
+      setFallback(null);
+    }
+  };
+
+  const addToPersonalPlaylist = async (
+    playlistId: string,
+    song: ThemeDiscoverySong,
+  ) => {
+    try {
+      await addSongToPrivatePlaylist(playlistId, song.id);
+      const playlist = personalPlaylists.find((item) => item.id === playlistId);
+      showNotice(
+        "success",
+        `“${song.name}” añadida a ${playlist?.nombre || "la playlist"}.`,
+      );
+    } catch (error) {
+      showNotice(
+        "error",
+        error instanceof Error ? error.message : "No se pudo añadir a la playlist.",
+      );
+    } finally {
+      setFallback(null);
+    }
   };
 
   const indexCatalogue = (data: ThemeDiscoveryPayload) => {
@@ -540,11 +633,24 @@ export default function DesktopSongRadioContextEnhancer() {
   };
 
   useEffect(() => {
-    if (!auth) return;
-    return onAuthStateChanged(auth, () => {
+    if (!auth) {
+      setPersonalPlaylists([]);
+      return;
+    }
+
+    return onAuthStateChanged(auth, (user) => {
       catalogueRef.current = null;
       songsByNameRef.current = new Map();
       catalogueRequestRef.current = null;
+
+      if (!user) {
+        setPersonalPlaylists([]);
+        return;
+      }
+
+      void listOwnPrivatePlaylists(user.uid)
+        .then(setPersonalPlaylists)
+        .catch(() => setPersonalPlaylists([]));
     });
   }, []);
 
@@ -585,7 +691,13 @@ export default function DesktopSongRadioContextEnhancer() {
             }
 
             // Never manufacture a radio-only menu from a fuzzy/broad match.
-            if (strictTarget) setFallback({ ...point, song });
+            // The bottom player's SONG NAME gets the normal song actions too;
+            // the rest of the player is not a valid target at all.
+            if (strictTarget) {
+              const common = event.target instanceof Element
+                && Boolean(event.target.closest(".playlist-admin__now-playing-title"));
+              setFallback({ ...point, song, common });
+            }
           });
         })
         .catch(() => undefined);
@@ -604,7 +716,10 @@ export default function DesktopSongRadioContextEnhancer() {
       {fallback ? (
         <FallbackRadioMenu
           point={fallback}
+          personalPlaylists={personalPlaylists}
           onClose={() => setFallback(null)}
+          onShare={() => void shareSong(fallback.song)}
+          onAddToPlaylist={(playlistId) => void addToPersonalPlaylist(playlistId, fallback.song)}
           onAdd={(insertAt, pitch) => void addToRadio(fallback.song, insertAt, pitch)}
         />
       ) : null}
