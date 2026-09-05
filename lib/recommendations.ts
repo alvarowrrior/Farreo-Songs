@@ -41,8 +41,10 @@ interface CachedRecommendations {
 // v7 invalidates caches where dailySongUnheard could be false merely because
 // that song had been heard on a previous day. Reveal state is day-scoped and
 // must reset every day independently from listening history.
-const cacheKey = (viewer: string) => `farreo-home-recommendations-v7:${viewer}`;
+const cacheKey = (viewer: string) => `farreo-home-recommendations-v8:${viewer}`;
 const revealKey = (dayKey: string, songId: string) => `farreo-daily-reveal-v1:${auth?.currentUser?.uid || "guest"}:${dayKey}:${songId}`;
+const sharedRecommendationCacheKey = (token: string) =>
+  `farreo-shared-recommendation-v3:${token}`;
 const volatileReveals = new Set<string>();
 const pendingRecommendations = new Map<string, Promise<HomeRecommendations>>();
 
@@ -119,8 +121,47 @@ function readCache(viewer: string): CachedRecommendations | null {
   }
 }
 
+function rememberSharedRecommendation(playlist: WeeklyRecommendation) {
+  if (typeof window === "undefined" || !playlist?.shareToken) return;
+  try {
+    window.localStorage.setItem(
+      sharedRecommendationCacheKey(playlist.shareToken),
+      JSON.stringify(playlist),
+    );
+  } catch {
+    // The account snapshot can still be re-read from the backend.
+  }
+}
+
+function rememberWeeklyRecommendations(playlists: WeeklyRecommendation[]) {
+  playlists.forEach(rememberSharedRecommendation);
+}
+
+function readSharedRecommendation(token: string): WeeklyRecommendation | null {
+  if (typeof window === "undefined" || !token) return null;
+  try {
+    const parsed = JSON.parse(
+      window.localStorage.getItem(sharedRecommendationCacheKey(token)) || "null",
+    ) as WeeklyRecommendation | null;
+
+    if (
+      !parsed
+      || parsed.shareToken !== token
+      || typeof parsed.id !== "string"
+      || typeof parsed.name !== "string"
+      || !Array.isArray(parsed.songs)
+      || !Array.isArray(parsed.themeNames)
+    ) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 function normalizeRecommendations(data: HomeRecommendations): HomeRecommendations {
-  return {
+  const normalized = {
     ...data,
     // Reveal is a daily interaction, not a "have I ever heard this song?"
     // interaction. Keeping this compatibility field true whenever a daily song
@@ -131,6 +172,8 @@ function normalizeRecommendations(data: HomeRecommendations): HomeRecommendation
       songs: (playlist.songs || []).slice(0, 16),
     })),
   };
+  rememberWeeklyRecommendations(normalized.weeklyPlaylists);
+  return normalized;
 }
 
 async function fetchRecommendations(
@@ -225,10 +268,47 @@ export async function getHomeRecommendations(force = false): Promise<HomeRecomme
 }
 
 export async function getSharedRecommendation(token: string) {
-  const response = await fetch(`${MUSIC_API_URL}/recommendations/shared/${encodeURIComponent(token)}`);
-  const data = await response.json().catch(() => ({})) as WeeklyRecommendation & { error?: string };
-  if (!response.ok) throw new Error(data.error || "No se pudo abrir la recomendacion.");
-  return data;
+  const viewer = currentViewer();
+
+  // Network/account snapshot is authoritative for mutable song presentation
+  // fields such as iconUrl. The weekly selection itself remains frozen on the
+  // backend, but artwork filenames can legitimately change after an admin edit.
+  //
+  // Previously we returned localStorage first. That could keep an old physical
+  // icon filename forever: if the old file was deleted it rendered as missing;
+  // if an older embedded artwork file still existed it rendered the old cover.
+  let networkError: unknown = null;
+  try {
+    const response = await fetch(
+      `${MUSIC_API_URL}/recommendations/shared/${encodeURIComponent(token)}`,
+      { headers: await recommendationHeaders(viewer) },
+    );
+    const data = await response.json().catch(() => ({})) as WeeklyRecommendation & { error?: string };
+    if (!response.ok) {
+      throw new Error(data.error || "No se pudo abrir la recomendacion.");
+    }
+
+    rememberSharedRecommendation(data);
+    return data;
+  } catch (error) {
+    networkError = error;
+  }
+
+  // Offline/transient fallback only. These caches are no longer allowed to
+  // override a healthy backend response, and the version bump above prevents
+  // legacy stale icon URLs from being reused after this update.
+  const cachedHome = readCache(viewer);
+  const cachedPlaylist = cachedHome?.data.weeklyPlaylists?.find(
+    (playlist) => playlist.shareToken === token,
+  );
+  if (cachedPlaylist) return cachedPlaylist;
+
+  const remembered = readSharedRecommendation(token);
+  if (remembered) return remembered;
+
+  throw networkError instanceof Error
+    ? networkError
+    : new Error("No se pudo abrir la recomendacion.");
 }
 
 export const recommendationHref = (token: string) => `/recommendation/${encodeURIComponent(token)}`;

@@ -42,6 +42,7 @@ export default function AlbumAdminPanel({
   const [selectedSong, setSelectedSong] = useState("");
   const [releaseAt, setReleaseAt] = useState("");
   const [saving, setSaving] = useState(false);
+  const [removingEntryId, setRemovingEntryId] = useState<string | null>(null);
 
   const refresh = async () => {
     const data = await listAlbums();
@@ -130,11 +131,29 @@ export default function AlbumAdminPanel({
     }
   };
 
-  const remove = async (entryId: string) => {
-    if (!editor || editor === "new" || !window.confirm("¿Quitar esta canción del álbum?")) return;
-    await removeAlbumTrack(editor.id, entryId);
-    setEditor(await getAdminAlbum(editor.id));
-    await refresh();
+  const remove = async (entryId: string, songName: string) => {
+    if (!editor || editor === "new" || removingEntryId) return;
+    if (!window.confirm(`¿Quitar "${songName}" de este álbum?`)) return;
+
+    setRemovingEntryId(entryId);
+    try {
+      await removeAlbumTrack(editor.id, entryId);
+      setEditor(await getAdminAlbum(editor.id));
+      await refresh();
+      onMessage("success", `"${songName}" se ha quitado del álbum.`);
+    } catch (reason) {
+      onMessage(
+        "error",
+        reason instanceof Error ? reason.message : "No se pudo quitar la canción del álbum.",
+      );
+      try {
+        setEditor(await getAdminAlbum(editor.id));
+      } catch {
+        // Keep the current editor state if the refresh itself also fails.
+      }
+    } finally {
+      setRemovingEntryId(null);
+    }
   };
 
   const changeSchedule = async (entryId: string, value: string) => {
@@ -201,16 +220,57 @@ export default function AlbumAdminPanel({
                 </div>
 
                 <div className="album-admin__tracks">
-                  {editor.tracks.map((track, index) => (
-                    <div key={track.entryId} className="album-admin__track">
-                      <SongArtwork src={getMediaUrl(track.song?.iconUrl)} alt={track.song?.name || "Canción"} />
-                      <div><strong>{track.song?.name || "Canción no encontrada"}</strong><small>{track.releaseAt ? `Estreno: ${new Date(track.releaseAt).toLocaleString("es-ES")}` : "Publicación inmediata"}</small></div>
-                      <input type="datetime-local" defaultValue={track.releaseAt ? new Date(new Date(track.releaseAt).getTime() - new Date(track.releaseAt).getTimezoneOffset() * 60000).toISOString().slice(0, 16) : ""} onBlur={event => void changeSchedule(track.entryId, event.target.value)} />
-                      <button type="button" onClick={() => void move(index, -1)} disabled={index === 0}><ChevronUpIcon /></button>
-                      <button type="button" onClick={() => void move(index, 1)} disabled={index === editor.tracks.length - 1}><ChevronDownIcon /></button>
-                      <button type="button" onClick={() => void remove(track.entryId)}><TrashIcon /></button>
-                    </div>
-                  ))}
+                  {editor.tracks.map((track, index) => {
+                    const songName = track.song?.name || "Canción no encontrada";
+                    const removing = removingEntryId === track.entryId;
+
+                    return (
+                      <div
+                        key={track.entryId}
+                        className="album-admin__track"
+                        style={{
+                          gridTemplateColumns: "42px minmax(150px, 1fr) 190px 34px 34px 84px",
+                        }}
+                      >
+                        <SongArtwork src={getMediaUrl(track.song?.iconUrl)} alt={track.song?.name || "Canción"} />
+                        <div><strong>{songName}</strong><small>{track.releaseAt ? `Estreno: ${new Date(track.releaseAt).toLocaleString("es-ES")}` : "Publicación inmediata"}</small></div>
+                        <input
+                          type="datetime-local"
+                          defaultValue={track.releaseAt ? new Date(new Date(track.releaseAt).getTime() - new Date(track.releaseAt).getTimezoneOffset() * 60000).toISOString().slice(0, 16) : ""}
+                          onBlur={event => void changeSchedule(track.entryId, event.target.value)}
+                          disabled={removing}
+                        />
+                        <button type="button" onClick={() => void move(index, -1)} disabled={index === 0 || removingEntryId !== null}><ChevronUpIcon /></button>
+                        <button type="button" onClick={() => void move(index, 1)} disabled={index === editor.tracks.length - 1 || removingEntryId !== null}><ChevronDownIcon /></button>
+                        <button
+                          type="button"
+                          onClick={() => void remove(track.entryId, songName)}
+                          disabled={removingEntryId !== null}
+                          title={`Quitar ${songName} del álbum`}
+                          aria-label={`Quitar ${songName} del álbum`}
+                          style={{
+                            width: "84px",
+                            minWidth: "84px",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            gap: "6px",
+                            padding: "0 9px",
+                            border: "1px solid rgba(255, 105, 117, 0.3)",
+                            borderRadius: "5px",
+                            background: "rgba(255, 105, 117, 0.08)",
+                            color: "#ff6975",
+                            fontSize: "0.75rem",
+                            fontWeight: 650,
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          <TrashIcon size={14} />
+                          {removing ? "Quitando..." : "Quitar"}
+                        </button>
+                      </div>
+                    );
+                  })}
                   {editor.tracks.length === 0 && <p className="playlist-admin__empty"><CalendarClockIcon size={18} /> Añade canciones y decide cuándo se estrenan.</p>}
                 </div>
               </>

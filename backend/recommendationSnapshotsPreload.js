@@ -289,6 +289,58 @@ function enforceStrictWeeklyThemes(body) {
   };
 }
 
+function currentSongIconUrl(songId) {
+  const id = String(songId || '');
+  if (!id) return undefined;
+
+  const metadataPath = path.join(
+    __dirname,
+    'almacenamiento_compartido',
+    'canciones',
+    `${path.parse(id).name}.json`,
+  );
+
+  try {
+    if (!fs.existsSync(metadataPath)) return undefined;
+    const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+    const iconFile = metadata?.manualIconFile || metadata?.embeddedIconFile || null;
+    return iconFile ? `/song-icons/${iconFile}` : null;
+  } catch {
+    return undefined;
+  }
+}
+
+function hydrateSnapshotSongArtwork(song) {
+  if (!song || typeof song !== 'object') return song;
+  const currentIconUrl = currentSongIconUrl(song.id);
+
+  // undefined = metadata could not be read: preserve the frozen value.
+  // null = metadata exists but the song currently has no artwork: explicitly
+  // clear a stale frozen URL so the client renders Farreo's normal fallback.
+  if (currentIconUrl === undefined) return song;
+  return {
+    ...song,
+    iconUrl: currentIconUrl,
+  };
+}
+
+function hydrateWeeklySnapshotArtwork(snapshot) {
+  if (!snapshot || !Array.isArray(snapshot.weeklyPlaylists)) return snapshot;
+
+  return {
+    ...snapshot,
+    weeklyPlaylists: snapshot.weeklyPlaylists.map((playlist) => {
+      if (!playlist || typeof playlist !== 'object') return playlist;
+      return {
+        ...playlist,
+        songs: Array.isArray(playlist.songs)
+          ? playlist.songs.map(hydrateSnapshotSongArtwork)
+          : [],
+      };
+    }),
+  };
+}
+
 function weeklySnapshotFile(identity, weekKey) {
   const digest = crypto
     .createHash('sha256')
@@ -322,7 +374,7 @@ function readWeeklySnapshot(identity, weekKey) {
     if (!fs.existsSync(file)) return null;
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
     const normalized = normalizeWeeklySnapshot(parsed, identity, weekKey);
-    if (normalized) return normalized;
+    if (normalized) return hydrateWeeklySnapshotArtwork(normalized);
 
     try { fs.unlinkSync(file); } catch { /* best effort */ }
     return null;
@@ -377,7 +429,7 @@ function establishWeeklySnapshot(identity, weekKey, generated) {
       },
     );
     pruneOldSnapshots(WEEKLY_SNAPSHOT_DIR, 120);
-    return normalizedGenerated;
+    return hydrateWeeklySnapshotArtwork(normalizedGenerated);
   } catch (error) {
     if (error && error.code === 'EEXIST') {
       return readWeeklySnapshot(identity, weekKey) || normalizedGenerated;
@@ -484,9 +536,48 @@ function wrapRecommendationsHandler(handler) {
       console.warn('No se pudieron preparar las snapshots de recomendaciones:', error.message);
     }
 
+    // Full fast path: once both current snapshots exist, there is nothing left
+    // for the recommendation generator to compute. Returning the persisted
+    // account/scope snapshots here avoids local catalogue work and, crucially,
+    // avoids the cached Firestore reads used by the normal recommendation route.
+    if (existingDaily && existingWeekly && dayKey && weekKey) {
+      return res.json({
+        dayKey,
+        weekKey,
+        dailySong: existingDaily.dailySong,
+        dailySongUnheard: Boolean(existingDaily.dailySong),
+        weeklyPlaylists: existingWeekly.weeklyPlaylists,
+        weeklyAlbum: existingWeekly.weeklyAlbum,
+        dailySnapshot: {
+          persisted: true,
+          createdAt: existingDaily.createdAt,
+          scope: existingDaily.scope,
+        },
+        weeklySnapshot: {
+          persisted: true,
+          createdAt: existingWeekly.createdAt,
+          scope: existingWeekly.scope,
+        },
+      });
+    }
+
+    // A new day can require a fresh daily song while the weekly selection is
+    // still valid. Hand that weekly snapshot to the optimized generator so it
+    // computes only the daily part instead of rebuilding themes/albums again.
+    if (existingWeekly && weekKey) {
+      req.farreoRecommendationWeeklySnapshot = {
+        weekKey,
+        weeklyPlaylists: existingWeekly.weeklyPlaylists,
+        weeklyAlbum: existingWeekly.weeklyAlbum,
+      };
+    }
+
     const originalJson = res.json.bind(res);
     res.json = (body) => {
-      body = enforceStrictWeeklyThemes(body);
+      // A persisted weekly snapshot was already strict-filtered when created.
+      // Re-running the filter would only reread local theme/song metadata and
+      // can never affect the final response because the snapshot wins below.
+      if (!existingWeekly) body = enforceStrictWeeklyThemes(body);
 
       if (
         identity
@@ -562,8 +653,59 @@ express.application.post = function patchedPost(routePath, ...handlers) {
 
 const originalGet = express.application.get;
 
+function decodeRecommendationToken(value) {
+  try {
+    const parsed = JSON.parse(
+      Buffer.from(String(value || ''), 'base64url').toString('utf8'),
+    );
+    if (
+      !parsed
+      || typeof parsed.seed !== 'string'
+      || typeof parsed.week !== 'string'
+      || !Number.isInteger(parsed.index)
+      || parsed.index < 0
+    ) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 function wrapSharedRecommendationHandler(handler) {
   return async function strictSharedRecommendationHandler(req, res, next) {
+    // Owner/account fast path: the token carries the exact week + playlist
+    // index. When this request is authenticated, return the persisted weekly
+    // snapshot directly instead of regenerating from the current catalogue.
+    try {
+      const identity = await recommendationIdentity(req);
+      const payload = decodeRecommendationToken(req.params?.token);
+      const weekKey = payload ? validWeekKey(payload.week) : null;
+
+      if (identity && payload && weekKey) {
+        const snapshot = readWeeklySnapshot(identity, weekKey);
+        const playlist = snapshot?.weeklyPlaylists?.[payload.index] || null;
+        const requestedToken = String(req.params?.token || '');
+
+        if (
+          playlist
+          && (
+            !playlist.shareToken
+            || String(playlist.shareToken) === requestedToken
+          )
+        ) {
+          return res.json(playlist);
+        }
+      }
+    } catch (error) {
+      // Shared links must remain usable even if snapshot lookup/auth fails.
+      console.warn(
+        'No se pudo resolver la recomendacion compartida desde snapshot:',
+        error.message,
+      );
+    }
+
     const originalJson = res.json.bind(res);
     res.json = (body) => {
       if (body && typeof body === 'object' && Array.isArray(body.songs)) {

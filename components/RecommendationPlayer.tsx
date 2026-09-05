@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { onAuthStateChanged } from "firebase/auth";
 import { CompassIcon } from "lucide-react";
 import PlaylistSongTable from "@/components/PlaylistSongTable";
 import RecommendationArtwork from "@/components/RecommendationArtwork";
@@ -13,11 +14,28 @@ import { getSharedRecommendation, type WeeklyRecommendation } from "@/lib/recomm
 export default function RecommendationPlayer({ token }: { token: string }) {
   const { currentTrack, isPlaying, toggleTrack } = useMusicPlayer();
   const [recommendation, setRecommendation] = useState<WeeklyRecommendation | null>(null);
+  const [authReady, setAuthReady] = useState(!auth);
   const [playlists, setPlaylists] = useState<PrivatePlaylist[]>([]);
   const [error, setError] = useState("");
 
   useEffect(() => {
+    if (!auth) {
+      setAuthReady(true);
+      return;
+    }
+
+    return onAuthStateChanged(auth, () => {
+      setAuthReady(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!authReady) return;
+
     let active = true;
+    setRecommendation(null);
+    setError("");
+
     getSharedRecommendation(token)
       .then(value => active && setRecommendation(value))
       .catch(reason => active && setError(reason instanceof Error ? reason.message : "No se pudo abrir."));
@@ -27,12 +45,14 @@ export default function RecommendationPlayer({ token }: { token: string }) {
       listOwnPrivatePlaylists(user.uid)
         .then(value => active && setPlaylists(value))
         .catch(() => undefined);
+    } else {
+      setPlaylists([]);
     }
 
     return () => {
       active = false;
     };
-  }, [token]);
+  }, [authReady, token]);
 
   const tracks = (recommendation?.songs || []).map(song => ({
     ...song,

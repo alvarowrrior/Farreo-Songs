@@ -1005,28 +1005,44 @@ function installSafety(app) {
         ? dailyCandidates[Math.floor(dailyRandom() * dailyCandidates.length)].song
         : null;
 
-      let albums = [];
-      try {
-        const albumDocs = await loadAlbumDocs();
-        albums = albumDocs.map((item) => ({
-          id: item.id,
-          nombre: String(item.data?.nombre || 'Album sin nombre'),
-          iconUrl: typeof item.data?.iconUrl === 'string' ? item.data.iconUrl : null,
-          numCanciones: Math.max(0, Number(item.data?.trackCount) || 0),
-          revelationEnabled: Boolean(item.data?.revelationEnabled),
-          followerCount: Math.max(0, Number(item.data?.followerCount) || 0),
-        }));
-      } catch (error) {
-        console.warn('No se pudo elegir el album semanal:', error.message);
-      }
+      const frozenWeekly = req.farreoRecommendationWeeklySnapshot;
+      let weeklyPlaylists;
+      let weeklyAlbum;
 
-      const weeklyCount = albums.length > 0 ? 2 : 3;
-      const weeklyPlaylists = Array.from({ length: weeklyCount }, (_, index) => {
-        const playlist = buildTastePlaylist(entries, `${clientSeed}:${weekKey}`, index);
-        return { ...playlist, shareToken: recommendationToken(clientSeed, weekKey, index) };
-      });
-      const albumRandom = seededRandom(`${clientSeed}:${weekKey}:album`);
-      const weeklyAlbum = albums.length > 0 ? albums[Math.floor(albumRandom() * albums.length)] : null;
+      if (
+        frozenWeekly
+        && frozenWeekly.weekKey === weekKey
+        && Array.isArray(frozenWeekly.weeklyPlaylists)
+      ) {
+        // The preload already validated this snapshot against uid + week +
+        // public/admin scope. Reuse it verbatim: no album Firestore read and no
+        // theme-playlist generation on daily refreshes during the same week.
+        weeklyPlaylists = frozenWeekly.weeklyPlaylists;
+        weeklyAlbum = frozenWeekly.weeklyAlbum || null;
+      } else {
+        let albums = [];
+        try {
+          const albumDocs = await loadAlbumDocs();
+          albums = albumDocs.map((item) => ({
+            id: item.id,
+            nombre: String(item.data?.nombre || 'Album sin nombre'),
+            iconUrl: typeof item.data?.iconUrl === 'string' ? item.data.iconUrl : null,
+            numCanciones: Math.max(0, Number(item.data?.trackCount) || 0),
+            revelationEnabled: Boolean(item.data?.revelationEnabled),
+            followerCount: Math.max(0, Number(item.data?.followerCount) || 0),
+          }));
+        } catch (error) {
+          console.warn('No se pudo elegir el album semanal:', error.message);
+        }
+
+        const weeklyCount = albums.length > 0 ? 2 : 3;
+        weeklyPlaylists = Array.from({ length: weeklyCount }, (_, index) => {
+          const playlist = buildTastePlaylist(entries, `${clientSeed}:${weekKey}`, index);
+          return { ...playlist, shareToken: recommendationToken(clientSeed, weekKey, index) };
+        });
+        const albumRandom = seededRandom(`${clientSeed}:${weekKey}:album`);
+        weeklyAlbum = albums.length > 0 ? albums[Math.floor(albumRandom() * albums.length)] : null;
+      }
 
       return res.json({
         dayKey,
