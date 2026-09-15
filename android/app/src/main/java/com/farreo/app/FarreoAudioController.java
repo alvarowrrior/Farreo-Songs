@@ -14,6 +14,7 @@ import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackParameters;
 import androidx.media3.common.Player;
 import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.source.ShuffleOrder;
 
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -28,6 +29,9 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Locale;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -45,6 +49,10 @@ public class FarreoAudioController {
     private final ExoPlayer player;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
+    private final SecureRandom secureShuffleRandom = new SecureRandom();
+    private final ArrayList<Integer> shuffleRemainingIndices = new ArrayList<>();
+    private final ArrayList<Integer> shuffleHistoryIndices = new ArrayList<>();
+    private boolean shuffleBackNavigation = false;
 
     private JSONArray tracks = new JSONArray();
     private JSObject source;
@@ -83,6 +91,110 @@ public class FarreoAudioController {
         }
     };
 
+    /**
+     * Farreo shuffle intentionally does not rely on Media3's long-lived
+     * DefaultShuffleOrder. Media3 precomputes one order and REPEAT_MODE_ALL can
+     * keep replaying that same order, which makes pairs such as A -> B recur.
+     *
+     * We keep the existing no-repeat cycle (every other queue entry must be
+     * consumed before it becomes eligible again), but after every REAL track
+     * transition we create a fresh secure order. Only the first candidate in
+     * this order matters: the order is rebuilt again as soon as that candidate
+     * becomes current.
+     */
+    private void resetShuffleCycle(int current) {
+        shuffleRemainingIndices.clear();
+        shuffleHistoryIndices.clear();
+        shuffleBackNavigation = false;
+
+        int count = player.getMediaItemCount();
+        for (int index = 0; index < count; index++) {
+            if (index != current) {
+                shuffleRemainingIndices.add(index);
+            }
+        }
+    }
+
+    private void normalizeShuffleRemaining(int current) {
+        int count = player.getMediaItemCount();
+        for (int index = shuffleRemainingIndices.size() - 1; index >= 0; index--) {
+            int value = shuffleRemainingIndices.get(index);
+            if (value < 0 || value >= count || value == current) {
+                shuffleRemainingIndices.remove(index);
+            }
+        }
+
+        // Same anti-repeat semantics as the old shuffle cycle: do not make a
+        // played song eligible again until all other songs in the cycle were
+        // consumed. A new cycle always excludes the current song.
+        if (shuffleRemainingIndices.isEmpty() && count > 1) {
+            for (int index = 0; index < count; index++) {
+                if (index != current) {
+                    shuffleRemainingIndices.add(index);
+                }
+            }
+        }
+    }
+
+    private void prepareFreshShuffleOrder(int current) {
+        int count = player.getMediaItemCount();
+        if (!shuffle || count <= 1 || current < 0 || current >= count) {
+            player.setShuffleModeEnabled(false);
+            return;
+        }
+
+        normalizeShuffleRemaining(current);
+
+        // SecureRandom drives the actual next-song choice. We shuffle only the
+        // currently eligible indices; consumed indices are appended after them
+        // solely to satisfy Media3's requirement that ShuffleOrder is a full
+        // permutation. They can never become "next" because the order is
+        // rebuilt after the first transition.
+        ArrayList<Integer> eligible = new ArrayList<>(shuffleRemainingIndices);
+        Collections.shuffle(eligible, secureShuffleRandom);
+
+        boolean[] included = new boolean[count];
+        int[] order = new int[count];
+        int cursor = 0;
+
+        order[cursor++] = current;
+        included[current] = true;
+
+        for (int index : eligible) {
+            if (index < 0 || index >= count || included[index]) continue;
+            order[cursor++] = index;
+            included[index] = true;
+        }
+
+        for (int index = 0; index < count; index++) {
+            if (!included[index]) {
+                order[cursor++] = index;
+                included[index] = true;
+            }
+        }
+
+        player.setShuffleOrder(
+            new ShuffleOrder.DefaultShuffleOrder(order, secureShuffleRandom.nextLong())
+        );
+        player.setShuffleModeEnabled(true);
+    }
+
+    private void registerShuffleTransition(int previousIndex, int nextIndex) {
+        if (!shuffle || radioMode || nextIndex < 0 || previousIndex == nextIndex) return;
+
+        if (shuffleBackNavigation) {
+            shuffleBackNavigation = false;
+        } else if (previousIndex >= 0) {
+            int historySize = shuffleHistoryIndices.size();
+            if (historySize == 0 || shuffleHistoryIndices.get(historySize - 1) != previousIndex) {
+                shuffleHistoryIndices.add(previousIndex);
+            }
+        }
+
+        shuffleRemainingIndices.remove(Integer.valueOf(nextIndex));
+        prepareFreshShuffleOrder(nextIndex);
+    }
+
     private FarreoAudioController(Context appContext) {
         context = appContext.getApplicationContext();
         player = new ExoPlayer.Builder(context).build();
@@ -99,6 +211,7 @@ public class FarreoAudioController {
             public void onMediaItemTransition(MediaItem mediaItem, int reason) {
                 int index = player.getCurrentMediaItemIndex();
                 if (index >= 0) {
+                    int previousIndex = currentIndex;
                     boolean wasPlaying = player.isPlaying();
 
                     // Media3 can begin rendering the newly transitioned media item
@@ -112,6 +225,7 @@ public class FarreoAudioController {
                     }
 
                     currentIndex = index;
+                    registerShuffleTransition(previousIndex, index);
                     boolean firstListenStarted = applyFirstListenPitch(index);
                     if (!radioMode && !firstListenPitchLocked && autoRandomPitch && index != lastPitchTrackIndex) {
                         pitch = randomPitch();
@@ -215,9 +329,11 @@ public class FarreoAudioController {
 
         player.setVolume(volume);
         player.setPlaybackParameters(new PlaybackParameters(pitch, pitch));
-        player.setShuffleModeEnabled(shuffle);
+        player.setShuffleModeEnabled(false);
         player.setRepeatMode(player.getMediaItemCount() > 1 ? Player.REPEAT_MODE_ALL : Player.REPEAT_MODE_OFF);
         player.seekTo(currentIndex, 0);
+        resetShuffleCycle(currentIndex);
+        prepareFreshShuffleOrder(currentIndex);
         player.prepare();
         ensureForeground();
         if (firstListenStarted) notifyState("firstListenStarted");
@@ -279,6 +395,10 @@ public class FarreoAudioController {
         }
         if (player.getCurrentPosition() > 3000) {
             player.seekTo(0);
+        } else if (shuffle && !shuffleHistoryIndices.isEmpty()) {
+            int target = shuffleHistoryIndices.remove(shuffleHistoryIndices.size() - 1);
+            shuffleBackNavigation = true;
+            player.seekTo(target, 0);
         } else if (player.hasPreviousMediaItem()) {
             player.seekToPreviousMediaItem();
         }
@@ -305,7 +425,14 @@ public class FarreoAudioController {
 
     public JSObject setShuffle(boolean nextShuffle) {
         shuffle = nextShuffle;
-        player.setShuffleModeEnabled(shuffle);
+        if (shuffle && !radioMode && player.getMediaItemCount() > 1) {
+            int activeIndex = player.getCurrentMediaItemIndex();
+            if (activeIndex < 0) activeIndex = currentIndex;
+            resetShuffleCycle(activeIndex);
+            prepareFreshShuffleOrder(activeIndex);
+        } else {
+            player.setShuffleModeEnabled(false);
+        }
         if (radioMode) {
             postRadio("/radio/settings", String.format(Locale.US, "{\"shuffle\":%s}", shuffle ? "true" : "false"), "PATCH");
         }
