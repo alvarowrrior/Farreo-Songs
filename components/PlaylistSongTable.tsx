@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDownIcon, ChevronUpIcon, GripVerticalIcon, LibraryIcon, MoreHorizontalIcon, PauseIcon, PlayIcon, ShareIcon } from "lucide-react";
 import SongArtwork from "@/components/SongArtwork";
@@ -86,6 +86,27 @@ export default function PlaylistSongTable({
   const [contextMenu, setContextMenu] = useState<{ trackId: string; x: number; y: number } | null>(null);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const reorderEnabled = canReorder && sort.key === "index" && sort.direction === "desc";
+
+  useEffect(() => {
+    // Native HTML drag can enter dragstart after a tiny pointer jitter even
+    // when the user intended only to hold-click. Some browsers then skip the
+    // row's normal drop path if the pointer is released without moving.
+    // Always clear the visual drag state at every possible gesture end.
+    const clearDrag = () => setDraggedId(null);
+    window.addEventListener("dragend", clearDrag);
+    window.addEventListener("drop", clearDrag);
+    window.addEventListener("pointerup", clearDrag);
+    window.addEventListener("mouseup", clearDrag);
+    window.addEventListener("blur", clearDrag);
+
+    return () => {
+      window.removeEventListener("dragend", clearDrag);
+      window.removeEventListener("drop", clearDrag);
+      window.removeEventListener("pointerup", clearDrag);
+      window.removeEventListener("mouseup", clearDrag);
+      window.removeEventListener("blur", clearDrag);
+    };
+  }, []);
 
   const sortedTracks = useMemo(() => {
     const indexed = tracks.map((track, index) => ({ track, index }));
@@ -252,6 +273,7 @@ export default function PlaylistSongTable({
               setDraggedId(track.id);
               event.dataTransfer.effectAllowed = "move";
             }}
+            onDragEnd={() => setDraggedId(null)}
             onDragOver={(event) => {
               if (reorderEnabled) event.preventDefault();
             }}

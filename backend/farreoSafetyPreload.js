@@ -15,6 +15,9 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
+const execFileAsync = promisify(execFile);
 
 const PATCH_FLAG = Symbol.for('farreo.safety-preload.installed');
 if (globalThis[PATCH_FLAG]) {
@@ -59,6 +62,156 @@ const state = {
     admin: { expiresAt: 0, body: null, pending: null },
   },
 };
+
+const youtubeResolveCache = new Map();
+
+const YOUTUBE_BACKGROUNDS_PATH = path.join(
+  __dirname,
+  'almacenamiento_compartido',
+  'youtube-backgrounds.json',
+);
+
+function readYouTubeBackgrounds() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(YOUTUBE_BACKGROUNDS_PATH, 'utf8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed
+      : {};
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      console.warn('No se pudieron leer youtube-backgrounds.json:', error.message);
+    }
+    return {};
+  }
+}
+
+function writeYouTubeBackgrounds(values) {
+  fs.mkdirSync(path.dirname(YOUTUBE_BACKGROUNDS_PATH), { recursive: true });
+  const temp = `${YOUTUBE_BACKGROUNDS_PATH}.tmp`;
+  fs.writeFileSync(temp, JSON.stringify(values, null, 2), 'utf8');
+  fs.renameSync(temp, YOUTUBE_BACKGROUNDS_PATH);
+}
+
+function songBackgroundEntry(songId) {
+  const id = String(songId || '').trim();
+  if (!id || id.length > 512) return null;
+  const values = readYouTubeBackgrounds();
+  const item = values[id];
+  if (!item || typeof item.youtubeUrl !== 'string') return null;
+  return {
+    songId: id,
+    youtubeUrl: item.youtubeUrl,
+    updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : null,
+  };
+}
+
+function normalizeYouTubeVideoUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw || raw.length > 2048) return null;
+
+  try {
+    const parsed = new URL(raw);
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
+    const allowed = (
+      host === 'youtube.com'
+      || host.endsWith('.youtube.com')
+      || host === 'youtu.be'
+      || host === 'youtube-nocookie.com'
+      || host.endsWith('.youtube-nocookie.com')
+    );
+    if (!allowed) return null;
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+async function resolveYouTubeVideoStream(videoUrl, force = false) {
+  const normalized = normalizeYouTubeVideoUrl(videoUrl);
+  if (!normalized) {
+    throw Object.assign(new Error('URL de YouTube no valida.'), { statusCode: 400 });
+  }
+
+  const cached = youtubeResolveCache.get(normalized);
+  if (!force && cached && cached.expiresAt > Date.now()) return cached.value;
+
+  const ytDlpBinary = String(process.env.YT_DLP_BIN || 'yt-dlp').trim() || 'yt-dlp';
+  const format = [
+    'bestvideo[protocol^=http][ext=mp4][vcodec^=avc1]',
+    'bestvideo[protocol^=http][ext=mp4]',
+    'bestvideo[protocol^=http]',
+    'bestvideo',
+  ].join('/');
+
+  let stdout;
+  try {
+    ({ stdout } = await execFileAsync(
+      ytDlpBinary,
+      [
+        '--no-playlist',
+        '--no-warnings',
+        '--no-progress',
+        '--dump-single-json',
+        '--format', format,
+        normalized,
+      ],
+      {
+        timeout: 30_000,
+        maxBuffer: 4 * 1024 * 1024,
+        windowsHide: true,
+      },
+    ));
+  } catch (error) {
+    const notFound = error && (error.code === 'ENOENT' || error.errno === -2);
+    const message = notFound
+      ? `yt-dlp no esta instalado o no esta en PATH (${ytDlpBinary}).`
+      : `yt-dlp no pudo resolver el video: ${String(error?.stderr || error?.message || 'error desconocido').slice(0, 800)}`;
+    throw Object.assign(new Error(message), { statusCode: notFound ? 503 : 502 });
+  }
+
+  let info;
+  try {
+    info = JSON.parse(String(stdout || '').trim());
+  } catch {
+    throw Object.assign(new Error('yt-dlp devolvio una respuesta no valida.'), { statusCode: 502 });
+  }
+
+  const directUrl = typeof info?.url === 'string' ? info.url : '';
+  if (!/^https?:\/\//i.test(directUrl)) {
+    throw Object.assign(new Error('YouTube no devolvio un stream HTTP directo reproducible.'), { statusCode: 502 });
+  }
+
+  const value = {
+    directUrl,
+    videoId: typeof info.id === 'string' ? info.id : null,
+    title: typeof info.title === 'string' ? info.title : null,
+    formatId: typeof info.format_id === 'string' ? info.format_id : null,
+    ext: typeof info.ext === 'string' ? info.ext : null,
+    protocol: typeof info.protocol === 'string' ? info.protocol : null,
+    width: Number.isFinite(Number(info.width)) ? Number(info.width) : null,
+    height: Number.isFinite(Number(info.height)) ? Number(info.height) : null,
+    fps: Number.isFinite(Number(info.fps)) ? Number(info.fps) : null,
+    vcodec: typeof info.vcodec === 'string' ? info.vcodec : null,
+    filesize: Number.isFinite(Number(info.filesize || info.filesize_approx))
+      ? Number(info.filesize || info.filesize_approx)
+      : null,
+    resolvedAt: new Date().toISOString(),
+  };
+
+  // Direct YouTube media URLs are temporary. Cache only briefly to avoid
+  // repeated yt-dlp work during a test without treating the URL as persistent.
+  youtubeResolveCache.set(normalized, {
+    value,
+    expiresAt: Date.now() + 5 * 60_000,
+  });
+  if (youtubeResolveCache.size > 50) {
+    const first = youtubeResolveCache.keys().next().value;
+    if (first) youtubeResolveCache.delete(first);
+  }
+
+  return value;
+}
 
 function numberFromEnv(name, fallback, min = 1, max = 4096) {
   const parsed = Number(process.env[name]);
@@ -914,6 +1067,139 @@ function installSafety(app) {
     });
     next();
   });
+
+  // Song-bound YouTube video backgrounds.
+  //
+  // Only administrators can create/change associations. Playback resolution is
+  // public, but callers can only resolve a URL already assigned to a Farreo
+  // song; this deliberately avoids exposing a public arbitrary yt-dlp service.
+  app.get('/youtube-backgrounds/:songId', (req, res) => {
+    const entry = songBackgroundEntry(req.params.songId);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json(entry || {
+      songId: String(req.params.songId || ''),
+      youtubeUrl: null,
+      updatedAt: null,
+    });
+  });
+
+  app.get('/youtube-backgrounds/:songId/stream', async (req, res, next) => {
+    try {
+      const rate = allowRate(req, 'youtube-video-playback', 30, 60_000);
+      if (!rate.ok) {
+        res.setHeader('Retry-After', String(rate.retryAfter));
+        return res.status(429).json({ error: 'Demasiadas resoluciones de videoclip.' });
+      }
+
+      const entry = songBackgroundEntry(req.params.songId);
+      if (!entry) {
+        return res.status(404).json({ error: 'Esta cancion no tiene videoclip de fondo.' });
+      }
+
+      const force = String(req.query?.fresh || '') === '1';
+      const stream = await resolveYouTubeVideoStream(entry.youtubeUrl, force);
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({
+        ...stream,
+        youtubeUrl: entry.youtubeUrl,
+        songId: entry.songId,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  app.get('/admin/youtube-backgrounds', async (req, res, next) => {
+    try {
+      const user = req.farreoAdmin || await adminUser(req);
+      if (!user) {
+        return res.status(403).json({ error: 'Permisos de administrador requeridos.' });
+      }
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json(readYouTubeBackgrounds());
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  app.put(
+    '/admin/youtube-backgrounds/:songId',
+    originalExpress.json({ limit: '32kb' }),
+    async (req, res, next) => {
+      try {
+        const user = req.farreoAdmin || await adminUser(req);
+        if (!user) {
+          return res.status(403).json({ error: 'Permisos de administrador requeridos.' });
+        }
+
+        const songId = String(req.params.songId || '').trim();
+        if (!songId || songId.length > 512) {
+          return res.status(400).json({ error: 'Cancion no valida.' });
+        }
+
+        const rawUrl = String(req.body?.youtubeUrl || '').trim();
+        const values = readYouTubeBackgrounds();
+
+        if (!rawUrl) {
+          delete values[songId];
+          writeYouTubeBackgrounds(values);
+          return res.json({ songId, youtubeUrl: null, updatedAt: null });
+        }
+
+        const youtubeUrl = normalizeYouTubeVideoUrl(rawUrl);
+        if (!youtubeUrl) {
+          return res.status(400).json({ error: 'Introduce una URL valida de YouTube.' });
+        }
+
+        const updatedAt = new Date().toISOString();
+        values[songId] = { youtubeUrl, updatedAt };
+        writeYouTubeBackgrounds(values);
+
+        // Do not let an older yt-dlp URL survive an admin reassignment.
+        youtubeResolveCache.delete(youtubeUrl);
+
+        return res.json({ songId, youtubeUrl, updatedAt });
+      } catch (error) {
+        return next(error);
+      }
+    },
+  );
+
+  // Experimental YouTube background-video probe.
+  //
+  // This endpoint resolves metadata/direct media URL only. The media bytes do
+  // NOT flow through the Farreo Linux backend: the browser connects to the
+  // returned googlevideo URL itself. It is intentionally admin-only while we
+  // verify whether those temporary URLs remain usable from a client whose
+  // public IP differs from the resolver machine.
+  app.post(
+    '/admin/youtube-video/resolve',
+    originalExpress.json({ limit: '32kb' }),
+    async (req, res, next) => {
+      try {
+        const user = req.farreoAdmin || await adminUser(req);
+        if (!user) {
+          return res.status(403).json({ error: 'Permisos de administrador requeridos.' });
+        }
+
+        const rate = allowRate(req, 'youtube-video-resolve', 12, 60_000);
+        if (!rate.ok) {
+          res.setHeader('Retry-After', String(rate.retryAfter));
+          return res.status(429).json({ error: 'Demasiadas resoluciones. Reintenta en unos segundos.' });
+        }
+
+        const videoUrl = normalizeYouTubeVideoUrl(req.body?.url);
+        if (!videoUrl) {
+          return res.status(400).json({ error: 'Introduce una URL valida de YouTube.' });
+        }
+
+        res.setHeader('Cache-Control', 'no-store');
+        return res.json(await resolveYouTubeVideoStream(videoUrl));
+      } catch (error) {
+        return next(error);
+      }
+    },
+  );
 
   // Public theme-discovery data for Statistics and sidebar search filters.
   // This intentionally contains only compact list metadata: lyrics and advanced

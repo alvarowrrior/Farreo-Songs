@@ -1,11 +1,17 @@
 package com.farreo.app;
 
 import android.Manifest;
+import android.content.Intent;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
-import android.content.Intent;
 import android.net.Uri;
 import android.os.Build;
+import android.provider.Settings;
+import android.util.Log;
+import android.widget.Toast;
+
+import androidx.core.content.FileProvider;
+
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.PermissionState;
@@ -16,7 +22,13 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 
-import android.util.Log;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 @CapacitorPlugin(
     name = "FarreoNativeAudio",
@@ -25,7 +37,10 @@ import android.util.Log;
     }
 )
 public class FarreoNativeAudioPlugin extends Plugin implements FarreoAudioController.Listener {
+    private static final long MAX_UPDATE_BYTES = 300L * 1024L * 1024L;
+
     private FarreoAudioController controller;
+    private final ExecutorService updateExecutor = Executors.newSingleThreadExecutor();
 
     private interface ControllerAction {
         JSObject run();
@@ -33,6 +48,8 @@ public class FarreoNativeAudioPlugin extends Plugin implements FarreoAudioContro
 
     @Override
     public void load() {
+        cleanupStaleUpdateApks();
+
         try {
             controller = FarreoAudioController.get(getContext());
             controller.addListener(this);
@@ -45,6 +62,7 @@ public class FarreoNativeAudioPlugin extends Plugin implements FarreoAudioContro
     @Override
     protected void handleOnDestroy() {
         if (controller != null) controller.removeListener(this);
+        updateExecutor.shutdownNow();
         super.handleOnDestroy();
     }
 
@@ -172,13 +190,175 @@ public class FarreoNativeAudioPlugin extends Plugin implements FarreoAudioContro
             return;
         }
 
+        if (isFarreoApkUrl(url)) {
+            startFarreoAppUpdate(call, url);
+            return;
+        }
+
         getActivity().runOnUiThread(() -> {
             try {
                 Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
                 getActivity().startActivity(intent);
                 call.resolve();
             } catch (RuntimeException error) {
-                call.reject("No se pudo abrir el enlace de actualizacion.", error);
+                call.reject("No se pudo abrir el enlace.", error);
+            }
+        });
+    }
+
+    private boolean isFarreoApkUrl(String value) {
+        try {
+            Uri uri = Uri.parse(value);
+            String scheme = uri.getScheme();
+            String last = uri.getLastPathSegment();
+            return "https".equalsIgnoreCase(scheme)
+                && last != null
+                && "Farreo.apk".equalsIgnoreCase(last);
+        } catch (RuntimeException error) {
+            return false;
+        }
+    }
+
+    private File updateDirectory() {
+        return new File(getContext().getCacheDir(), "farreo-updates");
+    }
+
+    private void cleanupStaleUpdateApks() {
+        File dir = updateDirectory();
+        File[] files = dir.listFiles();
+        if (files == null) return;
+
+        for (File file : files) {
+            String name = file.getName().toLowerCase();
+            if (name.startsWith("farreo") && name.endsWith(".apk")) {
+                try {
+                    //noinspection ResultOfMethodCallIgnored
+                    file.delete();
+                } catch (RuntimeException ignored) {
+                    // Cache cleanup is best-effort.
+                }
+            }
+        }
+    }
+
+    private void startFarreoAppUpdate(PluginCall call, String url) {
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+            && !getContext().getPackageManager().canRequestPackageInstalls()
+        ) {
+            getActivity().runOnUiThread(() -> {
+                try {
+                    Toast.makeText(
+                        getContext(),
+                        "Permite a Farreo instalar actualizaciones y vuelve a pulsar Actualizar.",
+                        Toast.LENGTH_LONG
+                    ).show();
+                    Intent settings = new Intent(
+                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:" + getContext().getPackageName())
+                    );
+                    getActivity().startActivity(settings);
+                    call.resolve();
+                } catch (RuntimeException error) {
+                    call.reject("No se pudo abrir el permiso de instalacion.", error);
+                }
+            });
+            return;
+        }
+
+        getActivity().runOnUiThread(() -> Toast.makeText(
+            getContext(),
+            "Descargando actualizacion de Farreo...",
+            Toast.LENGTH_SHORT
+        ).show());
+
+        updateExecutor.execute(() -> {
+            File target = null;
+            HttpURLConnection connection = null;
+
+            try {
+                File dir = updateDirectory();
+                if (!dir.exists() && !dir.mkdirs()) {
+                    throw new IllegalStateException("No se pudo preparar la cache de actualizacion.");
+                }
+
+                cleanupStaleUpdateApks();
+                target = new File(dir, "Farreo-update.apk");
+
+                connection = (HttpURLConnection) new URL(url).openConnection();
+                connection.setInstanceFollowRedirects(true);
+                connection.setConnectTimeout(15_000);
+                connection.setReadTimeout(120_000);
+                connection.setRequestProperty("User-Agent", "Farreo-Android-Updater");
+                connection.connect();
+
+                int responseCode = connection.getResponseCode();
+                if (responseCode < 200 || responseCode >= 300) {
+                    throw new IllegalStateException("La descarga devolvio HTTP " + responseCode + ".");
+                }
+
+                long contentLength = connection.getContentLengthLong();
+                if (contentLength > MAX_UPDATE_BYTES) {
+                    throw new IllegalStateException("El APK de actualizacion es demasiado grande.");
+                }
+
+                long written = 0;
+                byte[] buffer = new byte[64 * 1024];
+
+                try (
+                    InputStream input = connection.getInputStream();
+                    FileOutputStream output = new FileOutputStream(target)
+                ) {
+                    int read;
+                    while ((read = input.read(buffer)) != -1) {
+                        written += read;
+                        if (written > MAX_UPDATE_BYTES) {
+                            throw new IllegalStateException("El APK de actualizacion supera el limite permitido.");
+                        }
+                        output.write(buffer, 0, read);
+                    }
+                    output.flush();
+                }
+
+                if (written <= 0 || !target.isFile()) {
+                    throw new IllegalStateException("La descarga del APK quedo vacia.");
+                }
+
+                File installFile = target;
+                getActivity().runOnUiThread(() -> {
+                    try {
+                        Uri apkUri = FileProvider.getUriForFile(
+                            getContext(),
+                            getContext().getPackageName() + ".fileprovider",
+                            installFile
+                        );
+
+                        Intent install = new Intent(Intent.ACTION_VIEW);
+                        install.setDataAndType(apkUri, "application/vnd.android.package-archive");
+                        install.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                        getActivity().startActivity(install);
+                        call.resolve();
+                    } catch (RuntimeException error) {
+                        //noinspection ResultOfMethodCallIgnored
+                        installFile.delete();
+                        call.reject("No se pudo abrir el instalador de Farreo.", error);
+                    }
+                });
+            } catch (Exception error) {
+                if (target != null) {
+                    //noinspection ResultOfMethodCallIgnored
+                    target.delete();
+                }
+                getActivity().runOnUiThread(() -> {
+                    Toast.makeText(
+                        getContext(),
+                        "No se pudo preparar la actualizacion. Se abrira la descarga normal.",
+                        Toast.LENGTH_LONG
+                    ).show();
+                    call.reject("No se pudo descargar la actualizacion.", error);
+                });
+            } finally {
+                if (connection != null) connection.disconnect();
             }
         });
     }

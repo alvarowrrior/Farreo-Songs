@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { MusicIcon } from "lucide-react";
 import { getMediaUrl, MUSIC_API_URL } from "@/lib/radioApi";
 
@@ -10,13 +10,28 @@ interface SongArtworkProps {
   className?: string;
   sizes?: string;
   eager?: boolean;
+  nativeQuality?: boolean;
+  onReady?: () => void;
 }
 
-export default function SongArtwork({ src, alt = "", className = "", sizes = "64px", eager = false }: SongArtworkProps) {
+export default function SongArtwork({
+  src,
+  alt = "",
+  className = "",
+  sizes = "64px",
+  eager = false,
+  nativeQuality = false,
+  onReady,
+}: SongArtworkProps) {
   const [failed, setFailed] = useState(false);
+  const onReadyRef = useRef(onReady);
+
+  useEffect(() => {
+    onReadyRef.current = onReady;
+  }, [onReady]);
   const resolvedSrc = src ? getMediaUrl(src) : "";
   const songIconMatch = src?.match(/^\/song-icons\/([^/?#]+)$/);
-  const srcSet = songIconMatch
+  const srcSet = !nativeQuality && songIconMatch
     ? [64, 96, 128, 256, 512]
       .map(size => `${MUSIC_API_URL}/song-icon/${size}/${encodeURIComponent(songIconMatch[1])} ${size}w`)
       .join(", ")
@@ -26,6 +41,7 @@ export default function SongArtwork({ src, alt = "", className = "", sizes = "64
     // A changed song/artwork URL gets a fresh attempt even if the previous
     // physical file disappeared.
     setFailed(false);
+    if (!resolvedSrc) onReadyRef.current?.();
   }, [resolvedSrc]);
 
   if (resolvedSrc && !failed) {
@@ -39,6 +55,7 @@ export default function SongArtwork({ src, alt = "", className = "", sizes = "64
         className={`song-artwork ${className}`}
         loading={eager ? "eager" : "lazy"}
         decoding="async"
+        onLoad={() => onReadyRef.current?.()}
         onError={(event) => {
           const image = event.currentTarget;
 
@@ -54,6 +71,7 @@ export default function SongArtwork({ src, alt = "", className = "", sizes = "64
           // If the physical original URL is stale/missing too, never expose
           // the browser's broken-image glyph.
           setFailed(true);
+          onReadyRef.current?.();
         }}
       />
     );

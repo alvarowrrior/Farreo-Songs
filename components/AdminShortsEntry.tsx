@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { createPortal } from "react-dom";
-import { ZapIcon } from "lucide-react";
+import { ClapperboardIcon, ZapIcon } from "lucide-react";
 import styles from "@/components/AdminShorts.module.scss";
 
 export default function AdminShortsEntry() {
@@ -26,6 +26,7 @@ export default function AdminShortsEntry() {
 
       mount = document.createElement("span");
       mount.className = styles.adminEntryMount;
+      mount.style.gap = "0.45rem";
       lyricsLink.insertAdjacentElement("afterend", mount);
       setTarget(mount);
     };
@@ -39,10 +40,16 @@ export default function AdminShortsEntry() {
   }, []);
 
   if (!target) return null;
+
   return createPortal(
-    <Link href="/admin/shorts" className={styles.adminEntryLink}>
-      <ZapIcon size={17} fill="currentColor" /> Admin Shorts
-    </Link>,
+    <>
+      <Link href="/admin/shorts" className={styles.adminEntryLink}>
+        <ZapIcon size={17} fill="currentColor" /> Admin Shorts
+      </Link>
+      <Link href="/tools/youtube-bg" className={styles.adminEntryLink}>
+        <ClapperboardIcon size={17} /> YouTube BG
+      </Link>
+    </>,
     target,
   );
 }

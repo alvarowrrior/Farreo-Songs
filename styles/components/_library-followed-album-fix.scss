@@ -1,0 +1,11 @@
+.playlist-admin__card--library
+  > .playlist-admin__card-icon
+  > .song-artwork.playlist-admin__playlist-icon {
+  width: 100%;
+  height: 100%;
+  min-width: 100%;
+  max-width: none;
+  flex: 0 0 100%;
+  object-fit: cover;
+  object-position: center;
+}

@@ -6,6 +6,8 @@ import BackendAuthBridge from "@/components/BackendAuthBridge";
 import DesktopDiscVisualController from "@/components/DesktopDiscVisualController";
 import DesktopRadioClientLayer from "@/components/DesktopRadioClientLayer";
 import DesktopSongRadioContextEnhancer from "@/components/DesktopSongRadioContextEnhancer";
+import DesktopYoutubeVideoBackground from "@/components/DesktopYoutubeVideoBackground";
+import DesktopYoutubeVideoToggle from "@/components/DesktopYoutubeVideoToggle";
 import MobileCurrentTrackClickFix from "@/components/MobileCurrentTrackClickFix";
 import MobileThemeSearchEnhancer from "@/components/MobileThemeSearchEnhancer";
 import MusicWaveHeader from "@/components/MusicWaveHeader";
@@ -20,6 +22,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <>
       <BackendAuthBridge />
+      {!isSimplePage && <DesktopYoutubeVideoBackground />}
+      {!isSimplePage && <DesktopYoutubeVideoToggle />}
       {!isSimplePage && <AppSidebar />}
       {!isSimplePage && <ThemeDiscoverySidebarEnhancer />}
       {!isSimplePage && <DesktopSongRadioContextEnhancer />}

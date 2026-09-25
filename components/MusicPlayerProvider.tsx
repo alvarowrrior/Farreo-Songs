@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useMemo, useRef, useState, useEffect, type ReactNode, type SyntheticEvent } from "react";
-import { ArrowRightIcon, DicesIcon, Mic2Icon, PauseIcon, PlayIcon, RotateCcwIcon, ShuffleIcon, SkipBackIcon, SkipForwardIcon, Volume2Icon, VolumeXIcon } from "lucide-react";
+import { ArrowRightIcon, DicesIcon, LoaderCircleIcon, Mic2Icon, PauseIcon, PlayIcon, RotateCcwIcon, ShuffleIcon, SkipBackIcon, SkipForwardIcon, Volume2Icon, VolumeXIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { MUSIC_API_URL, calibrateRadioClock, getLiveRadioPosition, getMediaUrl, getRadioServerNow, radioPatch, radioPost, type RadioState } from "@/lib/radioApi";
@@ -9,6 +9,7 @@ import { computeCurrentLyric } from "@/lib/lyrics";
 import SongArtwork from "@/components/SongArtwork";
 import { claimAlbumFirstPlay } from "@/lib/albums";
 import { recordSongListened } from "@/lib/listeningHistory";
+import { notifyYoutubeVideoSeek, prepareYoutubeVideoStart } from "@/lib/youtubeVideoStartCoordinator";
 
 export interface MusicTrack {
   id: string;
@@ -393,6 +394,9 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   const hasRestoredRef = useRef(false);
   const pendingPlayRef = useRef(false);
   const pitchLockedRef = useRef(false);
+  const localVideoStartAbortRef = useRef<AbortController | null>(null);
+  const localVideoStartGenerationRef = useRef(0);
+  const preloadedAdvanceTrackIdRef = useRef<string | null>(null);
   const [storageReady, setStorageReady] = useState(false);
   const [playerMode, setPlayerMode] = useState<"local" | "radio">("local");
   const [isRadioBuffering, setIsRadioBuffering] = useState(false);
@@ -403,6 +407,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   const [currentTrack, setCurrentTrack] = useState<MusicTrack | null>(null);
   const [currentSource, setCurrentSource] = useState<MusicPlaylistSource | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isPlaybackPreparing, setIsPlaybackPreparing] = useState(false);
   const [playbackPitch, setPlaybackPitch] = useState(1);
   const [volume, setVolume] = useState(0.8);
   const [lastNonZeroVolume, setLastNonZeroVolume] = useState(0.8);
@@ -701,6 +706,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   };
 
   const enableRadioMode = async () => {
+    cancelLocalVideoPreparation();
     playerModeRef.current = "radio";
     setPlayerMode("radio");
     if (!radioEventsRef.current) {
@@ -739,8 +745,65 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     lastRadioItemRef.current = null;
   };
 
+  const cancelLocalVideoPreparation = () => {
+    localVideoStartGenerationRef.current += 1;
+    localVideoStartAbortRef.current?.abort();
+    localVideoStartAbortRef.current = null;
+    setIsPlaybackPreparing(false);
+  };
+
+  const prepareLocalVideoStart = async (
+    track: MusicTrack,
+    source: MusicPlaylistSource | null,
+  ) => {
+    const generation = localVideoStartGenerationRef.current + 1;
+    localVideoStartGenerationRef.current = generation;
+    localVideoStartAbortRef.current?.abort();
+
+    const controller = new AbortController();
+    localVideoStartAbortRef.current = controller;
+    setIsPlaybackPreparing(false);
+
+    try {
+      await prepareYoutubeVideoStart({
+        trackId: track.id,
+        source,
+        signal: controller.signal,
+        onWaitingChange: (waiting) => {
+          if (
+            localVideoStartGenerationRef.current === generation
+            && localVideoStartAbortRef.current === controller
+            && !controller.signal.aborted
+          ) {
+            setIsPlaybackPreparing(waiting);
+          }
+        },
+      });
+    } catch {
+      // The video background is optional. Any failure falls through to audio.
+    }
+
+    const stillCurrent = (
+      !controller.signal.aborted
+      && localVideoStartGenerationRef.current === generation
+      && localVideoStartAbortRef.current === controller
+    );
+
+    if (stillCurrent) {
+      localVideoStartAbortRef.current = null;
+      setIsPlaybackPreparing(false);
+    }
+
+    return stillCurrent;
+  };
+
   const startTrack = (track: MusicTrack, source = queueSource) => {
     if (!track.url) return;
+    // Invalidate an earlier start before the first asynchronous album claim.
+    // Otherwise its completion could select/play an obsolete song later.
+    cancelLocalVideoPreparation();
+    preloadedAdvanceTrackIdRef.current = null;
+    const startGeneration = localVideoStartGenerationRef.current;
     if (playerMode === "radio") {
       disableRadioMode();
     }
@@ -751,12 +814,14 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       if (track.firstListenPending && track.albumId && track.albumEntryId) {
         try {
           const claim = await claimAlbumFirstPlay(track.albumId, track.albumEntryId);
+          if (startGeneration !== localVideoStartGenerationRef.current) return;
           forcePitch = claim.forcePitch;
           if (claim.firstPlay || !claim.forcePitch) {
             nextTrack = { ...track, firstListenPending: false };
             setQueue((current) => current.map((item) => item.albumEntryId === track.albumEntryId ? nextTrack : item));
           }
         } catch {
+          if (startGeneration !== localVideoStartGenerationRef.current) return;
           // Conservador: si no podemos confirmar la primera escucha, mantenemos x1
           // y reintentamos guardar el comienzo sin desbloquear esta reproduccion.
           forcePitch = true;
@@ -773,6 +838,8 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
         }
       }
 
+      if (startGeneration !== localVideoStartGenerationRef.current) return;
+
       pitchLockedRef.current = forcePitch;
       setIsPitchLocked(forcePitch);
 
@@ -786,39 +853,50 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       }
       setPlaybackPitch(pitch);
 
-      pendingPlayRef.current = true;
+      // New local starts own the decision to call play(). Metadata/canplay are
+      // allowed to load while a videoclip is being prepared, but they may not
+      // start audio early.
+      pendingPlayRef.current = false;
       preloadedTrackRef.current = null;
       preloadedUrlRef.current = "";
+      preloadedAdvanceTrackIdRef.current = null;
       setCurrentTrack(nextTrack);
       setCurrentSource(source);
       setCurrentTime(0);
       setVisualCurrentTime(0);
       setDuration(0);
-      setIsPlaying(true);
-    // Cargamos el audio de forma IMPERATIVA aqui mismo (dentro del stack del
-    // evento onEnded), sin esperar al re-render de React. Chrome aplaza/congela
-    // el render de pestanas en segundo plano, asi que si dependieramos del
-    // src controlado por React el siguiente tema no llegaba a cargarse y la
-    // reproduccion se paraba al cambiar de cancion con la pantalla bloqueada.
-    // CRITICO: el play() tambien debe pedirse AQUI, en el mismo stack. Con la
-    // pantalla bloqueada Chrome puede congelar la pagina en cuanto deja de
-    // sonar audio; si esperamos a onLoadedMetadata/onCanPlay para llamar a
-    // play(), ese evento puede no llegar a ejecutarse nunca y la musica se
-    // queda parada (era el fallo de "se para tras 2-3 canciones"). Un play()
-    // pendiente mantiene al elemento como "potencialmente reproduciendo" y el
-    // navegador sigue cargando y arranca solo en cuanto hay datos.
+      setIsPlaying(false);
+
       const audio = audioRef.current;
-      if (audio) {
-        audio.src = nextTrack.url!;
-        audio.load();
-        audio.preservesPitch = false;
-        audio.defaultPlaybackRate = pitch;
-        audio.playbackRate = pitch;
-        audio.volume = volumeRef.current;
-        audio.play().catch(() => {
-          // onLoadedMetadata / onCanPlay reintentan via pendingPlayRef.
+      if (!audio) return;
+
+      // Load immediately so the audio itself can buffer while the optional
+      // background prepares. Crucially, there is no play() before the await.
+      audio.src = nextTrack.url!;
+      audio.load();
+      audio.preservesPitch = false;
+      audio.defaultPlaybackRate = pitch;
+      audio.playbackRate = pitch;
+      audio.volume = volumeRef.current;
+
+      const hiddenTab = document.visibilityState !== "visible";
+      const mayStart = hiddenTab
+        ? true
+        : await prepareLocalVideoStart(nextTrack, source ?? null);
+      if (
+        !mayStart
+        || audioRef.current !== audio
+        || (hiddenTab && startGeneration !== localVideoStartGenerationRef.current)
+      ) return;
+
+      pendingPlayRef.current = true;
+      void audio.play()
+        .then(() => {
+          if (audioRef.current === audio) pendingPlayRef.current = false;
+        })
+        .catch(() => {
+          // onLoadedMetadata / onCanPlay can retry while pendingPlayRef is true.
         });
-      }
     };
 
     void beginPlayback();
@@ -869,6 +947,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     }
 
     if (currentTrack?.id === track.id) {
+      if (isPlaybackPreparing) return;
       if (!audioRef.current) return;
       if (isPlaying) {
         audioRef.current.pause();
@@ -1044,44 +1123,76 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       playNext();
       return;
     }
-    // Una pista de album con primera escucha pendiente necesita preguntar al
-    // servidor si el pitch va bloqueado, y esa consulta es asincrona. Este
-    // intercambio es sincrono a proposito, asi que la mandamos por startTrack,
-    // que ya sabe hacerlo. Sin esto la primera escucha se saltaba el bloqueo
-    // cuando la cancion entraba encadenada en vez de elegida a mano.
+
     if (next.firstListenPending && next.albumId && next.albumEntryId) {
       playNext();
       return;
     }
-    // Venimos de una pista con el pitch bloqueado: hay que soltarlo. El
-    // bloqueo solo se ponia y quitaba en startTrack, asi que al encadenar
-    // automaticamente se quedaba activo y dejaba el slider muerto para el
-    // resto de la cola.
-    pitchLockedRef.current = false;
-    setIsPitchLocked(false);
-    if (currentTrack) setHistory((prev) => [...prev, currentTrack]);
-    if (isShuffle) {
-      shuffleRemainingRef.current = shuffleRemainingRef.current.filter((id) => id !== next.id);
-    }
-    // Intercambio activo <-> precargador
-    activeIdRef.current = activeIdRef.current === "a" ? "b" : "a";
-    audioRef.current = preEl;
-    const pitch = preloadedPitchRef.current;
-    preEl.preservesPitch = false;
-    preEl.playbackRate = pitch;
-    preEl.volume = volumeRef.current;
-    try { preEl.currentTime = 0; } catch { /* puede fallar antes de tener datos */ }
-    preloadedTrackRef.current = null;
-    setPlaybackPitch(pitch);
-    setCurrentTrack(next);
-    setCurrentSource(queueSource);
-    setCurrentTime(0);
-    setVisualCurrentTime(0);
-    setDuration(preEl.duration || 0);
-    setIsPlaying(true);
-    preEl.play().catch(() => setIsPlaying(false));
-    if (oldActive && !opts?.letOldFinish) { try { oldActive.pause(); } catch { /* no-op */ } }
-    // La precarga de la NUEVA siguiente la hace el efecto al cambiar currentTrack.
+
+    // onTimeUpdate (~0.3s early) and onEnded can both arrive while the video is
+    // preparing. One track gets one transition attempt.
+    if (preloadedAdvanceTrackIdRef.current === next.id) return;
+    preloadedAdvanceTrackIdRef.current = next.id;
+
+    const beginAdvance = async () => {
+      pendingPlayRef.current = false;
+      const hiddenTab = document.visibilityState !== "visible";
+      if (hiddenTab) cancelLocalVideoPreparation();
+      const mayStart = hiddenTab
+        ? true
+        : await prepareLocalVideoStart(next, queueSource);
+
+      if (
+        !mayStart
+        || preloadedAdvanceTrackIdRef.current !== next.id
+        || preloadedTrackRef.current?.id !== next.id
+        || getPreloadAudio() !== preEl
+      ) {
+        if (preloadedAdvanceTrackIdRef.current === next.id) {
+          preloadedAdvanceTrackIdRef.current = null;
+        }
+        return;
+      }
+
+      pitchLockedRef.current = false;
+      setIsPitchLocked(false);
+      if (currentTrack) setHistory((prev) => [...prev, currentTrack]);
+      if (isShuffle) {
+        shuffleRemainingRef.current = shuffleRemainingRef.current.filter((id) => id !== next.id);
+      }
+
+      // Swap only after the optional video is ready (or has failed open). Until
+      // here the outgoing track remains the active player.
+      activeIdRef.current = activeIdRef.current === "a" ? "b" : "a";
+      audioRef.current = preEl;
+      const pitch = preloadedPitchRef.current;
+      preEl.preservesPitch = false;
+      preEl.playbackRate = pitch;
+      preEl.volume = volumeRef.current;
+      try { preEl.currentTime = 0; } catch { /* puede fallar antes de tener datos */ }
+      preloadedTrackRef.current = null;
+      preloadedAdvanceTrackIdRef.current = null;
+      setPlaybackPitch(pitch);
+      setCurrentTrack(next);
+      setCurrentSource(queueSource);
+      setCurrentTime(0);
+      setVisualCurrentTime(0);
+      setDuration(preEl.duration || 0);
+      setIsPlaying(false);
+
+      pendingPlayRef.current = true;
+      void preEl.play()
+        .then(() => {
+          if (audioRef.current === preEl) pendingPlayRef.current = false;
+        })
+        .catch(() => setIsPlaying(false));
+
+      if (oldActive && !opts?.letOldFinish) {
+        try { oldActive.pause(); } catch { /* no-op */ }
+      }
+    };
+
+    void beginAdvance();
   };
 
   // Handlers compartidos por los dos <audio>. Solo el ELEMENTO ACTIVO controla
@@ -1231,6 +1342,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   };
 
   const togglePlayPause = () => {
+    if (isPlaybackPreparing) return;
     if (playerMode === "radio") {
       if (radioState?.status === "playing" && !isPlaying && audioRef.current) {
         void joinLiveRadioAudio(true);
@@ -1295,6 +1407,9 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       audioRef.current.currentTime = val;
       setCurrentTime(val);
       setVisualCurrentTime(val);
+      // Seek the background in the same interaction, before React's time
+      // update. This includes an explicit jump to 0 while audio is playing.
+      if (currentTrack?.id) notifyYoutubeVideoSeek(currentTrack.id, val);
     }
   };
 
@@ -1310,6 +1425,9 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   };
 
   const stop = () => {
+    cancelLocalVideoPreparation();
+    pendingPlayRef.current = false;
+    preloadedAdvanceTrackIdRef.current = null;
     if (playerMode === "radio") {
       disableRadioMode();
     }
@@ -1370,6 +1488,10 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
 
   useEffect(() => {
     return () => {
+      localVideoStartGenerationRef.current += 1;
+      const pendingVideoStart = localVideoStartAbortRef.current;
+      localVideoStartAbortRef.current = null;
+      pendingVideoStart?.abort();
       if (radioEventsRef.current) {
         radioEventsRef.current.close();
         radioEventsRef.current = null;
@@ -1748,6 +1870,9 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
                 {playerMode === "radio" && isRadioAwaitingUserGesture && (
                   <span className="playlist-admin__now-playing-sync">Pulsa play para unirte</span>
                 )}
+                {playerMode === "local" && isPlaybackPreparing && (
+                  <span className="playlist-admin__now-playing-sync">Preparando videoclip...</span>
+                )}
                 <span className="playlist-admin__now-playing-pitch-row">
                   <span className="playlist-admin__now-playing-pitch">Pitch: {playbackPitch.toFixed(2)}x</span>
                   <button
@@ -1776,8 +1901,17 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
               {isShuffle ? <ShuffleIcon size={16} /> : <ArrowRightIcon size={16} />}
             </button>
             <button className="playlist-admin__control-btn" onClick={playPrev} title="Anterior"><SkipBackIcon size={16} /></button>
-            <button className="playlist-admin__control-btn playlist-admin__control-btn--play" onClick={togglePlayPause} title={isPlaying ? "Pausar" : "Reproducir"}>
-              {isPlaying ? <PauseIcon size={16} /> : <PlayIcon size={16} />}
+            <button
+              className="playlist-admin__control-btn playlist-admin__control-btn--play"
+              onClick={togglePlayPause}
+              disabled={isPlaybackPreparing}
+              title={isPlaybackPreparing ? "Preparando videoclip" : isPlaying ? "Pausar" : "Reproducir"}
+            >
+              {isPlaybackPreparing
+                ? <LoaderCircleIcon className="farreo-video-start-spinner" size={16} />
+                : isPlaying
+                  ? <PauseIcon size={16} />
+                  : <PlayIcon size={16} />}
             </button>
             <button className="playlist-admin__control-btn" onClick={playNext} title="Siguiente"><SkipForwardIcon size={16} /></button>
             <button

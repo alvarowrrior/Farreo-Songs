@@ -1,0 +1,33 @@
+html[data-farreo-youtube-video-background="true"] .app-main {
+  z-index: 1;
+  background: transparent !important;
+}
+
+html[data-farreo-youtube-video-background="true"]
+  .app-main--with-sidebar
+  > .playlist-admin {
+  background-color: transparent !important;
+}
+
+html[data-farreo-youtube-video-background="true"]
+  .app-main--with-sidebar
+  > .playlist-admin::before {
+  // Keep Farreo's normal header wash, but over a moving background the final
+  // color must become transparent. Ending in a dark solid color made the whole
+  // 330px pseudo-element read as a rectangle and visually cut the first row.
+  background:
+    linear-gradient(
+      180deg,
+      rgba(92, 92, 96, 0.42) 0%,
+      rgba(63, 63, 68, 0.24) 56%,
+      rgba(24, 24, 27, 0.08) 82%,
+      rgba(18, 18, 20, 0) 100%
+    ) !important;
+}
+
+html[data-farreo-youtube-video-background="true"]
+  .app-main--with-sidebar
+  > .playlist-admin
+  > .playlist-admin__content {
+  background: transparent !important;
+}

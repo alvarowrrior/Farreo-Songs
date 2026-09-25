@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { onAuthStateChanged, updateProfile, type User } from "firebase/auth";
 import ProfileDiscPreference from "@/components/ProfileDiscPreference";
+import ProfileAdvancedCoverPreference from "@/components/ProfileAdvancedCoverPreference";
+import ProfileYoutubeRadioBackgroundPreference from "@/components/ProfileYoutubeRadioBackgroundPreference";
 import { auth } from "@/lib/firebase";
 
 export default function EditProfilePage() {
@@ -161,6 +163,8 @@ export default function EditProfilePage() {
         </div>
 
         <ProfileDiscPreference />
+        <ProfileAdvancedCoverPreference />
+        <ProfileYoutubeRadioBackgroundPreference />
 
         <button
           type="button"
