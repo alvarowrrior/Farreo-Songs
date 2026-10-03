@@ -94,6 +94,8 @@ export default function DesktopYoutubeVideoBackground() {
   const initialVideoSyncKeyRef = useRef<string | null>(null);
   const audioTimelineRef = useRef<AudioTimelineSample | null>(null);
   const pendingVideoStartRef = useRef<PendingVideoStart | null>(null);
+  const nonBlockingRetryCountRef = useRef(new Map<string, number>());
+  const nonBlockingRetryTimersRef = useRef(new Map<string, number>());
 
   const [stream, setStream] = useState<StreamInfo | null>(null);
   const [readySongId, setReadySongId] = useState<string | null>(null);
@@ -104,6 +106,7 @@ export default function DesktopYoutubeVideoBackground() {
     DEFAULT_YOUTUBE_RADIO_BACKGROUND_ENABLED,
   );
   const [isDesktop, setIsDesktop] = useState(false);
+  const [loadRetryNonce, setLoadRetryNonce] = useState(0);
 
   currentTrackRef.current = currentTrack;
   currentSourceRef.current = currentSource;
@@ -204,6 +207,7 @@ export default function DesktopYoutubeVideoBackground() {
   }, []);
 
   const unloadCurrentVideo = useCallback(() => {
+    retriedFreshRef.current = false;
     const video = videoRef.current;
     if (video) {
       try {
@@ -249,6 +253,32 @@ export default function DesktopYoutubeVideoBackground() {
     setReadySongId(null);
     streamRef.current = value;
     setStream(value);
+  }, []);
+
+  const clearNonBlockingRetry = useCallback((songId: string) => {
+    const timer = nonBlockingRetryTimersRef.current.get(songId);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      nonBlockingRetryTimersRef.current.delete(songId);
+    }
+    nonBlockingRetryCountRef.current.delete(songId);
+  }, []);
+
+  const scheduleNonBlockingRetry = useCallback((songId: string) => {
+    if (!songId || nonBlockingRetryTimersRef.current.has(songId)) return;
+
+    const attempt = nonBlockingRetryCountRef.current.get(songId) || 0;
+    if (attempt >= 2) return;
+
+    nonBlockingRetryCountRef.current.set(songId, attempt + 1);
+    const timer = window.setTimeout(() => {
+      nonBlockingRetryTimersRef.current.delete(songId);
+      if (currentTrackRef.current?.id === songId) {
+        setLoadRetryNonce((value) => value + 1);
+      }
+    }, attempt === 0 ? 900 : 2500);
+
+    nonBlockingRetryTimersRef.current.set(songId, timer);
   }, []);
 
   useEffect(() => {
@@ -396,8 +426,8 @@ export default function DesktopYoutubeVideoBackground() {
       // endpoint is unhealthy, fail open rather than making audio depend on it.
       const hasVideo = await Promise.race([
         hasVideoAssociation(request.trackId),
-        new Promise<boolean>((resolve) => {
-          window.setTimeout(() => resolve(false), 3000);
+        new Promise<null>((resolve) => {
+          window.setTimeout(() => resolve(null), 3000);
         }),
       ]);
 
@@ -407,8 +437,11 @@ export default function DesktopYoutubeVideoBackground() {
         return;
       }
 
-      if (!hasVideo) {
+      if (hasVideo !== true) {
         settlePendingVideoStart(false, request.signal);
+        if (hasVideo === null) {
+          scheduleNonBlockingRetry(request.trackId);
+        }
         await waitForVideo;
         return;
       }
@@ -466,6 +499,7 @@ export default function DesktopYoutubeVideoBackground() {
       }
     } catch {
       settlePendingVideoStart(false, request.signal);
+      scheduleNonBlockingRetry(request.trackId);
     }
 
     await waitForVideo;
@@ -474,6 +508,7 @@ export default function DesktopYoutubeVideoBackground() {
     hasVideoAssociation,
     setActiveStream,
     settlePendingVideoStart,
+    scheduleNonBlockingRetry,
   ]);
 
   useEffect(() => (
@@ -530,6 +565,11 @@ export default function DesktopYoutubeVideoBackground() {
     const trackId = currentTrack?.id || null;
     if (!contextEligible || !trackId) return;
 
+    // Radio audio is authoritative. A videoclip can begin resolving only after
+    // this client has already joined the audio timeline, so video work can
+    // never delay or define the shared Radio transition.
+    if (playerMode === "radio" && !isPlaying) return;
+
     if (
       streamRef.current?.songId === trackId
       || (Date.now() - (noVideoTracksRef.current.get(trackId) ?? 0) < MISSING_VIDEO_CACHE_MS)
@@ -550,9 +590,12 @@ export default function DesktopYoutubeVideoBackground() {
           );
           if (availabilityResponse.status === 404) {
             noVideoTracksRef.current.set(trackId, Date.now());
+            clearNonBlockingRetry(trackId);
             return;
           }
-          if (!availabilityResponse.ok) return;
+          if (!availabilityResponse.ok) {
+            throw new Error(`Videoclip association HTTP ${availabilityResponse.status}`);
+          }
 
           const availability = await availabilityResponse.json().catch(() => ({})) as {
             youtubeUrl?: string | null;
@@ -560,6 +603,7 @@ export default function DesktopYoutubeVideoBackground() {
 
           if (!availability.youtubeUrl) {
             noVideoTracksRef.current.set(trackId, Date.now());
+            clearNonBlockingRetry(trackId);
             return;
           }
 
@@ -588,16 +632,23 @@ export default function DesktopYoutubeVideoBackground() {
             setActiveStream(info);
           }
         } catch {
-          // Optional visual only.
+          // Optional visual only. Retry a couple of transient resolver/network
+          // failures without ever blocking or pausing the audio.
+          scheduleNonBlockingRetry(trackId);
         }
       })();
-    }, 120);
+    }, playerMode === "radio" ? 650 : 120);
 
     return () => window.clearTimeout(timer);
   }, [
     contextEligible,
     currentTrack?.id,
     getStreamInfo,
+    isPlaying,
+    loadRetryNonce,
+    playerMode,
+    clearNonBlockingRetry,
+    scheduleNonBlockingRetry,
     setActiveStream,
   ]);
 
@@ -768,6 +819,11 @@ export default function DesktopYoutubeVideoBackground() {
       }
 
       // Force exactly one correction before the tab becomes useful again.
+      // If a previous non-blocking resolution failed while hidden, selected-tab
+      // visibility gives it another immediate chance to recover.
+      if (!streamRef.current && currentTrackRef.current?.id) {
+        setLoadRetryNonce((value) => value + 1);
+      }
       seekVideoToPlayback();
       applyVideoPlaybackState();
     };
@@ -797,6 +853,8 @@ export default function DesktopYoutubeVideoBackground() {
   useEffect(() => {
     return () => {
       settlePendingVideoStart(true);
+      nonBlockingRetryTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+      nonBlockingRetryTimersRef.current.clear();
       unloadCurrentVideo();
     };
   }, [settlePendingVideoStart, unloadCurrentVideo]);
@@ -837,6 +895,7 @@ export default function DesktopYoutubeVideoBackground() {
 
           readySongIdRef.current = stream.songId;
           setReadySongId(stream.songId);
+          clearNonBlockingRetry(stream.songId);
 
           // Exactly one initial synchronization per direct stream. A pending
           // gapless next track starts at zero, so it needs no seek until it is
@@ -880,6 +939,10 @@ export default function DesktopYoutubeVideoBackground() {
                   if (isPendingStart && pendingSignal) {
                     settlePendingVideoStart(false, pendingSignal);
                   }
+                  if (currentTrackRef.current?.id === failedSongId) {
+                    unloadCurrentVideo();
+                    scheduleNonBlockingRetry(failedSongId);
+                  }
                   return;
                 }
 
@@ -892,12 +955,22 @@ export default function DesktopYoutubeVideoBackground() {
                 if (isPendingStart && pendingSignal) {
                   settlePendingVideoStart(false, pendingSignal);
                 }
+                if (currentTrackRef.current?.id === failedSongId) {
+                  unloadCurrentVideo();
+                  scheduleNonBlockingRetry(failedSongId);
+                }
               });
             return;
           }
 
           if (isPendingStart && pendingSignal) {
             settlePendingVideoStart(false, pendingSignal);
+          }
+
+          if (isCurrentSong) {
+            streamCacheRef.current.delete(failedSongId);
+            unloadCurrentVideo();
+            scheduleNonBlockingRetry(failedSongId);
           }
         }}
       />

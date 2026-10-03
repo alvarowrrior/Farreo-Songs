@@ -125,7 +125,6 @@ export default function DesktopRadioClientLayer() {
     autoRandomPitch,
     currentSource,
     currentTrack,
-    disableRadioMode,
     duration,
     handlePitchChange,
     handleSeek,
@@ -138,9 +137,11 @@ export default function DesktopRadioClientLayer() {
     playbackPitch,
     playerMode,
     radioState,
+    restoreLocalPlayer,
     setAutoRandomPitch,
     setIsShuffle,
     setLyricsEnabled,
+    stop,
     togglePlayPause,
     toggleTrack,
     volume,
@@ -240,46 +241,18 @@ export default function DesktopRadioClientLayer() {
     }
   }, [isDesktop, playerMode]);
 
-  const restoreStoredSnapshotForReload = () => {
+  const disconnectOnly = () => {
     const snapshot = localSnapshot || readBackup();
-    if (!snapshot) {
-      try {
-        window.localStorage.removeItem(PLAYER_STORAGE_KEY);
-      } catch {
-        // no-op
-      }
+    clearBackup();
+
+    if (snapshot) {
+      restoreLocalPlayer(snapshot);
       return;
     }
 
-    try {
-      window.localStorage.setItem(PLAYER_STORAGE_KEY, JSON.stringify({
-        currentTrack: snapshot.currentTrack,
-        queue: snapshot.queue,
-        queueSource: snapshot.queueSource,
-        currentSource: snapshot.currentSource,
-        currentTime: snapshot.currentTime,
-        playbackPitch: snapshot.playbackPitch,
-        volume: snapshot.volume,
-        lastNonZeroVolume: snapshot.lastNonZeroVolume ?? snapshot.volume ?? 0.8,
-        isShuffle: snapshot.isShuffle,
-        autoRandomPitch: snapshot.autoRandomPitch,
-        lyricsEnabled: snapshot.lyricsEnabled,
-      }));
-    } catch {
-      // Provider will simply come back empty if storage is unavailable.
-    }
-  };
-
-  const disconnectOnly = () => {
-    restoreStoredSnapshotForReload();
-    clearBackup();
-    disableRadioMode();
-
-    // The provider currently reuses the physical audio element for local and
-    // radio playback. Reloading after restoring its own persisted local state
-    // is the only way to return the exact previous local player PAUSED without
-    // briefly starting it. No radio endpoint is called here.
-    window.location.reload();
+    // No local session existed before joining Radio. This disconnects only
+    // this browser; it never changes the shared server Radio state.
+    stop();
   };
 
   const resumeLocalPlayer = () => {

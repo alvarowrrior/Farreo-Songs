@@ -69,6 +69,7 @@ interface MusicPlayerContextValue {
   setLyricsEnabled: (val: boolean | ((prev: boolean) => boolean)) => void;
   enableRadioMode: () => Promise<void>;
   disableRadioMode: () => void;
+  restoreLocalPlayer: (snapshot: LocalPlayerRestoreState) => void;
   getAudioFrequencyData: () => Uint8Array<ArrayBuffer> | null;
   stop: () => void;
 }
@@ -108,6 +109,11 @@ interface StoredPlayerState {
   autoRandomPitch: boolean;
   lyricsEnabled: boolean;
 }
+
+type LocalPlayerRestoreState = Omit<StoredPlayerState, "lastNonZeroVolume"> & {
+  lastNonZeroVolume?: number;
+  duration?: number;
+};
 
 // La respuesta de una playlist incluye letras y otros metadatos que pueden ser
 // bastante grandes. Persistirlos una vez por cada elemento de la cola puede
@@ -616,6 +622,22 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     const radioQueue = state.queue.map(radioTrackFromItem);
     const itemChanged = lastRadioItemRef.current !== item.itemId;
     const audioBeforeSync = audioRef.current;
+
+    // Radio transitions must switch the media source imperatively. Waiting for
+    // the React currentTrack effect can leave an ended <audio> on the previous
+    // source long enough for the scheduled play() to target the wrong song.
+    // This mirrors the local player's background-safe source switching.
+    if (itemChanged && audioBeforeSync && track.url) {
+      pendingPlayRef.current = false;
+      try {
+        audioBeforeSync.pause();
+        audioBeforeSync.src = track.url;
+        audioBeforeSync.load();
+      } catch {
+        // The idempotent currentTrack effect remains a fallback.
+      }
+    }
+
     const driftBeforeSync = audioBeforeSync ? Math.abs(audioBeforeSync.currentTime - targetPosition) : 0;
     const shouldUpdateClockState = itemChanged ||
       state.status !== "playing" ||
@@ -750,6 +772,93 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     localVideoStartAbortRef.current?.abort();
     localVideoStartAbortRef.current = null;
     setIsPlaybackPreparing(false);
+  };
+
+  const restoreLocalPlayer = (snapshot: LocalPlayerRestoreState) => {
+    cancelLocalVideoPreparation();
+    pendingPlayRef.current = false;
+    preloadedTrackRef.current = null;
+    preloadedUrlRef.current = "";
+    preloadedAdvanceTrackIdRef.current = null;
+    disableRadioMode();
+
+    const restoredTrack = snapshot.currentTrack ?? null;
+    const restoredQueue = Array.isArray(snapshot.queue) ? snapshot.queue : [];
+    const restoredTime = Number.isFinite(snapshot.currentTime)
+      ? Math.max(0, snapshot.currentTime)
+      : 0;
+    const restoredPitch = Number.isFinite(snapshot.playbackPitch)
+      ? Math.max(0.5, Math.min(1.5, snapshot.playbackPitch))
+      : 1;
+    const restoredVolume = clampVolume(
+      Number.isFinite(snapshot.volume) ? snapshot.volume : 0.8,
+    );
+    const restoredLastNonZeroVolume = clampVolume(
+      typeof snapshot.lastNonZeroVolume === "number"
+        && Number.isFinite(snapshot.lastNonZeroVolume)
+        ? snapshot.lastNonZeroVolume
+        : restoredVolume > 0.01
+          ? restoredVolume
+          : 0.8,
+    ) || 0.8;
+
+    volumeRef.current = restoredVolume;
+    lastNonZeroVolumeRef.current = restoredLastNonZeroVolume;
+    pitchLockedRef.current = false;
+
+    setQueue(restoredQueue);
+    setQueueSource(snapshot.queueSource ?? null);
+    setCurrentTrack(restoredTrack);
+    setCurrentSource(snapshot.currentSource ?? null);
+    setPlaybackPitch(restoredPitch);
+    setVolume(restoredVolume);
+    setLastNonZeroVolume(restoredLastNonZeroVolume);
+    setIsShuffle(snapshot.isShuffle);
+    setAutoRandomPitch(snapshot.autoRandomPitch);
+    setLyricsEnabled(snapshot.lyricsEnabled);
+    setHistory([]);
+    setIsPitchLocked(false);
+    setCurrentTime(restoredTime);
+    setVisualCurrentTime(restoredTime);
+    setDuration(snapshot.duration || restoredTrack?.duration || 0);
+    setIsPlaying(false);
+    setIsRadioBuffering(false);
+
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    audio.pause();
+    audio.preservesPitch = false;
+    audio.defaultPlaybackRate = restoredPitch;
+    audio.playbackRate = restoredPitch;
+    audio.volume = restoredVolume;
+
+    if (!restoredTrack?.url) {
+      audio.removeAttribute("src");
+      audio.load();
+      return;
+    }
+
+    audio.src = restoredTrack.url;
+    audio.load();
+
+    const restorePosition = () => {
+      if (audioRef.current !== audio) return;
+      try {
+        const safeTime = Number.isFinite(audio.duration) && audio.duration > 0
+          ? Math.min(restoredTime, Math.max(0, audio.duration - 0.05))
+          : restoredTime;
+        audio.currentTime = safeTime;
+      } catch {
+        // A later metadata event/state render can retry the stored position.
+      }
+    };
+
+    if (audio.readyState >= 1) {
+      restorePosition();
+    } else {
+      audio.addEventListener("loadedmetadata", restorePosition, { once: true });
+    }
   };
 
   const prepareLocalVideoStart = async (
@@ -1300,7 +1409,23 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     onCanPlay: (e: SyntheticEvent<HTMLAudioElement>) => {
       if (e.currentTarget !== audioRef.current) return;
       if (playerModeRef.current === "radio" && radioStateRef.current?.status === "playing") {
+        const liveState = radioStateRef.current;
         syncAudioToLiveRadio(pendingRadioJoinSyncRef.current ? 0.5 : 0.75);
+
+        // The scheduled transition may have fired before the new media source
+        // became playable. canplay is the reliable recovery point, but we keep
+        // respecting the shared server start grace so no client starts early.
+        const startsInFuture = (
+          liveState.anchorUpdatedAt > getRadioServerNow()
+          && getLiveRadioPosition(liveState) <= 0.05
+        );
+        if (
+          !startsInFuture
+          && e.currentTarget.paused
+          && !radioAwaitingUserGestureRef.current
+        ) {
+          void joinLiveRadioAudio();
+        }
         return;
       }
       if (playerModeRef.current !== "radio" && pendingPlayRef.current) {
@@ -1769,6 +1894,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     updateShuffle,
     enableRadioMode,
     disableRadioMode,
+    restoreLocalPlayer,
     stop,
   });
   useEffect(() => {
@@ -1785,6 +1911,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       updateShuffle,
       enableRadioMode,
       disableRadioMode,
+      restoreLocalPlayer,
       stop,
     };
   });
@@ -1802,6 +1929,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     setIsShuffle: (val: boolean | ((prev: boolean) => boolean)) => apiRef.current.updateShuffle(val),
     enableRadioMode: () => apiRef.current.enableRadioMode(),
     disableRadioMode: () => apiRef.current.disableRadioMode(),
+    restoreLocalPlayer: (snapshot: LocalPlayerRestoreState) => apiRef.current.restoreLocalPlayer(snapshot),
     stop: () => apiRef.current.stop(),
   }), []);
 
