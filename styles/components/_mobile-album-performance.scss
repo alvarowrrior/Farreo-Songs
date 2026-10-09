@@ -1,0 +1,17 @@
+// Album WebGL is already composited over the playlist. Per-row backdrop blur
+// forces repeated background sampling on many Android GPUs on every frame.
+// Keep nearly the same translucent look without the high-cost GPU blur pass.
+.mobile-farreo--album-disc {
+  .mobile-farreo__song-row,
+  .mobile-farreo__album-track {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    background-color: rgba(17, 20, 18, 0.90);
+  }
+
+  .mobile-farreo__detail-actions {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    background: rgba(8, 10, 9, 0.94);
+  }
+}

@@ -9,6 +9,7 @@ import DesktopSongRadioContextEnhancer from "@/components/DesktopSongRadioContex
 import DesktopYoutubeVideoBackground from "@/components/DesktopYoutubeVideoBackground";
 import DesktopYoutubeVideoToggle from "@/components/DesktopYoutubeVideoToggle";
 import MobileCurrentTrackClickFix from "@/components/MobileCurrentTrackClickFix";
+import MobileAppUpdateLegacyFeedback from "@/components/MobileAppUpdateLegacyFeedback";
 import MobileThemeSearchEnhancer from "@/components/MobileThemeSearchEnhancer";
 import MusicWaveHeader from "@/components/MusicWaveHeader";
 import DesktopSongInfoSidebar from "@/components/DesktopSongInfoSidebar";
@@ -30,6 +31,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       {!isSimplePage && <DesktopRadioClientLayer />}
       {!isSimplePage && <DesktopDiscVisualController />}
       {isMobilePage && <MobileCurrentTrackClickFix />}
+      {isMobilePage && <MobileAppUpdateLegacyFeedback />}
       {isMobilePage && <MobileThemeSearchEnhancer />}
       <MusicWaveHeader simple={isSimplePage} />
       {!isSimplePage && <DesktopSongInfoSidebar />}

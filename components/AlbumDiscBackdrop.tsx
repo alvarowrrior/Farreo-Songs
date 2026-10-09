@@ -78,7 +78,14 @@ const makeDiscFaceMask = () => {
 
 export default function AlbumDiscBackdrop({ artworkUrl, isPlaying, mobile = false, visible = true }: AlbumDiscBackdropProps) {
   const { getAudioFrequencyData } = useMusicPlayer();
-  const resolvedArtwork = artworkUrl ? getMediaUrl(artworkUrl) : "";
+  // The album disc is deliberately a BACKGROUND visual. On mobile, asking the
+  // backend for a 256px song icon avoids decoding/uploading the full image as a
+  // WebGL texture (often while a playlist is also loading its thumbnails).
+  const optimizedArtwork = mobile && artworkUrl?.match(/^\/song-icons\/([^/?#]+)(\?[^#]*)?$/);
+  const artworkSource = optimizedArtwork
+    ? `/song-icon/256/${encodeURIComponent(optimizedArtwork[1])}${optimizedArtwork[2] || ""}`
+    : artworkUrl;
+  const resolvedArtwork = artworkSource ? getMediaUrl(artworkSource) : "";
   const [readyArtwork, setReadyArtwork] = useState<string | null>(null);
   const textureReady = readyArtwork === resolvedArtwork;
   const discVisible = visible && textureReady;
@@ -87,6 +94,8 @@ export default function AlbumDiscBackdrop({ artworkUrl, isPlaying, mobile = fals
   const visibleRef = useRef(discVisible);
   const frequencyGetterRef = useRef(getAudioFrequencyData);
   const nativeFrequencyDataRef = useRef<Uint8Array | null>(null);
+  const lastNativeFrequencyAtRef = useRef(0);
+  const staticFrameDirtyRef = useRef(true);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const faceMaterialRef = useRef<THREE.MeshStandardMaterial | null>(null);
   const fallbackTextureRef = useRef<THREE.Texture | null>(null);
@@ -98,6 +107,7 @@ export default function AlbumDiscBackdrop({ artworkUrl, isPlaying, mobile = fals
 
   useEffect(() => {
     visibleRef.current = discVisible;
+    staticFrameDirtyRef.current = true;
   }, [discVisible]);
 
   useEffect(() => {
@@ -122,7 +132,12 @@ export default function AlbumDiscBackdrop({ artworkUrl, isPlaying, mobile = fals
     const listener = addFarreoNativeListener("frequency", (payload) => {
       if (!payload || typeof payload !== "object") return;
       const samples = (payload as { samples?: unknown }).samples;
-      if (!Array.isArray(samples)) return;
+      if (!Array.isArray(samples) || !visibleRef.current || !playingRef.current || document.hidden) return;
+      // Rendering is limited to 24fps on mobile; converting every incoming
+      // frequency packet would still wake the WebView unnecessarily.
+      const now = performance.now();
+      if (mobile && now - lastNativeFrequencyAtRef.current < 40) return;
+      lastNativeFrequencyAtRef.current = now;
       nativeFrequencyDataRef.current = Uint8Array.from(
         samples.map((value) => Math.max(0, Math.min(255, Number(value) || 0))),
       );
@@ -130,25 +145,35 @@ export default function AlbumDiscBackdrop({ artworkUrl, isPlaying, mobile = fals
     return () => {
       void listener.then((handle) => handle?.remove()).catch(() => undefined);
     };
-  }, []);
+  }, [mobile]);
 
   useEffect(() => {
-    if (!isPlaying) return;
+    if (!isPlaying || !visible) return;
     void getFarreoNativeAudio()?.enableVisualization().catch(() => undefined);
-  }, [isPlaying]);
+  }, [isPlaying, visible]);
 
   useEffect(() => {
     const host = hostRef.current;
-    if (!host) return undefined;
+    // A browsed album with no album track playing must not allocate a GPU
+    // context or fetch textures just because its album page is open.
+    if (!host || (mobile && !visible)) return undefined;
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(mobile ? 38 : 31, 1, 0.1, 40);
     camera.position.set(0, mobile ? 4.6 : 4.1, mobile ? 8.8 : 8.3);
     camera.lookAt(0, 0, 0);
 
-    const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true, powerPreference: "low-power" });
+    // Mobile: the disc is translucent and largely under UI layers. Full-DPR
+    // MSAA + high frame rates costs far more GPU work than it visibly adds.
+    let renderer: THREE.WebGLRenderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ alpha: true, antialias: !mobile, powerPreference: "low-power" });
+    } catch {
+      // Do not take down the album UI on devices with no usable WebGL context.
+      return undefined;
+    }
     renderer.setClearColor(0x000000, 0);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, mobile ? 1.25 : 1.6));
+    renderer.setPixelRatio(mobile ? Math.min(window.devicePixelRatio || 1, 0.85) : Math.min(window.devicePixelRatio || 1, 1.6));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.domElement.setAttribute("aria-hidden", "true");
     renderer.domElement.dataset.albumDiscCanvas = mobile ? "mobile" : "desktop";
@@ -165,7 +190,7 @@ export default function AlbumDiscBackdrop({ artworkUrl, isPlaying, mobile = fals
     const spinningDisc = new THREE.Group();
     discPivot.add(spinningDisc);
 
-    const waveBarCount = mobile ? 88 : 120;
+    const waveBarCount = mobile ? 48 : 120;
     const waveLevels = new Float32Array(waveBarCount);
     const waveBarGeometry = new THREE.BoxGeometry(1, 0.003, mobile ? 0.032 : 0.028);
     const waveBarMaterial = new THREE.MeshBasicMaterial({
@@ -246,23 +271,23 @@ export default function AlbumDiscBackdrop({ artworkUrl, isPlaying, mobile = fals
       opacity: 0.66,
       side: THREE.DoubleSide,
     });
-    const topFaceGeometry = new THREE.CircleGeometry(2.42, 96);
+    const topFaceGeometry = new THREE.CircleGeometry(2.42, mobile ? 56 : 96);
     const topFace = new THREE.Mesh(topFaceGeometry, faceMaterial);
     topFace.rotation.x = -Math.PI / 2;
     topFace.position.y = DISC_HALF_THICKNESS + 0.001;
     spinningDisc.add(topFace);
 
-    const bottomFaceGeometry = new THREE.RingGeometry(0.145, 2.42, 96, 1);
+    const bottomFaceGeometry = new THREE.RingGeometry(0.145, 2.42, mobile ? 56 : 96, 1);
     const bottomFace = new THREE.Mesh(bottomFaceGeometry, undersideMaterial);
     bottomFace.rotation.x = Math.PI / 2;
     bottomFace.position.y = -(DISC_HALF_THICKNESS + 0.001);
     spinningDisc.add(bottomFace);
 
-    const outerWallGeometry = new THREE.CylinderGeometry(2.42, 2.42, DISC_THICKNESS, 96, 1, true);
+    const outerWallGeometry = new THREE.CylinderGeometry(2.42, 2.42, DISC_THICKNESS, mobile ? 56 : 96, 1, true);
     const outerWall = new THREE.Mesh(outerWallGeometry, edgeMaterial);
     spinningDisc.add(outerWall);
 
-    const innerWallGeometry = new THREE.CylinderGeometry(0.145, 0.145, DISC_THICKNESS, 64, 1, true);
+    const innerWallGeometry = new THREE.CylinderGeometry(0.145, 0.145, DISC_THICKNESS, mobile ? 32 : 64, 1, true);
     const innerWall = new THREE.Mesh(innerWallGeometry, edgeMaterial);
     spinningDisc.add(innerWall);
 
@@ -273,9 +298,9 @@ export default function AlbumDiscBackdrop({ artworkUrl, isPlaying, mobile = fals
       transparent: true,
       opacity: mobile ? 0.3 : 0.25,
     });
-    const ringRadii = [0.64, 1.12, 1.58, 1.97, 2.27];
+    const ringRadii = mobile ? [0.64, 1.12, 1.97, 2.27] : [0.64, 1.12, 1.58, 1.97, 2.27];
     const rings = ringRadii.map((radius) => {
-      const geometry = new THREE.TorusGeometry(radius, radius === 2.27 ? 0.026 : 0.012, 8, 96);
+      const geometry = new THREE.TorusGeometry(radius, radius === 2.27 ? 0.026 : 0.012, mobile ? 5 : 8, mobile ? 48 : 96);
       const mesh = new THREE.Mesh(geometry, ringMaterial);
       mesh.rotation.x = Math.PI / 2;
       mesh.position.y = DISC_HALF_THICKNESS + 0.003;
@@ -283,7 +308,7 @@ export default function AlbumDiscBackdrop({ artworkUrl, isPlaying, mobile = fals
       return mesh;
     });
 
-    const holeRimGeometry = new THREE.TorusGeometry(0.145, 0.012, 8, 64);
+    const holeRimGeometry = new THREE.TorusGeometry(0.145, 0.012, mobile ? 5 : 8, mobile ? 32 : 64);
     const holeRimMaterial = new THREE.MeshStandardMaterial({
       color: 0x111412,
       roughness: 0.48,
@@ -306,14 +331,21 @@ export default function AlbumDiscBackdrop({ artworkUrl, isPlaying, mobile = fals
 
     let disposed = false;
 
+    let stillFrameRendered = false;
+    let lastSize = { width: 0, height: 0 };
     const resize = () => {
       const { width, height } = host.getBoundingClientRect();
       if (width <= 0 || height <= 0) return;
+      // ResizeObserver/viewport events can fire often in Android WebView.
+      // Reallocating the WebGL drawing buffer for identical dimensions stalls GPU.
+      if (Math.abs(width - lastSize.width) < 1 && Math.abs(height - lastSize.height) < 1) return;
+      lastSize = { width, height };
       renderer.setSize(width, height, false);
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
       const compact = width < 560;
       discPivot.scale.setScalar(compact ? 0.82 : mobile ? 0.96 : 1.08);
+      stillFrameRendered = false;
     };
     resize();
     const resizeObserver = new ResizeObserver(resize);
@@ -321,22 +353,41 @@ export default function AlbumDiscBackdrop({ artworkUrl, isPlaying, mobile = fals
     window.addEventListener("resize", resize);
 
     let animationFrame = 0;
-    let previousFrameTime = 0;
+    let lastRenderedAt = 0;
+    let lastAnimationAt = 0;
+    const mobileFrameInterval = 1000 / 24;
     const render = (frameTime = 0) => {
       if (disposed) return;
-      const delta = previousFrameTime > 0 ? Math.min((frameTime - previousFrameTime) / 1000, 0.05) : 0;
-      previousFrameTime = frameTime;
-      if (!document.hidden && (visibleRef.current || playingRef.current)) {
-        const frequencyData = playingRef.current
-          ? nativeFrequencyDataRef.current || frequencyGetterRef.current()
-          : null;
-        updateWaveBars(frequencyData, delta);
-        if (playingRef.current) {
-          spinningDisc.rotation.y = (spinningDisc.rotation.y + delta * DISC_ROTATION_SPEED) % (Math.PI * 2);
-        }
-        renderer.render(scene, camera);
-      }
       animationFrame = window.requestAnimationFrame(render);
+
+      // Hidden or inactive album discs must not consume GPU resources even
+      // if audio from a different playlist continues in the background.
+      if (document.hidden || !visibleRef.current) {
+        stillFrameRendered = false;
+        lastRenderedAt = 0;
+        lastAnimationAt = 0;
+        return;
+      }
+      // While paused only one static frame is necessary. The rAF remains
+      // lightweight so resuming playback and changing artwork are immediate.
+      if (!playingRef.current && stillFrameRendered && !staticFrameDirtyRef.current) return;
+      if (mobile && frameTime - lastRenderedAt < mobileFrameInterval) return;
+
+      const delta = lastAnimationAt > 0
+        ? Math.min((frameTime - lastAnimationAt) / 1000, 0.075)
+        : 0;
+      lastAnimationAt = frameTime;
+      lastRenderedAt = frameTime;
+      const frequencyData = playingRef.current
+        ? nativeFrequencyDataRef.current || frequencyGetterRef.current()
+        : null;
+      updateWaveBars(frequencyData, playingRef.current ? delta : 0.5);
+      if (playingRef.current) {
+        spinningDisc.rotation.y = (spinningDisc.rotation.y + delta * DISC_ROTATION_SPEED) % (Math.PI * 2);
+      }
+      renderer.render(scene, camera);
+      stillFrameRendered = !playingRef.current;
+      staticFrameDirtyRef.current = false;
     };
     render();
 
@@ -368,7 +419,7 @@ export default function AlbumDiscBackdrop({ artworkUrl, isPlaying, mobile = fals
       renderer.dispose();
       renderer.domElement.remove();
     };
-  }, [mobile]);
+  }, [mobile, visible]);
 
   useEffect(() => {
     const renderer = rendererRef.current;
@@ -381,6 +432,7 @@ export default function AlbumDiscBackdrop({ artworkUrl, isPlaying, mobile = fals
       loadedTextureRef.current = null;
       faceMaterial.map = fallbackTexture;
       faceMaterial.needsUpdate = true;
+      staticFrameDirtyRef.current = true;
       previous?.dispose();
       const readyFrame = window.requestAnimationFrame(() => setReadyArtwork(resolvedArtwork));
       return () => window.cancelAnimationFrame(readyFrame);
@@ -395,11 +447,12 @@ export default function AlbumDiscBackdrop({ artworkUrl, isPlaying, mobile = fals
           return;
         }
         texture.colorSpace = THREE.SRGBColorSpace;
-        texture.anisotropy = Math.min(4, renderer.capabilities.getMaxAnisotropy());
+        texture.anisotropy = mobile ? 1 : Math.min(4, renderer.capabilities.getMaxAnisotropy());
         const previous = loadedTextureRef.current;
         loadedTextureRef.current = texture;
         faceMaterial.map = texture;
         faceMaterial.needsUpdate = true;
+        staticFrameDirtyRef.current = true;
         previous?.dispose();
         setReadyArtwork(resolvedArtwork);
       },
@@ -412,7 +465,7 @@ export default function AlbumDiscBackdrop({ artworkUrl, isPlaying, mobile = fals
     return () => {
       cancelled = true;
     };
-  }, [mobile, resolvedArtwork]);
+  }, [mobile, resolvedArtwork, visible]);
 
   return (
     <div

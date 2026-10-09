@@ -1,6 +1,12 @@
 package com.farreo.app;
 
 import android.Manifest;
+import android.app.Activity;
+import android.app.AlertDialog;
+import android.os.SystemClock;
+import android.widget.LinearLayout;
+import android.widget.ProgressBar;
+import android.widget.TextView;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
@@ -29,6 +35,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @CapacitorPlugin(
     name = "FarreoNativeAudio",
@@ -41,6 +48,11 @@ public class FarreoNativeAudioPlugin extends Plugin implements FarreoAudioContro
 
     private FarreoAudioController controller;
     private final ExecutorService updateExecutor = Executors.newSingleThreadExecutor();
+    private final AtomicBoolean updateInProgress = new AtomicBoolean(false);
+    private final AtomicBoolean updateCancelled = new AtomicBoolean(false);
+    private AlertDialog updateDialog;
+    private ProgressBar updateProgressBar;
+    private TextView updateProgressMessage;
 
     private interface ControllerAction {
         JSObject run();
@@ -61,6 +73,8 @@ public class FarreoNativeAudioPlugin extends Plugin implements FarreoAudioContro
 
     @Override
     protected void handleOnDestroy() {
+        updateCancelled.set(true);
+        dismissUpdateDialog();
         if (controller != null) controller.removeListener(this);
         updateExecutor.shutdownNow();
         super.handleOnDestroy();
@@ -242,10 +256,17 @@ public class FarreoNativeAudioPlugin extends Plugin implements FarreoAudioContro
     }
 
     private void startFarreoAppUpdate(PluginCall call, String url) {
+        if (!updateInProgress.compareAndSet(false, true)) {
+            // Repeated taps must never queue a second APK download.
+            call.resolve();
+            return;
+        }
+        updateCancelled.set(false);
         if (
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
             && !getContext().getPackageManager().canRequestPackageInstalls()
         ) {
+            updateInProgress.set(false);
             getActivity().runOnUiThread(() -> {
                 try {
                     Toast.makeText(
@@ -266,12 +287,7 @@ public class FarreoNativeAudioPlugin extends Plugin implements FarreoAudioContro
             return;
         }
 
-        getActivity().runOnUiThread(() -> Toast.makeText(
-            getContext(),
-            "Descargando actualizacion de Farreo...",
-            Toast.LENGTH_SHORT
-        ).show());
-
+        showUpdateDialog();
         updateExecutor.execute(() -> {
             File target = null;
             HttpURLConnection connection = null;
@@ -303,7 +319,9 @@ public class FarreoNativeAudioPlugin extends Plugin implements FarreoAudioContro
                 }
 
                 long written = 0;
+                long lastProgressAt = 0;
                 byte[] buffer = new byte[64 * 1024];
+                showDownloadProgress(0, contentLength);
 
                 try (
                     InputStream input = connection.getInputStream();
@@ -311,21 +329,30 @@ public class FarreoNativeAudioPlugin extends Plugin implements FarreoAudioContro
                 ) {
                     int read;
                     while ((read = input.read(buffer)) != -1) {
+                        if (updateCancelled.get()) throw new UpdateCancelledException();
                         written += read;
                         if (written > MAX_UPDATE_BYTES) {
                             throw new IllegalStateException("El APK de actualizacion supera el limite permitido.");
                         }
                         output.write(buffer, 0, read);
+                        long now = SystemClock.elapsedRealtime();
+                        if (now - lastProgressAt >= 160 || (contentLength > 0 && written >= contentLength)) {
+                            showDownloadProgress(written, contentLength);
+                            lastProgressAt = now;
+                        }
                     }
                     output.flush();
                 }
 
-                if (written <= 0 || !target.isFile()) {
-                    throw new IllegalStateException("La descarga del APK quedo vacia.");
+                if (updateCancelled.get()) throw new UpdateCancelledException();
+                if (written <= 0 || !target.isFile() || (contentLength > 0 && written != contentLength)) {
+                    throw new IllegalStateException("La descarga del APK esta incompleta.");
                 }
 
+                showDownloadProgress(written, written);
                 File installFile = target;
                 getActivity().runOnUiThread(() -> {
+                    dismissUpdateDialog();
                     try {
                         Uri apkUri = FileProvider.getUriForFile(
                             getContext(),
@@ -344,12 +371,28 @@ public class FarreoNativeAudioPlugin extends Plugin implements FarreoAudioContro
                         call.reject("No se pudo abrir el instalador de Farreo.", error);
                     }
                 });
+            } catch (UpdateCancelledException ignored) {
+                if (target != null) {
+                    //noinspection ResultOfMethodCallIgnored
+                    target.delete();
+                }
+                getActivity().runOnUiThread(() -> {
+                    dismissUpdateDialog();
+                    call.resolve(); // Cancellation is intentional: do not open browser fallback.
+                });
             } catch (Exception error) {
                 if (target != null) {
                     //noinspection ResultOfMethodCallIgnored
                     target.delete();
                 }
                 getActivity().runOnUiThread(() -> {
+                    dismissUpdateDialog();
+                    if (updateCancelled.get()) {
+                        // A canceled/interrupted network request is not a failure:
+                        // do not unexpectedly open a browser download.
+                        call.resolve();
+                        return;
+                    }
                     Toast.makeText(
                         getContext(),
                         "No se pudo preparar la actualizacion. Se abrira la descarga normal.",
@@ -359,7 +402,93 @@ public class FarreoNativeAudioPlugin extends Plugin implements FarreoAudioContro
                 });
             } finally {
                 if (connection != null) connection.disconnect();
+                updateInProgress.set(false);
             }
+        });
+    }
+
+    private static class UpdateCancelledException extends Exception { }
+
+    private int dp(int value) {
+        return Math.round(value * getContext().getResources().getDisplayMetrics().density);
+    }
+
+    private void showUpdateDialog() {
+        Activity activity = getActivity();
+        if (activity == null) return;
+        activity.runOnUiThread(() -> {
+            if (activity.isFinishing() || activity.isDestroyed()) return;
+            if (updateDialog != null && updateDialog.isShowing()) return;
+
+            LinearLayout content = new LinearLayout(activity);
+            content.setOrientation(LinearLayout.VERTICAL);
+            content.setPadding(dp(24), dp(12), dp(24), dp(10));
+
+            TextView message = new TextView(activity);
+            message.setText("Conectando con el servidor...\nNo cierres Farreo mientras se descarga la actualización.");
+            message.setTextSize(14);
+            content.addView(message);
+
+            ProgressBar progress = new ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal);
+            progress.setMax(100);
+            progress.setIndeterminate(true);
+            LinearLayout.LayoutParams progressParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(8)
+            );
+            progressParams.topMargin = dp(20);
+            content.addView(progress, progressParams);
+
+            updateProgressBar = progress;
+            updateProgressMessage = message;
+            AlertDialog dialog = new AlertDialog.Builder(activity)
+                .setTitle("Actualizando Farreo")
+                .setView(content)
+                .setCancelable(false)
+                .setNegativeButton("Cancelar", (ignored, which) -> updateCancelled.set(true))
+                .create();
+            dialog.setCanceledOnTouchOutside(false);
+            updateDialog = dialog;
+            dialog.show();
+        });
+    }
+
+    private void showDownloadProgress(long written, long total) {
+        Activity activity = getActivity();
+        if (activity == null) return;
+        activity.runOnUiThread(() -> {
+            if (updateProgressBar == null || updateProgressMessage == null || updateCancelled.get()) return;
+            boolean hasTotal = total > 0;
+            updateProgressBar.setIndeterminate(!hasTotal);
+            if (hasTotal) {
+                int percent = (int) Math.min(100L, (written * 100L) / total);
+                updateProgressBar.setProgress(percent);
+                updateProgressMessage.setText(
+                    percent + "% descargado (" + formatMegabytes(written) + " / " + formatMegabytes(total) + ")\n"
+                    + "No cierres Farreo mientras se descarga la actualización."
+                );
+            } else {
+                updateProgressMessage.setText(
+                    "Descargando... " + formatMegabytes(written) + "\n"
+                    + "No cierres Farreo mientras se descarga la actualización."
+                );
+            }
+        });
+    }
+
+    private String formatMegabytes(long bytes) {
+        return String.format(java.util.Locale.US, "%.1f MB", bytes / (1024.0 * 1024.0));
+    }
+
+    private void dismissUpdateDialog() {
+        Activity activity = getActivity();
+        if (activity == null) return;
+        activity.runOnUiThread(() -> {
+            if (updateDialog != null) {
+                updateDialog.dismiss();
+                updateDialog = null;
+            }
+            updateProgressBar = null;
+            updateProgressMessage = null;
         });
     }
 
