@@ -70,6 +70,11 @@ public class FarreoAudioService extends Service implements FarreoAudioController
     private Bitmap fallbackArtwork;
     private String artworkUrl = "";
     private String artworkLoadingUrl = "";
+    // Failed image requests are retried for the current song, even when no
+    // additional playback-state event occurs while Android is locked.
+    private String artworkRetryUrl = "";
+    private int artworkRetryCount = 0;
+    private long artworkRetryNotBefore = 0;
     private long lastProgressNotificationAt = 0;
     private volatile boolean stopping = false;
 
@@ -240,7 +245,7 @@ public class FarreoAudioService extends Service implements FarreoAudioController
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setOnlyAlertOnce(true)
             .setSilent(true)
-            .setOngoing(false)
+            .setOngoing(playing)
             .setDeleteIntent(dismiss)
             .addAction(android.R.drawable.ic_media_previous, "Anterior", previous)
             .addAction(playIcon, playLabel, toggle)
@@ -267,6 +272,11 @@ public class FarreoAudioService extends Service implements FarreoAudioController
     private PendingIntent pending(String action, int requestCode) {
         Intent intent = new Intent(this, FarreoAudioService.class);
         intent.setAction(action);
+        // User-initiated media notification actions must be allowed to bring
+        // the existing playback service to the foreground while locked.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !ACTION_STOP.equals(action)) {
+            return PendingIntent.getForegroundService(this, requestCode, intent, pendingFlags());
+        }
         return PendingIntent.getService(this, requestCode, intent, pendingFlags());
     }
 
@@ -341,6 +351,11 @@ public class FarreoAudioService extends Service implements FarreoAudioController
         if (controller == null) return;
         String nextUrl = controller.getNotificationArtworkUrl();
 
+        if (!nextUrl.equals(artworkRetryUrl)) {
+            artworkRetryUrl = nextUrl;
+            artworkRetryCount = 0;
+            artworkRetryNotBefore = 0;
+        }
         if (nextUrl.isEmpty()) {
             artwork = fallbackArtwork;
             artworkUrl = "";
@@ -350,6 +365,10 @@ public class FarreoAudioService extends Service implements FarreoAudioController
         }
 
         if (nextUrl.equals(artworkUrl) && artwork != null) return;
+        if (SystemClock.elapsedRealtime() < artworkRetryNotBefore) {
+            updateMediaMetadata();
+            return;
+        }
 
         Bitmap cached = artworkMemoryCache.get(nextUrl);
         if (cached == null) {
@@ -361,6 +380,8 @@ public class FarreoAudioService extends Service implements FarreoAudioController
             artwork = cached;
             artworkUrl = nextUrl;
             artworkLoadingUrl = "";
+            artworkRetryCount = 0;
+            artworkRetryNotBefore = 0;
             updateMediaMetadata();
             return;
         }
@@ -394,7 +415,23 @@ public class FarreoAudioService extends Service implements FarreoAudioController
                 artwork = nextArtwork != null ? nextArtwork : fallbackArtwork;
                 artworkUrl = nextArtwork != null ? nextUrl : "";
                 artworkLoadingUrl = "";
-                if (nextArtwork != null) artworkMemoryCache.put(nextUrl, nextArtwork);
+                if (nextArtwork != null) {
+                    artworkMemoryCache.put(nextUrl, nextArtwork);
+                    artworkRetryCount = 0;
+                    artworkRetryNotBefore = 0;
+                } else {
+                    // A transient 404/network timeout is not a permanent
+                    // artwork failure. Retry only for the song still selected.
+                    artworkRetryCount++;
+                    long delay = artworkRetryCount == 1 ? 900L
+                        : artworkRetryCount == 2 ? 2500L : 30000L;
+                    artworkRetryNotBefore = SystemClock.elapsedRealtime() + delay;
+                    mainHandler.postDelayed(() -> {
+                        if (!stopping && nextUrl.equals(controller.getNotificationArtworkUrl())) {
+                            refreshArtwork();
+                        }
+                    }, delay);
+                }
 
                 NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
                 manager.notify(NOTIFICATION_ID, buildNotification());
@@ -407,7 +444,15 @@ public class FarreoAudioService extends Service implements FarreoAudioController
             Bitmap disk = readDiskArtwork(url);
             if (disk != null) return disk;
 
-            byte[] bytes = downloadArtworkBytes(url);
+            // Prefer the existing 256px thumbnail endpoint over fetching
+            // multi-megabyte original artwork when rendering a notification.
+            String optimizedUrl = url.replace("/song-icons/", "/song-icon/256/");
+            byte[] bytes = null;
+            if (!optimizedUrl.equals(url)) {
+                try { bytes = downloadArtworkBytes(optimizedUrl); }
+                catch (Exception ignored) { /* Fall back to original URL. */ }
+            }
+            if (bytes == null || bytes.length == 0) bytes = downloadArtworkBytes(url);
             if (bytes == null || bytes.length == 0) return null;
 
             BitmapFactory.Options bounds = new BitmapFactory.Options();

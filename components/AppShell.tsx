@@ -11,7 +11,7 @@ import DesktopYoutubeVideoToggle from "@/components/DesktopYoutubeVideoToggle";
 import MobileCurrentTrackClickFix from "@/components/MobileCurrentTrackClickFix";
 import MobileThemeSearchEnhancer from "@/components/MobileThemeSearchEnhancer";
 import MusicWaveHeader from "@/components/MusicWaveHeader";
-import SongInfoSidebar from "@/components/SongInfoSidebar";
+import DesktopSongInfoSidebar from "@/components/DesktopSongInfoSidebar";
 import ThemeDiscoverySidebarEnhancer from "@/components/ThemeDiscoverySidebarEnhancer";
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
@@ -32,7 +32,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       {isMobilePage && <MobileCurrentTrackClickFix />}
       {isMobilePage && <MobileThemeSearchEnhancer />}
       <MusicWaveHeader simple={isSimplePage} />
-      {!isSimplePage && <SongInfoSidebar />}
+      {!isSimplePage && <DesktopSongInfoSidebar />}
       <main className={`app-main app-main--with-wave ${isSimplePage ? "app-main--simple" : "app-main--with-sidebar"}`}>
         {children}
       </main>

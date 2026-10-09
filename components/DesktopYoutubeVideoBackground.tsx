@@ -67,6 +67,7 @@ export default function DesktopYoutubeVideoBackground() {
   const {
     currentSource,
     currentTrack,
+    nextTrackId,
     isPlaying,
     playbackPitch,
     playerMode,
@@ -408,7 +409,7 @@ export default function DesktopYoutubeVideoBackground() {
       // Video is optional: release the audio, but an already-running video
       // request may continue warming for this same song.
       settlePendingVideoStart(false, request.signal);
-    }, 15_000);
+    }, 7_000);
 
     pendingVideoStartRef.current = {
       songId: request.trackId,
@@ -858,6 +859,31 @@ export default function DesktopYoutubeVideoBackground() {
       unloadCurrentVideo();
     };
   }, [settlePendingVideoStart, unloadCurrentVideo]);
+
+  // Resolve the *next* track's direct stream URL while this one plays.
+  // Only metadata is prefetched (no second video element/download) and only
+  // for predictable sequential playback. Saves yt-dlp startup on transitions.
+  useEffect(() => {
+    if (
+      !contextEligible || playerMode !== "local" || !isPlaying
+      || !backgroundReadyForCurrentTrack || !nextTrackId
+      || nextTrackId === currentTrack?.id
+    ) return;
+    const connection = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection;
+    if (connection?.saveData) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void hasVideoAssociation(nextTrackId).then((associated) => {
+        if (!cancelled && associated === true) {
+          void getStreamInfo(nextTrackId).catch(() => undefined);
+        }
+      }).catch(() => undefined);
+    }, 3000);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [
+    backgroundReadyForCurrentTrack, contextEligible, currentTrack?.id,
+    getStreamInfo, hasVideoAssociation, isPlaying, nextTrackId, playerMode,
+  ]);
 
   if (!stream) return null;
 

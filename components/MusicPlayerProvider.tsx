@@ -10,6 +10,7 @@ import SongArtwork from "@/components/SongArtwork";
 import { claimAlbumFirstPlay } from "@/lib/albums";
 import { recordSongListened } from "@/lib/listeningHistory";
 import { notifyYoutubeVideoSeek, prepareYoutubeVideoStart } from "@/lib/youtubeVideoStartCoordinator";
+import { prepareAdvancedCoverBeforeAudio, shouldPrepareAdvancedCover } from "@/lib/advancedCoverStartPreparation";
 
 export interface MusicTrack {
   id: string;
@@ -40,6 +41,7 @@ export interface MusicPlaylistSource {
 interface MusicPlayerContextValue {
   currentTrack: MusicTrack | null;
   currentSource: MusicPlaylistSource | null;
+  nextTrackId: string | null;
   hasCurrentLyrics: boolean;
   isPlaying: boolean;
   playbackPitch: number;
@@ -873,24 +875,38 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     localVideoStartAbortRef.current = controller;
     setIsPlaybackPreparing(false);
 
-    try {
-      await prepareYoutubeVideoStart({
+    const wantsAdvancedCover = shouldPrepareAdvancedCover(track, source);
+    let waitingForBackgroundVideo = false;
+    let waitingForAdvancedCover = wantsAdvancedCover;
+    const reportWaiting = () => {
+      if (
+        localVideoStartGenerationRef.current === generation
+        && localVideoStartAbortRef.current === controller
+        && !controller.signal.aborted
+      ) {
+        setIsPlaybackPreparing(waitingForBackgroundVideo || waitingForAdvancedCover);
+      }
+    };
+    reportWaiting();
+    // Both visual assets are prepared concurrently. Audio is already buffering;
+    // neither image requests in the song list nor one optional visual can race
+    // ahead and trigger play() before the other finishes its own preparation.
+    await Promise.allSettled([
+      prepareYoutubeVideoStart({
         trackId: track.id,
         source,
         signal: controller.signal,
         onWaitingChange: (waiting) => {
-          if (
-            localVideoStartGenerationRef.current === generation
-            && localVideoStartAbortRef.current === controller
-            && !controller.signal.aborted
-          ) {
-            setIsPlaybackPreparing(waiting);
-          }
+          waitingForBackgroundVideo = waiting;
+          reportWaiting();
         },
-      });
-    } catch {
-      // The video background is optional. Any failure falls through to audio.
-    }
+      }),
+      prepareAdvancedCoverBeforeAudio(track, source, controller.signal)
+        .finally(() => {
+          waitingForAdvancedCover = false;
+          reportWaiting();
+        }),
+    ]);
 
     const stillCurrent = (
       !controller.signal.aborted
@@ -1933,12 +1949,19 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     stop: () => apiRef.current.stop(),
   }), []);
 
+  const nextTrackId = useMemo(() => {
+    if (playerMode !== "local" || isShuffle || !currentTrack || queue.length < 2) return null;
+    const index = queue.findIndex((entry) => entry.id === currentTrack.id);
+    return index < 0 ? null : queue[(index + 1) % queue.length]?.id ?? null;
+  }, [currentTrack?.id, isShuffle, playerMode, queue]);
+
   const canPlayNext = playerMode === "radio" ? Boolean(radioState?.currentItem) : queue.length > 1 || (!currentTrack && queue.length > 0);
   const canPlayPrev = playerMode === "radio" ? Boolean(radioState?.currentItem) : history.length > 0 || queue.length > 1;
 
   const contextValue = useMemo<MusicPlayerContextValue>(() => ({
     currentTrack,
     currentSource,
+    nextTrackId,
     hasCurrentLyrics,
     isPlaying,
     playbackPitch,
@@ -1958,7 +1981,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     setAutoRandomPitch,
     setLyricsEnabled,
     ...stableApi,
-  }), [autoRandomPitch, canPlayNext, canPlayPrev, currentSource, currentTrack, duration, getAudioFrequencyData, hasCurrentLyrics, isPitchLocked, isPlaying, isRadioAwaitingUserGesture, isRadioBuffering, isShuffle, lyricsEnabled, playbackPitch, playerMode, radioState, stableApi, volume]);
+  }), [autoRandomPitch, canPlayNext, canPlayPrev, currentSource, currentTrack, duration, getAudioFrequencyData, hasCurrentLyrics, isPitchLocked, isPlaying, nextTrackId, isRadioAwaitingUserGesture, isRadioBuffering, isShuffle, lyricsEnabled, playbackPitch, playerMode, radioState, stableApi, volume]);
 
   const timeContextValue = useMemo<MusicPlayerTimeContextValue>(() => ({
     currentTime,

@@ -15,20 +15,13 @@ interface SongArtworkProps {
 }
 
 export default function SongArtwork({
-  src,
-  alt = "",
-  className = "",
-  sizes = "64px",
-  eager = false,
-  nativeQuality = false,
-  onReady,
+  src, alt = "", className = "", sizes = "64px", eager = false,
+  nativeQuality = false, onReady,
 }: SongArtworkProps) {
   const [failed, setFailed] = useState(false);
   const onReadyRef = useRef(onReady);
+  useEffect(() => { onReadyRef.current = onReady; }, [onReady]);
 
-  useEffect(() => {
-    onReadyRef.current = onReady;
-  }, [onReady]);
   const resolvedSrc = src ? getMediaUrl(src) : "";
   const songIconMatch = src?.match(/^\/song-icons\/([^/?#]+)$/);
   const srcSet = !nativeQuality && songIconMatch
@@ -38,8 +31,6 @@ export default function SongArtwork({
     : undefined;
 
   useEffect(() => {
-    // A changed song/artwork URL gets a fresh attempt even if the previous
-    // physical file disappeared.
     setFailed(false);
     if (!resolvedSrc) onReadyRef.current?.();
   }, [resolvedSrc]);
@@ -54,29 +45,25 @@ export default function SongArtwork({
         alt={alt}
         className={`song-artwork ${className}`}
         loading={eager ? "eager" : "lazy"}
+        // List thumbnails should yield bandwidth to audio and the current
+        // song's cover. The visible list no longer gets normal priority.
+        fetchPriority={eager ? "high" : "low"}
         decoding="async"
         onLoad={() => onReadyRef.current?.()}
         onError={(event) => {
           const image = event.currentTarget;
-
-          // First failure may come from an optimized /song-icon/<size> variant.
-          // Retry the original artwork URL once.
           if (image.srcset && image.dataset.originalFallback !== "true") {
             image.dataset.originalFallback = "true";
             image.srcset = "";
             image.src = resolvedSrc;
             return;
           }
-
-          // If the physical original URL is stale/missing too, never expose
-          // the browser's broken-image glyph.
           setFailed(true);
           onReadyRef.current?.();
         }}
       />
     );
   }
-
   return (
     <span className={`song-artwork song-artwork--fallback ${className}`} aria-hidden="true">
       <MusicIcon size={18} />
