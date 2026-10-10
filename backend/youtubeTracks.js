@@ -14,7 +14,13 @@ const { createYouTubeLyricsResolver, identifySong } = require('./youtubeLyrics')
 
 const VIDEO_ID = /^[a-zA-Z0-9_-]{11}$/;
 const AUDIO_FORMAT = 'bestaudio[protocol^=http][ext=m4a]/bestaudio[protocol^=http]/bestaudio';
-const RESOLVE_TTL_MS = 3 * 60_000;
+// A resolved googlevideo URL is ephemeral, but 3 minutes forces frequent
+// unnecessary yt-dlp startups. Reuse it for up to 12 minutes, never past its
+// own signed expiration (with a safety margin). 401/403/410 still force refresh.
+const RESOLVE_TTL_MS = 12 * 60_000;
+const URL_EXPIRY_MARGIN_MS = 90_000;
+const PREFETCH_MAX_QUEUED = 4;
+const PREFETCH_COOLDOWN_MS = 30_000;
 const MAX_CAPTIONS = 128 * 1024;
 const MEDIA_HEADER_NAMES = ['user-agent', 'referer', 'origin', 'accept', 'accept-language', 'cookie'];
 const MEDIA_RESPONSE_HEADERS = ['content-range', 'content-length', 'accept-ranges', 'content-type', 'etag', 'last-modified'];
@@ -112,6 +118,11 @@ function createYouTubeSongCatalog(baseDir) {
   const pendingImports = new Map();
   const pendingResolves = new Map();
   const pendingLyrics = new Map();
+  // Prefetch URL metadata only, never media bytes. Bounded background work
+  // prevents opening a playlist from launching many yt-dlp processes.
+  const pendingPrewarms = [];
+  const recentPrewarms = new Map();
+  let prewarmWorkerActive = false;
   const lyricsResolver = createYouTubeLyricsResolver();
   let onSongMetadataUpdate = null;
 
@@ -128,8 +139,16 @@ function createYouTubeSongCatalog(baseDir) {
       httpHeaders: info.http_headers && typeof info.http_headers === 'object' ? info.http_headers : {},
       ext: String(info.ext || 'm4a'),
     };
-    // Never persisted; the next request re-extracts when this short cache expires.
-    cachedStreams.set(videoId, { stream, expiresAt: Date.now() + RESOLVE_TTL_MS });
+    // Prefer the signature's actual expiry where the provider exposes one.
+    let expiresAt = Date.now() + RESOLVE_TTL_MS;
+    try {
+      const signedExpiry = Number(new URL(url).searchParams.get('expire'));
+      if (Number.isFinite(signedExpiry) && signedExpiry > 1_000_000_000) {
+        expiresAt = Math.min(expiresAt, signedExpiry * 1000 - URL_EXPIRY_MARGIN_MS);
+      }
+    } catch { /* Keep the conservative TTL. */ }
+    // Never persisted; old signatures are transparently refreshed on 403.
+    cachedStreams.set(videoId, { stream, expiresAt });
     if (cachedStreams.size > 100) cachedStreams.delete(cachedStreams.keys().next().value);
     return stream;
   }
@@ -343,6 +362,44 @@ function createYouTubeSongCatalog(baseDir) {
     return promise;
   }
 
+  // Bounded, coalesced prewarm: only resolve an audio URL in advance.
+  // Playlist loads are never held up by yt-dlp, and no media is downloaded.
+  function queueAudioPrewarm(songIds) {
+    if (!Array.isArray(songIds)) return;
+    for (const rawId of songIds.slice(0, PREFETCH_MAX_QUEUED)) {
+      const videoId = String(rawId || '').replace(/^youtube:/, '');
+      if (!VIDEO_ID.test(videoId) || !getEntry(videoId)) continue;
+      if (cachedStreams.get(videoId)?.expiresAt > Date.now()) continue;
+      if (pendingResolves.has(videoId) || pendingPrewarms.includes(videoId)) continue;
+      if (Date.now() - (recentPrewarms.get(videoId) || 0) < PREFETCH_COOLDOWN_MS) continue;
+      if (pendingPrewarms.length >= PREFETCH_MAX_QUEUED) break;
+      pendingPrewarms.push(videoId);
+      recentPrewarms.set(videoId, Date.now());
+    }
+    if (recentPrewarms.size > 150) {
+      for (const [key, time] of recentPrewarms) {
+        if (Date.now() - time > PREFETCH_COOLDOWN_MS) recentPrewarms.delete(key);
+      }
+    }
+    if (prewarmWorkerActive || pendingPrewarms.length === 0) return;
+    prewarmWorkerActive = true;
+    setImmediate(async () => {
+      try {
+        while (pendingPrewarms.length) {
+          const id = pendingPrewarms.shift();
+          if (!getEntry(id) || cachedStreams.get(id)?.expiresAt > Date.now()) continue;
+          try { await resolveAudio(id); }
+          catch (error) {
+            // Prefetch is best-effort; normal playback can retry immediately.
+            console.warn('[youtube-tracks] prewarm skipped:', id, error.message);
+          }
+        }
+      } finally {
+        prewarmWorkerActive = false;
+      }
+    });
+  }
+
   function mediaRequestHeaders(stream, range) {
     const headers = { 'Accept-Encoding': 'identity' };
     for (const [key, value] of Object.entries(stream.httpHeaders)) {
@@ -358,7 +415,10 @@ function createYouTubeSongCatalog(baseDir) {
     // Media3 and browsers request different byte ranges as playback moves.
     // A range request must reach the origin unchanged to make seeking work.
     for (let attempt = 0; attempt < 2; attempt += 1) {
+      const resolveStart = performance.now();
       const stream = await resolveAudio(videoId, fresh || attempt > 0);
+      const resolveMs = performance.now() - resolveStart;
+      const originStart = performance.now();
       const upstream = await fetch(stream.url, {
         method: 'GET',
         headers: mediaRequestHeaders(stream, range),
@@ -367,9 +427,10 @@ function createYouTubeSongCatalog(baseDir) {
       });
       if ([401, 403, 410].includes(upstream.status) && attempt === 0) {
         await upstream.body?.cancel().catch(() => undefined);
+        cachedStreams.delete(videoId);
         continue; // Expired CDN signature: ask yt-dlp for a fresh URL.
       }
-      return { upstream, ext: stream.ext };
+      return { upstream, ext: stream.ext, resolveMs, originMs: performance.now() - originStart };
     }
     throw Object.assign(new Error('No se pudo abrir el audio de YouTube.'), { statusCode: 502 });
   }
@@ -387,6 +448,7 @@ function createYouTubeSongCatalog(baseDir) {
     if (!videoId || !VIDEO_ID.test(videoId)) return null;
     const entry = getEntry(videoId);
     if (entry) scheduleLyricsEnrichment([videoId]);
+    if (entry && Number(entry.duration) > 0) queueAudioPrewarm([videoId]);
     return entry && Number(entry.duration) > 0 ? toSong(entry) : null;
   }
 
@@ -395,6 +457,9 @@ function createYouTubeSongCatalog(baseDir) {
     const records = store();
     const seen = new Set();
     scheduleLyricsEnrichment(songIds);
+    // The first tracks are most likely to be played. Begin resolving their
+    // signed audio URLs immediately without delaying the lookup response.
+    queueAudioPrewarm(songIds.filter(id => String(id).startsWith('youtube:')).slice(0, 2));
     return songIds.flatMap(input => {
       const id = String(input || '');
       if (!id.startsWith('youtube:')) return [];
@@ -522,7 +587,7 @@ function createYouTubeSongCatalog(baseDir) {
       }, MEDIA_REQUEST_TIMEOUT_MS);
 
       try {
-        const { upstream, ext } = await openAudioStream(videoId, range, controller.signal, req.query.fresh === '1');
+        const { upstream, ext, resolveMs, originMs } = await openAudioStream(videoId, range, controller.signal, req.query.fresh === '1');
         clearTimeout(timeout); // The timeout applies to connection/headers only.
         timeout = null;
         if (!upstream.ok || !upstream.body) {
@@ -534,7 +599,10 @@ function createYouTubeSongCatalog(baseDir) {
         res.status(upstream.status);
         res.set('Cache-Control', 'no-store, max-age=0');
         res.set('X-Farreo-Youtube-Proxy', '1');
-        res.set('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges, X-Farreo-Youtube-Proxy');
+        // Visible under DevTools > Network > Timing for diagnosing the rare
+        // slow start. CDN first-byte transfer follows this initial header.
+        res.set('Server-Timing', `youtube_resolve;dur=${resolveMs.toFixed(1)}, youtube_origin;dur=${originMs.toFixed(1)}`);
+        res.set('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges, X-Farreo-Youtube-Proxy, Server-Timing');
         for (const headerName of MEDIA_RESPONSE_HEADERS) {
           const value = upstream.headers.get(headerName);
           if (value) res.set(headerName, value);

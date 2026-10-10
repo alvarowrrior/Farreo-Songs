@@ -61,6 +61,9 @@ const STREAM_CACHE_MS = 4 * 60_000;
 const MISSING_VIDEO_CACHE_MS = 30_000;
 const MAX_STREAM_CACHE_ENTRIES = 6;
 const SEEK_DISCONTINUITY_SECONDS = 1.15;
+// Keep the first decoded frame hidden until its seek catches up with the audio.
+const FIRST_FRAME_SYNC_TOLERANCE_SECONDS = 0.20;
+const MAX_INITIAL_SEEK_ATTEMPTS = 2;
 
 export default function DesktopYoutubeVideoBackground() {
   const pathname = usePathname();
@@ -97,6 +100,8 @@ export default function DesktopYoutubeVideoBackground() {
   const pendingVideoStartRef = useRef<PendingVideoStart | null>(null);
   const nonBlockingRetryCountRef = useRef(new Map<string, number>());
   const nonBlockingRetryTimersRef = useRef(new Map<string, number>());
+  const nonBlockingLoadsRef = useRef(new Set<string>());
+  const initialSeekAttemptsRef = useRef(0);
 
   const [stream, setStream] = useState<StreamInfo | null>(null);
   const [readySongId, setReadySongId] = useState<string | null>(null);
@@ -108,6 +113,9 @@ export default function DesktopYoutubeVideoBackground() {
   );
   const [isDesktop, setIsDesktop] = useState(false);
   const [loadRetryNonce, setLoadRetryNonce] = useState(0);
+  // A ready cached video may emit canplay in the same paint as its mount.
+  // Present it one or two frames later so the CSS fade is never skipped.
+  const [presentedStreamKey, setPresentedStreamKey] = useState<string | null>(null);
 
   currentTrackRef.current = currentTrack;
   currentSourceRef.current = currentSource;
@@ -150,6 +158,23 @@ export default function DesktopYoutubeVideoBackground() {
     && streamMatchesCurrentTrack
     && readySongId === currentTrack?.id
   );
+  const currentStreamKey = stream ? `${stream.songId}:${stream.directUrl}` : null;
+  const backgroundVisible = backgroundReadyForCurrentTrack && presentedStreamKey === currentStreamKey;
+
+  useEffect(() => {
+    if (!backgroundReadyForCurrentTrack || !currentStreamKey) {
+      setPresentedStreamKey(null);
+      return;
+    }
+    let secondFrame = 0;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => setPresentedStreamKey(currentStreamKey));
+    });
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      window.cancelAnimationFrame(secondFrame);
+    };
+  }, [backgroundReadyForCurrentTrack, currentStreamKey]);
 
   const settlePendingVideoStart = useCallback((
     clear = false,
@@ -222,6 +247,7 @@ export default function DesktopYoutubeVideoBackground() {
 
     readySongIdRef.current = null;
     initialVideoSyncKeyRef.current = null;
+    initialSeekAttemptsRef.current = 0;
     setReadySongId(null);
     streamRef.current = null;
     setStream(null);
@@ -229,6 +255,11 @@ export default function DesktopYoutubeVideoBackground() {
 
   const setActiveStream = useCallback((value: StreamInfo) => {
     const previous = streamRef.current;
+    // Two overlapping async lookups (e.g. playback starts while an earlier
+    // lookup is still finishing) must never reset a live decoder or fade.
+    if (previous?.songId === value.songId && previous.directUrl === value.directUrl) {
+      return;
+    }
 
     if (
       previous
@@ -251,6 +282,7 @@ export default function DesktopYoutubeVideoBackground() {
 
     readySongIdRef.current = null;
     initialVideoSyncKeyRef.current = null;
+    initialSeekAttemptsRef.current = 0;
     setReadySongId(null);
     streamRef.current = value;
     setStream(value);
@@ -573,6 +605,7 @@ export default function DesktopYoutubeVideoBackground() {
 
     if (
       streamRef.current?.songId === trackId
+      || nonBlockingLoadsRef.current.has(trackId)
       || (Date.now() - (noVideoTracksRef.current.get(trackId) ?? 0) < MISSING_VIDEO_CACHE_MS)
       || (
         pendingVideoStartRef.current
@@ -583,47 +616,29 @@ export default function DesktopYoutubeVideoBackground() {
     }
 
     const timer = window.setTimeout(() => {
+      if (nonBlockingLoadsRef.current.has(trackId)) return;
+      nonBlockingLoadsRef.current.add(trackId);
       void (async () => {
         try {
-          const availabilityResponse = await fetch(
-            `${MUSIC_API_URL}/youtube-backgrounds/${encodeURIComponent(trackId)}`,
-            { cache: "no-store" },
-          );
-          if (availabilityResponse.status === 404) {
-            noVideoTracksRef.current.set(trackId, Date.now());
+          // /stream itself validates the association and returns 404 for
+          // tracks without a video. Avoid a second serial network round-trip
+          // (/youtube-backgrounds/:id) for every background start.
+          const info = await getStreamInfo(trackId);
+          if (!info) {
             clearNonBlockingRetry(trackId);
             return;
           }
-          if (!availabilityResponse.ok) {
-            throw new Error(`Videoclip association HTTP ${availabilityResponse.status}`);
-          }
-
-          const availability = await availabilityResponse.json().catch(() => ({})) as {
-            youtubeUrl?: string | null;
-          };
-
-          if (!availability.youtubeUrl) {
-            noVideoTracksRef.current.set(trackId, Date.now());
-            clearNonBlockingRetry(trackId);
-            return;
-          }
-
-          noVideoTracksRef.current.delete(trackId);
 
           if (
             pendingVideoStartRef.current
             && !pendingVideoStartRef.current.settled
-          ) {
-            return;
-          }
-
-          if (currentTrackRef.current?.id !== trackId) return;
-
-          const info = await getStreamInfo(trackId);
+          ) return;
 
           if (
             info
             && currentTrackRef.current?.id === trackId
+            && enabledRef.current
+            && isDesktopRef.current
             && isYoutubeVideoBackgroundContext(
               pathnameRef.current,
               currentSourceRef.current,
@@ -636,9 +651,11 @@ export default function DesktopYoutubeVideoBackground() {
           // Optional visual only. Retry a couple of transient resolver/network
           // failures without ever blocking or pausing the audio.
           scheduleNonBlockingRetry(trackId);
+        } finally {
+          nonBlockingLoadsRef.current.delete(trackId);
         }
       })();
-    }, playerMode === "radio" ? 650 : 120);
+    }, playerMode === "radio" ? 180 : 0);
 
     return () => window.clearTimeout(timer);
   }, [
@@ -751,6 +768,58 @@ export default function DesktopYoutubeVideoBackground() {
     }
   }, []);
 
+  // The stream can signal canplay before its first seek completes. Revealing
+  // that frame displays the wrong part of the clip, sometimes just for a few
+  // frames before the browser seeks/buffers again. Wait for the seek instead.
+  const revealVideoWhenAligned = useCallback((video: HTMLVideoElement, songId: string) => {
+    if (
+      videoRef.current !== video
+      || currentTrackRef.current?.id !== songId
+      || streamRef.current?.songId !== songId
+      || video.seeking
+      || video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA
+    ) return;
+    if (readySongIdRef.current !== songId) {
+      readySongIdRef.current = songId;
+      setReadySongId(songId);
+    }
+    clearNonBlockingRetry(songId);
+    const pending = pendingVideoStartRef.current;
+    if (pending?.songId === songId && !pending.settled) {
+      settlePendingVideoStart(false, pending.signal);
+    }
+    applyVideoPlaybackState();
+  }, [applyVideoPlaybackState, clearNonBlockingRetry, settlePendingVideoStart]);
+
+  // Use the audio's *current* clock for the initial frame, not time zero from
+  // when yt-dlp resolution began. A bounded second seek handles slow networks.
+  const alignFirstVideoFrame = useCallback((video: HTMLVideoElement, songId: string) => {
+    if (
+      currentTrackRef.current?.id !== songId
+      || streamRef.current?.songId !== songId
+      || video.seeking
+      || !Number.isFinite(video.duration)
+      || video.duration <= 0
+    ) return false;
+
+    const target = playerModeRef.current === "radio" && radioStateRef.current
+      ? getLiveRadioPosition(radioStateRef.current)
+      : currentTimeRef.current;
+    const safeTarget = Math.max(0, Math.min(target, Math.max(0, video.duration - 0.05)));
+    if (
+      Math.abs(video.currentTime - safeTarget) <= FIRST_FRAME_SYNC_TOLERANCE_SECONDS
+      || initialSeekAttemptsRef.current >= MAX_INITIAL_SEEK_ATTEMPTS
+    ) return false;
+
+    try {
+      video.currentTime = safeTarget;
+      initialSeekAttemptsRef.current += 1;
+      return video.seeking;
+    } catch {
+      return false;
+    }
+  }, []);
+
   // Natural play/pause + pitch only. No continuous seeking here.
   useEffect(() => {
     if (!backgroundReadyForCurrentTrack) return;
@@ -840,7 +909,7 @@ export default function DesktopYoutubeVideoBackground() {
   ]);
 
   useEffect(() => {
-    if (backgroundReadyForCurrentTrack) {
+    if (backgroundVisible) {
       document.documentElement.dataset.farreoYoutubeVideoBackground = "true";
     } else {
       delete document.documentElement.dataset.farreoYoutubeVideoBackground;
@@ -849,13 +918,14 @@ export default function DesktopYoutubeVideoBackground() {
     return () => {
       delete document.documentElement.dataset.farreoYoutubeVideoBackground;
     };
-  }, [backgroundReadyForCurrentTrack]);
+  }, [backgroundVisible]);
 
   useEffect(() => {
     return () => {
       settlePendingVideoStart(true);
       nonBlockingRetryTimersRef.current.forEach((timer) => window.clearTimeout(timer));
       nonBlockingRetryTimersRef.current.clear();
+      nonBlockingLoadsRef.current.clear();
       unloadCurrentVideo();
     };
   }, [settlePendingVideoStart, unloadCurrentVideo]);
@@ -873,23 +943,24 @@ export default function DesktopYoutubeVideoBackground() {
     if (connection?.saveData) return;
     let cancelled = false;
     const timer = window.setTimeout(() => {
-      void hasVideoAssociation(nextTrackId).then((associated) => {
-        if (!cancelled && associated === true) {
-          void getStreamInfo(nextTrackId).catch(() => undefined);
-        }
-      }).catch(() => undefined);
-    }, 3000);
+      if (!cancelled) {
+        // The resolver returns 404 immediately for songs without a background.
+        // Prefetch only the signed URL (not video bytes), without an extra
+        // association request, to give yt-dlp more time before the next song.
+        void getStreamInfo(nextTrackId).catch(() => undefined);
+      }
+    }, 800);
     return () => { cancelled = true; window.clearTimeout(timer); };
   }, [
     backgroundReadyForCurrentTrack, contextEligible, currentTrack?.id,
-    getStreamInfo, hasVideoAssociation, isPlaying, nextTrackId, playerMode,
+    getStreamInfo, isPlaying, nextTrackId, playerMode,
   ]);
 
   if (!stream) return null;
 
   return (
     <div
-      className={`${styles.root} ${backgroundReadyForCurrentTrack ? styles.ready : ""}`}
+      className={`${styles.root} ${backgroundVisible ? styles.ready : ""}`}
       aria-hidden="true"
     >
       <video
@@ -907,36 +978,47 @@ export default function DesktopYoutubeVideoBackground() {
             Math.min(1.5, playbackPitchRef.current || 1),
           );
         }}
-        onCanPlay={() => {
+        onCanPlay={(event) => {
+          const video = event.currentTarget;
           const isCurrentSong = currentTrackRef.current?.id === stream.songId;
           const pending = pendingVideoStartRef.current;
           const isPendingStart = pending?.songId === stream.songId;
-
           if (
             (!isCurrentSong && !isPendingStart)
             || streamRef.current?.songId !== stream.songId
-          ) {
-            return;
-          }
+            || streamRef.current.directUrl !== stream.directUrl
+          ) return;
 
-          readySongIdRef.current = stream.songId;
-          setReadySongId(stream.songId);
-          clearNonBlockingRetry(stream.songId);
-
-          // Exactly one initial synchronization per direct stream. A pending
-          // gapless next track starts at zero, so it needs no seek until it is
-          // actually the current song.
+          // Only run first-frame synchronization once per stream. A player
+          // resuming after buffering must not repeatedly seek back and hide.
           const syncKey = `${stream.songId}:${stream.directUrl}`;
           if (initialVideoSyncKeyRef.current !== syncKey) {
             initialVideoSyncKeyRef.current = syncKey;
-            if (isCurrentSong) seekVideoToPlayback();
+            if (isCurrentSong && alignFirstVideoFrame(video, stream.songId)) return;
           }
+          if (video.seeking) return;
 
-          if (isPendingStart && pending && !pending.settled) {
-            settlePendingVideoStart(false);
+          if (isCurrentSong) {
+            revealVideoWhenAligned(video, stream.songId);
+          } else if (isPendingStart && pending && !pending.settled) {
+            // The legacy opt-in can prepare a *future* song. Keep its ready
+            // state so that a subsequent track switch does not need another
+            // canplay event (which browsers are not obliged to emit).
+            readySongIdRef.current = stream.songId;
+            setReadySongId(stream.songId);
+            clearNonBlockingRetry(stream.songId);
+            settlePendingVideoStart(false, pending.signal);
           }
-
-          if (isCurrentSong) applyVideoPlaybackState();
+        }}
+        onSeeked={(event) => {
+          const video = event.currentTarget;
+          if (
+            currentTrackRef.current?.id !== stream.songId
+            || streamRef.current?.songId !== stream.songId
+            || streamRef.current.directUrl !== stream.directUrl
+          ) return;
+          if (readySongIdRef.current !== stream.songId && alignFirstVideoFrame(video, stream.songId)) return;
+          revealVideoWhenAligned(video, stream.songId);
         }}
         onError={() => {
           const failedSongId = stream.songId;

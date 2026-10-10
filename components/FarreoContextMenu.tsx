@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import styles from "./FarreoContextMenu.module.scss";
 import { createPortal } from "react-dom";
 
 export interface FarreoContextMenuItem {
@@ -20,6 +21,24 @@ interface FarreoContextMenuProps {
 }
 
 export default function FarreoContextMenu({ x, y, items, onClose }: FarreoContextMenuProps) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [bounds, setBounds] = useState({ x, y, flip: false });
+
+  useLayoutEffect(() => {
+    const update = () => {
+      const el = menuRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const nx = Math.max(8, Math.min(x, window.innerWidth - rect.width - 8));
+      const ny = Math.max(8, Math.min(y, window.innerHeight - rect.height - 8));
+      const flip = nx + rect.width + 240 > window.innerWidth;
+      setBounds((old) => old.x === nx && old.y === ny && old.flip === flip ? old : {x:nx, y:ny, flip});
+    };
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, [x, y, items.length]);
+
   useEffect(() => {
     const close = () => onClose();
     const onKey = (event: KeyboardEvent) => {
@@ -38,8 +57,10 @@ export default function FarreoContextMenu({ x, y, items, onClose }: FarreoContex
 
   return createPortal(
     <div
-      className="farreo-context-menu"
-      style={{ left: x, top: y }}
+      ref={menuRef}
+      className={`farreo-context-menu ${styles.menu}`}
+      data-flip={bounds.flip ? "true" : "false"}
+      style={{ left: bounds.x, top: bounds.y }}
       onPointerDown={(event) => event.stopPropagation()}
       onContextMenu={(event) => event.preventDefault()}
       role="menu"

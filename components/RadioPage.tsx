@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { createPortal } from "react-dom";
 import { onAuthStateChanged, type User } from "firebase/auth";
 import {
   ArrowDownIcon,
@@ -9,6 +10,7 @@ import {
   ChevronsUpIcon,
   DicesIcon,
   EyeOffIcon,
+  GripVerticalIcon,
   ListPlusIcon,
   PauseIcon,
   PlayIcon,
@@ -23,6 +25,7 @@ import { auth } from "@/lib/firebase";
 import { getPrivatePlaylist, listOwnPrivatePlaylists, type PrivatePlaylist } from "@/lib/privatePlaylists";
 import { useHiddenSongs } from "@/lib/useHiddenSongs";
 import YouTubeSongImport from "@/components/YouTubeSongImport";
+import SongArtwork from "@/components/SongArtwork";
 import {
   getLiveRadioPosition,
   radioDelete,
@@ -37,6 +40,7 @@ import {
 } from "@/lib/radioApi";
 import { addAlbumToRadio, getAlbum, listAlbums } from "@/lib/albums";
 import styles from "./RadioPageAdminControls.module.scss";
+import queueStyles from "./RadioQueueEditorial.module.scss";
 
 const RADIO_ADMIN_HIDDEN_KEY = "farreo-radio-admin-show-hidden-v1";
 
@@ -49,13 +53,29 @@ const formatTime = (seconds: number) => {
 
 type InsertChoice = "last" | "next" | "now";
 type PlaylistChoice =
-  | { kind: "private"; id: string; name: string; count: number }
-  | { kind: "global"; id: string; name: string; count: number }
-  | { kind: "album"; id: string; name: string; count: number; entryIds: string[] }
-  | { kind: "external"; id: string; name: string; count: number; url: string };
+  | { kind: "private"; id: string; name: string; count: number; iconUrl?: string | null }
+  | { kind: "global"; id: string; name: string; count: number; iconUrl?: string | null }
+  | { kind: "album"; id: string; name: string; count: number; entryIds: string[]; iconUrl?: string | null }
+  | { kind: "external"; id: string; name: string; count: number; url: string; iconUrl?: string | null };
 type SelectedRadioItem =
   | { type: "song"; song: ApiSong }
   | { type: "playlist"; playlist: PlaylistChoice };
+
+type RadioQueueDrag = {
+  id: string;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  x: number;
+  y: number;
+  offsetY: number;
+  left: number;
+  width: number;
+  height: number;
+  targetIndex: number;
+  active: boolean;
+  playNow: boolean;
+};
 
 function RadioProgress() {
   const { duration, playerMode, radioState } = useMusicPlayer();
@@ -112,6 +132,12 @@ export default function RadioPage() {
 
   const [user, setUser] = useState<User | null>(null);
   const [songs, setSongs] = useState<ApiSong[]>([]);
+  const [drag, setDrag] = useState<RadioQueueDrag | null>(null);
+  const dragRef = useRef<RadioQueueDrag | null>(null);
+  const queueAreaRef = useRef<HTMLDivElement>(null);
+  const pendingRef = useRef<RadioQueueItem[]>([]);
+  const radioStateRef = useRef<RadioState | null>(null);
+  const displaySongRef = useRef<(id: string) => boolean>(() => true);
   const [globalPlaylists, setGlobalPlaylists] = useState<ApiPlaylistInfo[]>([]);
   const [privatePlaylists, setPrivatePlaylists] = useState<PrivatePlaylist[]>([]);
   const [availableAlbums, setAvailableAlbums] = useState<Array<{ id: string; name: string; count: number; entryIds: string[] }>>([]);
@@ -144,6 +170,9 @@ export default function RadioPage() {
   const currentItem = state?.currentItem ?? null;
   const queue = state?.queue || [];
   const pendingQueue = queue.slice(1).filter((item) => canDisplaySong(item.song.id));
+  pendingRef.current = pendingQueue;
+  radioStateRef.current = state;
+  displaySongRef.current = canDisplaySong;
   const radioButtonPlaying = playerMode === "radio" ? isPlaying : state?.status === "playing";
 
   const handleRadioPlayPause = () => {
@@ -184,7 +213,7 @@ export default function RadioPage() {
         setAvailableAlbums(albumDetails.flatMap((album) => {
           if (!album) return [];
           const entries = album.tracks.filter((entry) => entry.song && (entry.state === "revealed" || entry.state === "normal"));
-          return entries.length > 0 ? [{ id: album.id, name: album.nombre, count: entries.length, entryIds: entries.map((entry) => entry.entryId) }] : [];
+          return entries.length > 0 ? [{ id: album.id, name: album.nombre, count: entries.length, entryIds: entries.map((entry) => entry.entryId), iconUrl: album.iconUrl }] : [];
         }));
       } catch {
         setMessage({ type: "error", text: "No se pudo cargar el catalogo." });
@@ -251,13 +280,14 @@ export default function RadioPage() {
             id: localPlaylist.id,
             name: localPlaylist.nombre,
             count: localPlaylist.songIds.length,
+            iconUrl: localPlaylist.iconUrl,
             url: `${window.location.origin}/user-playlist/${encodeURIComponent(localPlaylist.id)}`,
           });
           return;
         }
 
         const data = await radioPost<{
-          playlist: { id: string; nombre: string; count: number };
+          playlist: { id: string; nombre: string; count: number; iconUrl?: string | null };
         }>("/radio/resolve-user-playlist-url", { url: query });
 
         if (controller.signal.aborted) return;
@@ -267,6 +297,7 @@ export default function RadioPage() {
           id: data.playlist.id,
           name: data.playlist.nombre,
           count: data.playlist.count,
+          iconUrl: data.playlist.iconUrl,
           url: query,
         });
       } catch {
@@ -290,12 +321,14 @@ export default function RadioPage() {
       id: playlist.id,
       name: playlist.nombre,
       count: playlist.songIds.length,
+      iconUrl: playlist.iconUrl,
     })),
     ...globalPlaylists.map((playlist) => ({
       kind: "global" as const,
       id: playlist.id,
       name: playlist.nombre,
       count: playlist.numCanciones,
+      iconUrl: playlist.iconUrl,
     })),
     ...availableAlbums.map((album) => ({
       kind: "album" as const,
@@ -303,8 +336,18 @@ export default function RadioPage() {
     })),
   ], [availableAlbums, globalPlaylists, privatePlaylists]);
 
+  // Shuffle the list ONCE per catalogue fetch. Searching filters that same
+  // stable order so results don't jump around on each keystroke or radio tick.
+  const shuffledSongs = useMemo(() => {
+    const result = [...songs];
+    for (let i = result.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [result[i], result[j]] = [result[j], result[i]];
+    }
+    return result;
+  }, [songs]);
   const filteredSongs = useMemo(() => {
-    const visibleSongs = songs.filter((song) => (
+    const visibleSongs = shuffledSongs.filter((song) => (
       !isAdmin
         ? isVisible(song.id)
         : showHiddenForAdmin || !hiddenIds.has(song.id)
@@ -317,7 +360,7 @@ export default function RadioPage() {
         Boolean(song.variantes?.some((variant) => variant.toLowerCase().includes(q)))
       )
       .slice(0, 18);
-  }, [hiddenIds, isAdmin, isVisible, showHiddenForAdmin, songQuery, songs]);
+  }, [hiddenIds, isAdmin, isVisible, showHiddenForAdmin, songQuery, shuffledSongs]);
 
   const filteredPlaylists = useMemo(() => {
     const q = playlistQuery.trim().toLowerCase();
@@ -407,6 +450,101 @@ export default function RadioPage() {
     );
   };
 
+  // Apply a visible drag without dropping hidden songs from the shared queue.
+  // Hidden items keep their own positions; only visible slots are permuted.
+  const commitVisibleQueueOrder = async (visibleIds: string[], skipAfter = false) => {
+    const live = radioStateRef.current;
+    if (!live) return;
+    const full = live.queue.slice(1);
+    const allowed = new Set(full.filter((item) => displaySongRef.current(item.song.id)).map((item) => item.itemId));
+    const canonical = full.filter((item) => allowed.has(item.itemId)).map((item) => item.itemId);
+    if (canonical.length !== visibleIds.length ||
+        canonical.some((id) => !visibleIds.includes(id))) return;
+    let at = 0;
+    const ids = full.map((item) => allowed.has(item.itemId) ? visibleIds[at++] : item.itemId);
+    try {
+      if (ids.some((id, index) => id !== full[index]?.itemId)) {
+        await radioPost<RadioState>("/radio/queue/reorder", { itemIds: ids });
+      }
+      if (skipAfter) await radioPost<RadioState>("/radio/skip");
+    } catch (error) {
+      setMessage({ type: "error", text: error instanceof Error ? error.message : "No se pudo reordenar la radio." });
+    }
+  };
+  const beginRadioDrag = (event: ReactPointerEvent<HTMLElement>, itemId: string) => {
+    if (event.button !== 0 || dragRef.current) return;
+    if (event.target instanceof Element && event.target.closest("button, input, label, select")) return;
+    const row = event.currentTarget.closest<HTMLElement>("[data-radio-queue-row]");
+    const area = queueAreaRef.current;
+    if (!row || !area) return;
+    event.preventDefault();
+    const bounds = row.getBoundingClientRect();
+    const value: RadioQueueDrag = {
+      id: itemId, pointerId: event.pointerId,
+      startX: event.clientX, startY: event.clientY,
+      x: event.clientX, y: event.clientY,
+      offsetY: event.clientY - bounds.top,
+      left: bounds.left, width: bounds.width, height: bounds.height,
+      targetIndex: pendingRef.current.findIndex((item) => item.itemId === itemId),
+      active: false, playNow: false,
+    };
+    dragRef.current = value;
+  };
+
+  useEffect(() => {
+    const move = (event: PointerEvent) => {
+      const value = dragRef.current;
+      if (!value || value.pointerId !== event.pointerId) return;
+      const active = value.active || Math.hypot(event.clientX - value.startX, event.clientY - value.startY) > 5;
+      if (!active) return;
+      event.preventDefault();
+      const area = queueAreaRef.current;
+      const rows = area ? [...area.querySelectorAll<HTMLElement>("[data-radio-queue-row]")] : [];
+      const remaining = rows.filter((row) => row.dataset.radioQueueRow !== value.id);
+      const targetIndex = remaining.filter((row) => event.clientY > row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2).length;
+      const now = area?.querySelector<HTMLElement>("[data-radio-queue-current]")?.getBoundingClientRect();
+      const playNow = Boolean(now && event.clientX >= now.left && event.clientX <= now.right &&
+        event.clientY >= now.top && event.clientY <= now.bottom);
+      const next = { ...value, x: event.clientX, y: event.clientY, targetIndex, active, playNow };
+      dragRef.current = next;
+      setDrag(next);
+    };
+    const finish = (event: PointerEvent) => {
+      const value = dragRef.current;
+      if (!value || value.pointerId !== event.pointerId) return;
+      if (value.active) {
+        const original = pendingRef.current.map((item) => item.itemId);
+        const at = original.indexOf(value.id);
+        if (at >= 0) {
+          const next = [...original];
+          next.splice(at, 1);
+          next.splice(Math.max(0, Math.min(next.length, value.playNow ? 0 : value.targetIndex)), 0, value.id);
+          if (next.some((id, index) => id !== original[index]) || value.playNow) {
+            void commitVisibleQueueOrder(next, value.playNow);
+          }
+        }
+      }
+      dragRef.current = null;
+      setDrag(null);
+    };
+    const cancel = () => { dragRef.current = null; setDrag(null); };
+    const key = (event: KeyboardEvent) => { if (event.key === "Escape") cancel(); };
+    window.addEventListener("pointermove", move, { passive: false });
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", cancel);
+    window.addEventListener("blur", cancel);
+    window.addEventListener("keydown", key);
+    return () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", cancel);
+      window.removeEventListener("blur", cancel);
+      window.removeEventListener("keydown", key);
+    };
+    // State needed during the drag lives in refs to avoid reattaching listeners.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const movePendingItem = (from: number, to: number) => {
     if (!state) return;
     const pending = state.queue.slice(1);
@@ -414,10 +552,7 @@ export default function RadioPage() {
     const reordered = [...pending];
     const [item] = reordered.splice(from, 1);
     reordered.splice(to, 0, item);
-    runRadioAction(
-      () => radioPost<RadioState>("/radio/queue/reorder", { itemIds: reordered.map((entry) => entry.itemId) }),
-      "Cola reordenada."
-    );
+    void commitVisibleQueueOrder(reordered.map((entry) => entry.itemId));
   };
 
   const reorderQueue = () => {
@@ -431,15 +566,16 @@ export default function RadioPage() {
   };
 
   return (
-    <main className="playlist-admin radio-page">
+    <>
+    <main className={`playlist-admin radio-page ${queueStyles.page}`}>
       <div className="playlist-admin__content radio-page__content">
         <header className="playlist-admin__header radio-page__header">
           <div>
             <h1 className="playlist-admin__title radio-page__title">
-              <RadioIcon size={34} /> Radio
+              <RadioIcon size={29} strokeWidth={1.9} /> Radio
             </h1>
             <p className="playlist-admin__subtitle">
-              Estacion compartida sincronizada para web y Discord
+              Estación compartida · sincronizada en tiempo real
             </p>
           </div>
           <div className="playlist-admin__header-actions">
@@ -471,7 +607,11 @@ export default function RadioPage() {
 
         <div className="radio-page__workspace">
           <aside className="radio-page__left">
-            <section className="radio-page__current-card">
+            <section className={`radio-page__current-card ${queueStyles.currentPanel}`}>
+              <div className={queueStyles.currentIdentity}>
+                <span className={queueStyles.currentCover}>
+                  {currentItem ? <SongArtwork src={currentItem.song.iconUrl} alt="" /> : <RadioIcon size={25} strokeWidth={1.5} />}
+                </span>
               <div className="radio-page__now-info">
                 <span className="radio-page__eyebrow">
                   {isRadioAwaitingUserGesture
@@ -484,8 +624,9 @@ export default function RadioPage() {
                     ? "La radio sigue sonando. Pulsa play para entrar exactamente al directo."
                     : isRadioBuffering
                     ? "Cargando audio y ajustando el punto exacto de la radio..."
-                    : currentItem ? `${currentItem.source.name} - Pitch ${currentItem.pitch.toFixed(2)}x` : "Añade canciones para empezar la estación."}
+                    : currentItem ? `${currentItem.source.name} - Pitch ${currentItem.pitch.toFixed(2)}x` : "Añade canciones para empezar la sesión compartida."}
                 </p>
+              </div>
               </div>
 
               <div className="radio-page__controls">
@@ -516,33 +657,41 @@ export default function RadioPage() {
               )}
             </section>
 
-            <section className="radio-page__queue">
-              <div className="playlist-admin__section-header">
-                <h2 className="playlist-admin__section-title">Cola actual</h2>
-                <div className="radio-page__queue-header-actions">
-                  <span className="playlist-admin__subtitle">{queue.length} canciones</span>
-                  <button onClick={reorderQueue} className="radio-page__reorder-btn" disabled={pendingQueue.length < 2}>
-                    <ShuffleIcon size={14} /> Reordenar
+            <section className={`radio-page__queue ${queueStyles.queue}`}>
+              <div className={queueStyles.heading}>
+                <div>
+                  <span className={queueStyles.eyebrow}><RadioIcon size={13}/> RADIO · COLA COMPARTIDA</span>
+                  <h2>Cola de reproducción</h2>
+                </div>
+                <div className={queueStyles.headingActions}>
+                  <span>{queue.length} canciones</span>
+                  <button onClick={reorderQueue} title="Mezclar próximas canciones" disabled={pendingQueue.length < 2}>
+                    <ShuffleIcon size={14} /> Mezclar
                   </button>
                 </div>
               </div>
 
               {queue.length === 0 ? (
-                <p className="playlist-admin__empty">La radio esta vacia.</p>
+                <p className="playlist-admin__empty">La cola está vacía. Añade una canción o playlist.</p>
               ) : (
-                <div className="radio-page__queue-list">
+                <div className="radio-page__queue-list" ref={queueAreaRef}>
                   {currentItem && (
                     <QueueRow
                       item={currentItem}
                       index={0}
                       current
+                      dropNow={Boolean(drag?.active && drag.playNow)}
                       onRemove={removeQueueItem}
                       onPitch={updateQueuePitch}
                     />
                   )}
                   {pendingQueue.map((item, index) => (
-                    <QueueRow
-                      key={item.itemId}
+                    <div key={item.itemId} className={queueStyles.dragSlot}>
+                      {drag?.active && !drag.playNow && drag.targetIndex === index && <div className={queueStyles.dropLine} />}
+                      <QueueRow
+                      dragId={item.itemId}
+                      dragging={drag?.active && drag.id === item.itemId}
+                      onDragStart={(event) => beginRadioDrag(event, item.itemId)}
                       item={item}
                       index={index + 1}
                       onRemove={removeQueueItem}
@@ -551,14 +700,18 @@ export default function RadioPage() {
                       onMoveDown={() => movePendingItem(index, index + 1)}
                       canMoveUp={index > 0}
                       canMoveDown={index < pendingQueue.length - 1}
-                    />
+                      />
+                    </div>
                   ))}
+                  {drag?.active && !drag.playNow && drag.targetIndex === pendingQueue.length && (
+                    <div className={queueStyles.dropLine} />
+                  )}
                 </div>
               )}
             </section>
           </aside>
 
-          <section className="radio-page__add-card">
+          <section className={`radio-page__add-card ${queueStyles.addPanel}`}>
             <div className="radio-page__add-grid">
               <div className="radio-page__add-panel">
                 <h2 className="playlist-admin__section-title">
@@ -594,6 +747,7 @@ export default function RadioPage() {
                         : "radio-page__song-result"}
                       onClick={() => setSelectedItem({ type: "song", song })}
                     >
+                      <span className={queueStyles.resultCover}><SongArtwork src={song.iconUrl} alt="" /></span>
                       <div>
                         <strong>{song.name}</strong>
                         <span>
@@ -629,6 +783,11 @@ export default function RadioPage() {
                         : "radio-page__playlist-result"}
                       onClick={() => setSelectedItem({ type: "playlist", playlist })}
                     >
+                      {playlist.iconUrl ? (
+                        <span className={queueStyles.resultCover}><SongArtwork src={playlist.iconUrl} alt="" /></span>
+                      ) : (
+                        <span className={queueStyles.resultCoverPlaceholder} aria-hidden="true"><ListPlusIcon size={19} strokeWidth={1.6}/></span>
+                      )}
                       <div>
                         <strong>{playlist.name}</strong>
                         <span>
@@ -706,6 +865,14 @@ export default function RadioPage() {
         </div>
       </div>
     </main>
+    {drag?.active && typeof document !== "undefined" && createPortal(
+      <div className={queueStyles.dragGhost} style={{ left: drag.left, top: drag.y - drag.offsetY, width: drag.width }}>
+        <GripVerticalIcon size={13} />
+        <span className={queueStyles.cover}><SongArtwork src={pendingQueue.find((item) => item.itemId === drag.id)?.song.iconUrl} alt="" /></span>
+        <span className={queueStyles.dragGhostText}>{pendingQueue.find((item) => item.itemId === drag.id)?.song.name}</span>
+      </div>, document.body
+    )}
+    </>
   );
 }
 
@@ -715,6 +882,10 @@ function QueueRow({
   current = false,
   canMoveUp = false,
   canMoveDown = false,
+  dragId,
+  dragging = false,
+  dropNow = false,
+  onDragStart,
   onMoveUp,
   onMoveDown,
   onRemove,
@@ -725,47 +896,56 @@ function QueueRow({
   current?: boolean;
   canMoveUp?: boolean;
   canMoveDown?: boolean;
+  dragId?: string;
+  dragging?: boolean;
+  dropNow?: boolean;
+  onDragStart?: (event: ReactPointerEvent<HTMLElement>) => void;
   onMoveUp?: () => void;
   onMoveDown?: () => void;
   onRemove: (item: RadioQueueItem) => void;
   onPitch: (item: RadioQueueItem, value: number) => void;
 }) {
   return (
-    <div className={`radio-page__queue-item ${current ? "radio-page__queue-item--current" : ""}`}>
-      <div className="radio-page__queue-index">{current ? "ON" : index + 1}</div>
-      <div className="radio-page__queue-song">
-        <strong>{item.song.name}</strong>
-        <span>{item.source.name} - {formatTime(item.song.duration || 0)}</span>
+    <div className={`${queueStyles.row} ${current ? queueStyles.rowCurrent : ""} ${dragging ? queueStyles.rowDragging : ""} ${dropNow ? queueStyles.rowDropNow : ""} ${!current ? queueStyles.rowDraggable : ""}`}
+      data-radio-queue-row={dragId} data-radio-queue-current={current ? "true" : undefined}
+      onPointerDown={onDragStart}>
+      {!current && <GripVerticalIcon size={13} className={queueStyles.grip} />}
+      <span className={queueStyles.cover}><SongArtwork src={item.song.iconUrl} alt="" /></span>
+      <div className={queueStyles.songInfo}>
+        <strong title={item.song.name}>{item.song.name}</strong>
+        <span title={item.source.name}>{item.source.name}</span>
       </div>
-      <div className="radio-page__queue-pitch">
-        <input
-          key={`${item.itemId}-${item.pitch}`}
-          type="number"
-          min={0.5}
-          max={1.5}
-          step={0.01}
-          defaultValue={item.pitch}
-          onBlur={(e) => onPitch(item, Number(e.currentTarget.value))}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") onPitch(item, Number(e.currentTarget.value));
+      {current && <RadioIcon size={15} className={queueStyles.liveIcon} aria-label="Sonando ahora" />}
+      <label className={queueStyles.pitch} title="Pitch de esta canción">
+        <span>PITCH</span>
+        <input key={`${item.itemId}-${item.pitch}`} type="number"
+          min={0.5} max={1.5} step={0.01} defaultValue={item.pitch}
+          onBlur={(event) => {
+            const value = Number(event.currentTarget.value);
+            if (Number.isFinite(value) && value >= 0.5 && value <= 1.5 && Math.abs(value - item.pitch) >= .005) onPitch(item, value);
           }}
-          title="Pitch de esta canción"
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              const value = Number(event.currentTarget.value);
+              if (Number.isFinite(value) && value >= .5 && value <= 1.5) onPitch(item, value);
+              event.currentTarget.blur();
+            }
+          }}
         />
-        <span>x</span>
-      </div>
-      <div className="radio-page__queue-actions">
-        {!current && (
-          <>
-            <button onClick={onMoveUp} disabled={!canMoveUp} title="Subir">
-              <ArrowUpIcon size={15} />
-            </button>
-            <button onClick={onMoveDown} disabled={!canMoveDown} title="Bajar">
-              <ArrowDownIcon size={15} />
-            </button>
-          </>
-        )}
-        <button onClick={() => onRemove(item)} title={current ? "Saltar canción actual" : "Quitar"}>
-          <TrashIcon size={15} />
+        <span>×</span>
+      </label>
+      <div className={queueStyles.actions}>
+        {!current && <>
+          <button type="button" onClick={onMoveUp} disabled={!canMoveUp} title="Subir">
+            <ArrowUpIcon size={14}/>
+          </button>
+          <button type="button" onClick={onMoveDown} disabled={!canMoveDown} title="Bajar">
+            <ArrowDownIcon size={14}/>
+          </button>
+        </>}
+        <button type="button" onClick={() => onRemove(item)}
+          title={current ? "Saltar canción actual" : "Quitar de la cola"}>
+          <TrashIcon size={14}/>
         </button>
       </div>
     </div>

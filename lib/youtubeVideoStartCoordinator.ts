@@ -1,5 +1,7 @@
 "use client";
 
+import { getYoutubeVideoWaitForReady } from "@/lib/youtubeVideoBackgroundPreference";
+
 type YoutubeVideoStartSource = {
   id: string;
   type: string;
@@ -46,5 +48,14 @@ export async function prepareYoutubeVideoStart(
   request: YoutubeVideoStartRequest,
 ) {
   if (request.signal.aborted || !handler) return;
+
+  // With the default non-blocking preference the mounted background component
+  // already resolves the video asynchronously when currentTrack changes.
+  // Do not claim its blocking start slot: start the audio immediately and let
+  // onCanPlay synchronize the video to the audio's current playback position.
+  if (!getYoutubeVideoWaitForReady()) return;
+
+  // Opt-in legacy behaviour: hold audio for the video's ready event (or the
+  // existing safety timeout/abort) using the exact same coordinator as before.
   await handler(request);
 }

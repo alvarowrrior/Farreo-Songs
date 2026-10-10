@@ -1,734 +1,359 @@
 "use client";
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { LibraryIcon, PlusIcon, RadioIcon, ShareIcon } from "lucide-react";
+import { createPortal } from "react-dom";
 import { onAuthStateChanged } from "firebase/auth";
+import { ListMusicIcon, Music2Icon, PlusIcon, RadioIcon, Share2Icon, XIcon } from "lucide-react";
+import FarreoContextMenu, { type FarreoContextMenuItem } from "@/components/FarreoContextMenu";
+import {
+  useMusicPlayer,
+  type MusicPlaylistSource,
+  type MusicTrack,
+  type PlaybackQueuePitch,
+  type PlaybackQueuePosition,
+} from "@/components/MusicPlayerProvider";
 import { auth } from "@/lib/firebase";
-import {
-  addSongToRadioQueue,
-  type RadioSongInsertMode,
-  type RadioSongPitchMode,
-} from "@/lib/radioSongActions";
-import {
-  addSongToPrivatePlaylist,
-  listOwnPrivatePlaylists,
-  type PrivatePlaylist,
-} from "@/lib/privatePlaylists";
+import { getThemeDiscovery, type ThemeDiscoverySong } from "@/lib/themeDiscovery";
 import { getMediaUrl } from "@/lib/radioApi";
-import {
-  getThemeDiscovery,
-  type ThemeDiscoveryPayload,
-  type ThemeDiscoverySong,
-} from "@/lib/themeDiscovery";
+import { lookupYoutubeTracks } from "@/lib/youtubeTracks";
+import { addSongToPrivatePlaylist, listOwnPrivatePlaylists, type PrivatePlaylist } from "@/lib/privatePlaylists";
+import { addSongToRadioQueue } from "@/lib/radioSongActions";
 import styles from "./DesktopSongRadioContextEnhancer.module.scss";
 
-type ContextPoint = {
-  x: number;
-  y: number;
-  song: ThemeDiscoverySong;
-  common?: boolean;
-};
-
-const POSITIONS: Array<{
-  value: RadioSongInsertMode;
-  label: string;
-  short: string;
-}> = [
-  { value: "last", label: "Añadir al final", short: "al final" },
-  { value: "next", label: "Añadir segunda", short: "como segunda" },
-  { value: "now", label: "Reproducción inmediata", short: "en reproducción inmediata" },
-];
-
-// Hosts that are definitely a song interaction surface. These are the only
-// places where Farreo may create its own fallback menu when the page does not
-// already provide one.
-const STRICT_SONG_HOST_SELECTOR = [
+const STRICT_HOSTS = [
   ".playlist-song-table__row",
   ".album-track",
   ".app-sidebar__song-result",
   ".song-discovery__row",
   ".playlist-admin__recommendation-card--daily",
-  // In the bottom player ONLY the song name is a song interaction target.
-  // Artwork, empty player space and controls must keep their normal behaviour.
   ".playlist-admin__now-playing-title",
 ].join(",");
-
-// Broader hosts are kept only so we can augment an EXISTING Farreo song menu.
-// They are deliberately forbidden from creating the radio-only fallback menu:
-// CSS-module class fragments such as "songCard" can occur on containers whose
-// empty/background regions are not themselves song interaction targets.
-const SONG_HOST_SELECTOR = [
-  STRICT_SONG_HOST_SELECTOR,
-  "[class*='songResult']",
-  "[class*='songRow']",
-  "[class*='songCard']",
-  "[class*='SongResult']",
-  "[class*='SongRow']",
-  "[class*='SongCard']",
+const HOSTS = [STRICT_HOSTS,
+  "[class*='songResult']", "[class*='songRow']", "[class*='songCard']",
+  "[class*='SongResult']", "[class*='SongRow']", "[class*='SongCard']",
 ].join(",");
+const MENU_SELECTOR = ".farreo-context-menu, .playlist-song-table__menu--fixed";
 
-const normalize = (value: string) => value
-  .normalize("NFD")
-  .replace(/[\u0300-\u036f]/g, "")
-  .toLowerCase()
-  .trim();
+const normalize = (value: string) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+const clamp = (n: number) => Math.max(0.5, Math.min(1.5, Number.isFinite(n) ? n : 1));
 
-const clampPitch = (value: number) => (
-  Math.max(0.5, Math.min(1.5, Number.isFinite(value) ? value : 1))
-);
+type SelectedSong = Pick<ThemeDiscoverySong, "id" | "name" | "url" | "iconUrl" | "duration">;
+type MenuPoint = { x: number; y: number; song: SelectedSong; source: MusicPlaylistSource | null };
 
-const comparableUrl = (value?: string | null) => {
-  if (!value || typeof window === "undefined") return "";
-  try {
-    return new URL(getMediaUrl(value), window.location.href).href;
-  } catch {
-    return getMediaUrl(value);
-  }
-};
-
-function findSongHost(target: EventTarget | null) {
-  if (!(target instanceof Element)) return null;
-  return target.closest<HTMLElement>(SONG_HOST_SELECTOR);
+function getCandidateNames(host: HTMLElement) {
+  const selectors = [".playlist-song-table__song-title", ".album-track__copy strong",
+    ".app-sidebar__song-result-text > span", ".song-discovery__play-row strong",
+    ".playlist-admin__recommendation-copy small", "strong"];
+  const names = new Set<string>();
+  if (host.matches(".playlist-admin__now-playing-title")) names.add(host.textContent?.trim() || "");
+  host.querySelectorAll<HTMLImageElement>("img[alt]").forEach((img) => names.add(img.alt.trim()));
+  selectors.forEach((selector) => host.querySelectorAll<HTMLElement>(selector)
+    .forEach((el) => names.add(el.textContent?.trim() || "")));
+  return [...names].filter((name) => name.length > 0 && name.length <= 180);
 }
-
-function isStrictSongTarget(target: EventTarget | null) {
-  if (!(target instanceof Element)) return false;
-  return Boolean(target.closest(STRICT_SONG_HOST_SELECTOR));
-}
-
-function candidateNames(host: HTMLElement) {
-  const values: Array<{ name: string; imageUrl?: string }> = [];
-
-  if (host.matches(".playlist-admin__now-playing-title")) {
-    const ownName = (host.textContent || "").trim();
-    if (ownName) values.push({ name: ownName });
-  }
-
-  const images = Array.from(host.querySelectorAll<HTMLImageElement>("img[alt]"));
-  if (host instanceof HTMLImageElement && host.alt) images.unshift(host);
-
-  images.forEach((image) => {
-    const name = image.alt.trim();
-    if (name) values.push({ name, imageUrl: image.currentSrc || image.src });
-  });
-
-  const selectors = [
-    ".playlist-song-table__song-title",
-    ".album-track__copy strong",
-    ".app-sidebar__song-result-text > span",
-    ".song-discovery__play-row strong",
-    ".playlist-admin__recommendation-copy small",
-    ".playlist-admin__now-playing-title",
-    "strong",
-    "[title]",
-  ];
-
-  selectors.forEach((selector) => {
-    host.querySelectorAll<HTMLElement>(selector).forEach((element) => {
-      const text = selector === "[title]"
-        ? element.getAttribute("title") || ""
-        : element.textContent || "";
-      const name = text.trim();
-      if (name && name.length <= 180) values.push({ name });
-    });
-  });
-
-  return values;
-}
-
-function resolveSong(
-  host: HTMLElement,
-  data: ThemeDiscoveryPayload,
-  songsByName: Map<string, ThemeDiscoverySong[]>,
-) {
-  for (const candidate of candidateNames(host)) {
-    const matches = songsByName.get(normalize(candidate.name)) || [];
-    if (matches.length === 0) continue;
-    if (matches.length === 1) return matches[0];
-
-    if (candidate.imageUrl) {
-      const imageUrl = comparableUrl(candidate.imageUrl);
-      const artworkMatch = matches.find((song) => {
-        const songUrl = comparableUrl(song.iconUrl);
-        if (!songUrl || !imageUrl) return false;
-        return songUrl === imageUrl
-          || new URL(songUrl, window.location.href).pathname === new URL(imageUrl, window.location.href).pathname;
-      });
-      if (artworkMatch) return artworkMatch;
-    }
-
-    return matches[0];
-  }
-
-  const hostText = Array.from(host.querySelectorAll<HTMLElement>("strong, span"))
-    .map((element) => normalize(element.textContent || ""))
-    .filter(Boolean);
-
-  for (const text of hostText) {
-    const matches = songsByName.get(text);
-    if (matches?.length) return matches[0];
-  }
-
-  return null;
-}
-
-function visibleMenus() {
-  return Array.from(document.querySelectorAll<HTMLElement>(
-    ".farreo-context-menu, .playlist-song-table__menu--fixed",
-  )).filter((menu) => {
+function getVisibleMenus() {
+  return [...document.querySelectorAll<HTMLElement>(MENU_SELECTOR)].filter((menu) => {
     const style = window.getComputedStyle(menu);
-    return style.display !== "none" && style.visibility !== "hidden";
+    return style.visibility !== "hidden" && style.display !== "none";
   });
 }
-
-function closestMenuToPoint(
-  x: number,
-  y: number,
-  menusVisibleBefore: Set<HTMLElement>,
-) {
-  // Only consider a menu that became visible because of THIS context-click.
-  // This prevents an already-open Farreo menu elsewhere on the page from being
-  // mistaken for the song menu we are trying to augment.
-  const menus = visibleMenus().filter((menu) => !menusVisibleBefore.has(menu));
-  if (menus.length === 0) return null;
-
-  return menus
-    .map((menu) => {
-      const rect = menu.getBoundingClientRect();
-      const dx = x < rect.left ? rect.left - x : x > rect.right ? x - rect.right : 0;
-      const dy = y < rect.top ? rect.top - y : y > rect.bottom ? y - rect.bottom : 0;
-      return { menu, distance: Math.hypot(dx, dy) };
-    })
-    .sort((left, right) => left.distance - right.distance)[0]?.menu || null;
+function sourceFromPage(path: string): MusicPlaylistSource | null {
+  const match = path.match(/^\/(playlist|user-playlist|album|recommendation)\/([^/?#]+)/);
+  if (!match) return null;
+  const [, type, id] = match;
+  const name = document.querySelector<HTMLElement>("h1")?.textContent?.trim();
+  return { id: type === "recommendation" ? `recommendation:${decodeURIComponent(id)}` : decodeURIComponent(id),
+    name: name || (type === "recommendation" ? "Recomendaciones" : "Playlist"),
+    type: type === "playlist" ? "global" : type === "user-playlist" ? "private" : type === "album" ? "album" : "song" };
 }
 
-function pitchLabel(pitch: RadioSongPitchMode) {
-  if (pitch.kind === "random") return "pitch aleatorio";
-  if (Math.abs(pitch.pitch - 1) < 0.0001) return "pitch x1";
-  return `pitch x${pitch.pitch.toFixed(2)}`;
-}
-
-function FallbackRadioMenu({
-  point,
-  personalPlaylists,
-  onAdd,
-  onAddToPlaylist,
-  onShare,
-  onClose,
-}: {
-  point: ContextPoint;
-  personalPlaylists: PrivatePlaylist[];
-  onAdd: (insertAt: RadioSongInsertMode, pitch: RadioSongPitchMode) => void;
-  onAddToPlaylist: (playlistId: string) => void;
-  onShare: () => void;
+function QueueComposer({ target, radio, busy, defaultRandomPitch, defaultPitch, onClose, onSubmit }: {
+  target: MenuPoint;
+  radio: boolean;
+  busy: boolean;
+  defaultRandomPitch: boolean;
+  defaultPitch: number;
   onClose: () => void;
+  onSubmit: (position: PlaybackQueuePosition, pitch: PlaybackQueuePitch) => void;
 }) {
-  const [customPitch, setCustomPitch] = useState("1.00");
-  const flip = point.x + 450 > window.innerWidth;
-  const style: CSSProperties = {
-    left: Math.min(point.x, Math.max(8, window.innerWidth - 210)),
-    top: Math.min(point.y, Math.max(8, window.innerHeight - 190)),
-  };
-
+  const [position, setPosition] = useState<PlaybackQueuePosition>("next");
+  // Inherit the actual player's pitch preference, not a hard-coded random.
+  const [pitchMode, setPitchMode] = useState<"random" | "normal" | "custom">(() =>
+    defaultRandomPitch ? "random" : Math.abs(defaultPitch - 1) < 0.005 ? "normal" : "custom");
+  const [pitch, setPitch] = useState(() => clamp(defaultPitch).toFixed(2));
   useEffect(() => {
-    const close = () => onClose();
-    const key = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("pointerdown", close);
-    window.addEventListener("keydown", key);
-    return () => {
-      window.removeEventListener("pointerdown", close);
-      window.removeEventListener("keydown", key);
-    };
+    const keydown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", keydown);
+    return () => window.removeEventListener("keydown", keydown);
   }, [onClose]);
-
-  return (
-    <div
-      className={styles.fallbackMenu}
-      data-farreo-radio-flip={flip ? "true" : "false"}
-      style={style}
-      onPointerDown={(event) => event.stopPropagation()}
-      onContextMenu={(event) => event.preventDefault()}
-    >
-      {point.common ? (
-        <>
-          <div className={styles.menuEntry}>
-            <button
-              type="button"
-              className={styles.menuButton}
-              onClick={onShare}
-            >
-              <ShareIcon size={16} />
-              <span>Compartir</span>
-              <span />
-            </button>
+  const width = Math.min(334, window.innerWidth - 24);
+  const style: CSSProperties = {
+    left: Math.max(12, Math.min(target.x, window.innerWidth - width - 12)),
+    top: Math.max(12, Math.min(target.y, window.innerHeight - 374)),
+    width,
+  };
+  return createPortal(
+    <div className={styles.composerBackdrop} onPointerDown={(event) => {
+      if (event.target === event.currentTarget) onClose();
+    }}>
+      <div className={styles.composer} style={style} role="dialog" aria-modal="true"
+        aria-label={`Añadir ${radio ? "a la radio" : "a la cola"}`} onPointerDown={(event) => event.stopPropagation()}>
+        <div className={styles.composerHeader}>
+          <div className={styles.composerIcon}>{radio ? <RadioIcon size={17}/> : <ListMusicIcon size={17}/>}</div>
+          <div className={styles.composerTitle}>
+            <h3>{radio ? "Añadir a la radio" : "Añadir a la cola"}</h3>
+            <p title={target.song.name}>{target.song.name}</p>
           </div>
-
-          <div className={styles.menuEntry}>
-            <button type="button" className={styles.menuButton}>
-              <PlusIcon size={16} />
-              <span>Añadir a playlist</span>
-              <span className={styles.arrow}>›</span>
-            </button>
-
-            <div className={styles.positionPanel}>
-              {personalPlaylists.length === 0 ? (
-                <button type="button" className={styles.pitchButton} disabled>
-                  <LibraryIcon size={15} />
-                  <span>Sin playlists propias</span>
-                </button>
-              ) : personalPlaylists.map((playlist) => (
-                <button
-                  key={playlist.id}
-                  type="button"
-                  className={styles.pitchButton}
-                  onClick={() => onAddToPlaylist(playlist.id)}
-                >
-                  <LibraryIcon size={15} />
-                  <span>{playlist.nombre}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        </>
-      ) : null}
-
-      <div className={styles.menuEntry}>
-        <button type="button" className={styles.menuButton}>
-          <RadioIcon size={16} className={styles.radioSourceIcon} />
-          <span>Añadir a la radio</span>
-          <span className={styles.arrow}>›</span>
-        </button>
-
-        <div className={styles.positionPanel}>
-          {POSITIONS.map((position) => (
-            <div key={position.value} className={styles.positionEntry}>
-              <button type="button" className={styles.menuButton}>
-                <span className={styles.positionDot} />
-                <span>{position.label}</span>
-                <span className={styles.arrow}>›</span>
-              </button>
-
-              <div className={styles.pitchPanel}>
-                <button
-                  type="button"
-                  className={styles.pitchButton}
-                  onClick={() => onAdd(position.value, { kind: "random" })}
-                >
-                  <span>🎲</span><span>Pitch aleatorio</span>
-                </button>
-                <button
-                  type="button"
-                  className={styles.pitchButton}
-                  onClick={() => onAdd(position.value, { kind: "fixed", pitch: 1 })}
-                >
-                  <span>1×</span><span>Pitch x1</span>
-                </button>
-                <div className={styles.customPitch}>
-                  <span>x Pitch</span>
-                  <input
-                    type="number"
-                    min={0.5}
-                    max={1.5}
-                    step={0.01}
-                    value={customPitch}
-                    onChange={(event) => setCustomPitch(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        onAdd(position.value, { kind: "fixed", pitch: clampPitch(Number(customPitch)) });
-                      }
-                    }}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => onAdd(position.value, { kind: "fixed", pitch: clampPitch(Number(customPitch)) })}
-                  >
-                    Añadir
-                  </button>
-                </div>
-              </div>
-            </div>
-          ))}
+          <button className={styles.close} type="button" onClick={onClose} aria-label="Cerrar"><XIcon size={17}/></button>
         </div>
+        <div className={styles.composerSection}>
+          <span className={styles.caption}>ORDEN DE REPRODUCCIÓN</span>
+          <div className={styles.segmented}>
+            {([
+              ["next", "Siguiente"], ["last", "Al final"], ["now", "Ahora"],
+            ] as const).map(([value,label]) => (
+              <button type="button" key={value} onClick={() => setPosition(value)}
+                className={position === value ? styles.selected : ""} aria-pressed={position === value}>{label}</button>
+            ))}
+          </div>
+        </div>
+        <div className={styles.composerSection}>
+          <span className={styles.caption}>PITCH</span>
+          <div className={styles.pitchChoices}>
+            {([
+              ["random", "🎲 Aleatorio"], ["normal", "1× Original"], ["custom", "Personalizado"],
+            ] as const).map(([value,label]) => (
+              <button type="button" key={value} onClick={() => setPitchMode(value)}
+                className={pitchMode === value ? styles.selected : ""} aria-pressed={pitchMode === value}>{label}</button>
+            ))}
+          </div>
+          {pitchMode === "custom" ? (
+            <div className={styles.pitchCustom}>
+              <input type="range" aria-label="Velocidad" min={0.5} max={1.5} step={0.01}
+                value={clamp(Number(pitch))} onChange={(event) => setPitch(Number(event.target.value).toFixed(2))}/>
+              <span>×</span>
+              <input type="number" min={0.5} max={1.5} step={0.01} aria-label="Pitch personalizado"
+                value={pitch} onChange={(event) => setPitch(event.target.value)}/>
+            </div>
+          ) : null}
+        </div>
+        <button type="button" className={styles.submit} disabled={busy} onClick={() => onSubmit(position,
+          pitchMode === "random" ? { kind: "random" } : { kind: "fixed", pitch: pitchMode === "normal" ? 1 : clamp(Number(pitch)) },
+        )}>
+          <PlusIcon size={17}/>{busy ? "Añadiendo…" : radio ? "Añadir a la radio" : "Añadir a mi cola"}
+        </button>
       </div>
-    </div>
+    </div>, document.body,
   );
 }
 
 export default function DesktopSongRadioContextEnhancer() {
-  const catalogueRef = useRef<ThemeDiscoveryPayload | null>(null);
-  const songsByNameRef = useRef<Map<string, ThemeDiscoverySong[]>>(new Map());
-  const catalogueRequestRef = useRef<Promise<ThemeDiscoveryPayload> | null>(null);
-  const requestSerialRef = useRef(0);
-  const noticeTimerRef = useRef<number | null>(null);
+  const {
+    currentTrack, currentSource, playbackUpcoming, playbackHistory,
+    playerMode, playbackPitch, autoRandomPitch, addToPlaybackQueue,
+  } = useMusicPlayer();
+  const modeRef = useRef(playerMode);
+  const playerTracksRef = useRef({currentTrack, currentSource, playbackUpcoming, playbackHistory});
+  modeRef.current = playerMode;
+  playerTracksRef.current = {currentTrack, currentSource, playbackUpcoming, playbackHistory};
 
-  const [fallback, setFallback] = useState<ContextPoint | null>(null);
-  const [personalPlaylists, setPersonalPlaylists] = useState<PrivatePlaylist[]>([]);
-  const [notice, setNotice] = useState<{ type: "success" | "error"; text: string } | null>(null);
-
-  const showNotice = (type: "success" | "error", text: string) => {
-    setNotice({ type, text });
-    if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
-    noticeTimerRef.current = window.setTimeout(() => {
-      setNotice(null);
-      noticeTimerRef.current = null;
-    }, 2800);
-  };
-
-  const shareSong = async (song: ThemeDiscoverySong) => {
-    try {
-      await navigator.clipboard.writeText(
-        `${window.location.origin}/play?song=${encodeURIComponent(song.id)}`,
-      );
-      showNotice("success", `Enlace de “${song.name}” copiado.`);
-    } catch {
-      showNotice("error", "No se pudo copiar el enlace.");
-    } finally {
-      setFallback(null);
-    }
-  };
-
-  const addToPersonalPlaylist = async (
-    playlistId: string,
-    song: ThemeDiscoverySong,
-  ) => {
-    try {
-      await addSongToPrivatePlaylist(playlistId, song.id);
-      const playlist = personalPlaylists.find((item) => item.id === playlistId);
-      showNotice(
-        "success",
-        `“${song.name}” añadida a ${playlist?.nombre || "la playlist"}.`,
-      );
-    } catch (error) {
-      showNotice(
-        "error",
-        error instanceof Error ? error.message : "No se pudo añadir a la playlist.",
-      );
-    } finally {
-      setFallback(null);
-    }
-  };
-
-  const indexCatalogue = (data: ThemeDiscoveryPayload) => {
-    const map = new Map<string, ThemeDiscoverySong[]>();
-    data.songs.forEach((song) => {
-      const key = normalize(song.name);
-      const current = map.get(key) || [];
-      current.push(song);
-      map.set(key, current);
-    });
-    catalogueRef.current = data;
-    songsByNameRef.current = map;
-    return data;
-  };
-
-  const ensureCatalogue = () => {
-    if (catalogueRef.current) return Promise.resolve(catalogueRef.current);
-    if (catalogueRequestRef.current) return catalogueRequestRef.current;
-
-    catalogueRequestRef.current = getThemeDiscovery()
-      .then(indexCatalogue)
-      .finally(() => {
-        catalogueRequestRef.current = null;
-      });
-
-    return catalogueRequestRef.current;
-  };
-
-  const closeInjectedMenu = (menu: HTMLElement) => {
-    try {
-      window.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
-    } catch {
-      // PointerEvent may be unavailable in old test environments.
-    }
-
-    try {
-      menu.dispatchEvent(new MouseEvent("mouseout", {
-        bubbles: true,
-        relatedTarget: document.body,
-      }));
-    } catch {
-      // Best effort.
-    }
-  };
-
-  const addToRadio = async (
-    song: ThemeDiscoverySong,
-    insertAt: RadioSongInsertMode,
-    pitch: RadioSongPitchMode,
-    menu?: HTMLElement | null,
-  ) => {
-    try {
-      await addSongToRadioQueue(song.id, { insertAt, pitch });
-      const position = POSITIONS.find((item) => item.value === insertAt)?.short || "en la radio";
-      showNotice("success", `“${song.name}” añadida ${position} · ${pitchLabel(pitch)}.`);
-    } catch (error) {
-      showNotice(
-        "error",
-        error instanceof Error ? error.message : "No se pudo añadir la canción a la radio.",
-      );
-    } finally {
-      if (menu) closeInjectedMenu(menu);
-      setFallback(null);
-    }
-  };
-
-  const createRadioIconNode = () => {
-    const namespace = "http://www.w3.org/2000/svg";
-    const svg = document.createElementNS(namespace, "svg");
-    svg.setAttribute("viewBox", "0 0 24 24");
-    svg.setAttribute("width", "16");
-    svg.setAttribute("height", "16");
-    svg.setAttribute("fill", "none");
-    svg.setAttribute("stroke", "currentColor");
-    svg.setAttribute("stroke-width", "2");
-    svg.setAttribute("stroke-linecap", "round");
-    svg.setAttribute("stroke-linejoin", "round");
-    svg.setAttribute("aria-hidden", "true");
-    svg.classList.add(styles.radioSourceIcon);
-
-    const paths = [
-      "M4.9 19.1C1 15.2 1 8.8 4.9 4.9",
-      "M7.8 16.2a6 6 0 0 1 0-8.5",
-      "M16.2 7.8a6 6 0 0 1 0 8.5",
-      "M19.1 4.9C23 8.8 23 15.1 19.1 19",
-    ];
-    paths.forEach((d) => {
-      const path = document.createElementNS(namespace, "path");
-      path.setAttribute("d", d);
-      svg.appendChild(path);
-    });
-
-    const circle = document.createElementNS(namespace, "circle");
-    circle.setAttribute("cx", "12");
-    circle.setAttribute("cy", "12");
-    circle.setAttribute("r", "2");
-    svg.appendChild(circle);
-
-    return svg;
-  };
-
-  const makeMenuButton = (
-    label: string,
-    className: string,
-    leadingText = "",
-  ) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = className;
-
-    const leading = document.createElement("span");
-    leading.className = styles.rawLeading;
-    leading.textContent = leadingText;
-
-    const copy = document.createElement("span");
-    copy.textContent = label;
-
-    const arrow = document.createElement("span");
-    arrow.className = styles.injectedArrow;
-    arrow.textContent = "›";
-
-    button.append(leading, copy, arrow);
-    return button;
-  };
-
-  const injectIntoMenu = (menu: HTMLElement, song: ThemeDiscoverySong) => {
-    if (menu.querySelector("[data-farreo-radio-song-entry]")) return;
-
-    const flip = menu.getBoundingClientRect().right + 450 > window.innerWidth;
-
-    const entry = document.createElement("div");
-    entry.dataset.farreoRadioSongEntry = song.id;
-    entry.dataset.farreoRadioFlip = flip ? "true" : "false";
-    entry.className = styles.injectedEntry;
-
-    const parent = makeMenuButton("Añadir a la radio", styles.injectedButton);
-    parent.setAttribute("aria-haspopup", "menu");
-    const parentLeading = parent.firstElementChild;
-    if (parentLeading) {
-      parentLeading.textContent = "";
-      parentLeading.appendChild(createRadioIconNode());
-    }
-
-    const positionPanel = document.createElement("div");
-    positionPanel.className = styles.positionPanel;
-    positionPanel.setAttribute("role", "menu");
-
-    POSITIONS.forEach((position) => {
-      const positionEntry = document.createElement("div");
-      positionEntry.className = styles.positionEntry;
-
-      const positionButton = makeMenuButton(position.label, styles.injectedButton, "•");
-      positionButton.setAttribute("aria-haspopup", "menu");
-
-      const pitchPanel = document.createElement("div");
-      pitchPanel.className = styles.pitchPanel;
-      pitchPanel.setAttribute("role", "menu");
-
-      const addChoice = (label: string, badge: string, pitch: RadioSongPitchMode) => {
-        const choice = document.createElement("button");
-        choice.type = "button";
-        choice.className = styles.pitchButton;
-
-        const badgeNode = document.createElement("span");
-        badgeNode.textContent = badge;
-        const labelNode = document.createElement("span");
-        labelNode.textContent = label;
-        choice.append(badgeNode, labelNode);
-
-        choice.addEventListener("click", (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          void addToRadio(song, position.value, pitch, menu);
-        });
-        pitchPanel.appendChild(choice);
-      };
-
-      addChoice("Pitch aleatorio", "🎲", { kind: "random" });
-      addChoice("Pitch x1", "1×", { kind: "fixed", pitch: 1 });
-
-      const custom = document.createElement("div");
-      custom.className = styles.customPitch;
-
-      const customLabel = document.createElement("span");
-      customLabel.textContent = "x Pitch";
-
-      const input = document.createElement("input");
-      input.type = "number";
-      input.min = "0.5";
-      input.max = "1.5";
-      input.step = "0.01";
-      input.value = "1";
-
-      const submit = document.createElement("button");
-      submit.type = "button";
-      submit.textContent = "Añadir";
-
-      const submitCustom = (event: Event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const value = clampPitch(Number(input.value));
-        input.value = value.toFixed(2);
-        void addToRadio(song, position.value, { kind: "fixed", pitch: value }, menu);
-      };
-
-      input.addEventListener("pointerdown", (event) => event.stopPropagation());
-      input.addEventListener("click", (event) => event.stopPropagation());
-      input.addEventListener("keydown", (event) => {
-        event.stopPropagation();
-        if (event.key === "Enter") submitCustom(event);
-      });
-      submit.addEventListener("click", submitCustom);
-
-      custom.append(customLabel, input, submit);
-      pitchPanel.appendChild(custom);
-
-      positionEntry.append(positionButton, pitchPanel);
-      positionPanel.appendChild(positionEntry);
-    });
-
-    entry.append(parent, positionPanel);
-    menu.appendChild(entry);
+  const songsRef = useRef<SelectedSong[] | null>(null);
+  const fetchingRef = useRef<Promise<SelectedSong[]> | null>(null);
+  const serialRef = useRef(0);
+  const [fallback, setFallback] = useState<MenuPoint | null>(null);
+  const [composer, setComposer] = useState<MenuPoint | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [playlists, setPlaylists] = useState<PrivatePlaylist[]>([]);
+  const [notice, setNotice] = useState("");
+  const notify = (message: string) => {
+    setNotice(message);
+    window.setTimeout(() => setNotice((old) => old === message ? "" : old), 3200);
   };
 
   useEffect(() => {
-    if (!auth) {
-      setPersonalPlaylists([]);
-      return;
-    }
-
+    if (!auth) return;
     return onAuthStateChanged(auth, (user) => {
-      catalogueRef.current = null;
-      songsByNameRef.current = new Map();
-      catalogueRequestRef.current = null;
-
-      if (!user) {
-        setPersonalPlaylists([]);
-        return;
-      }
-
-      void listOwnPrivatePlaylists(user.uid)
-        .then(setPersonalPlaylists)
-        .catch(() => setPersonalPlaylists([]));
+      songsRef.current = null;
+      fetchingRef.current = null;
+      if (!user) { setPlaylists([]); return; }
+      void listOwnPrivatePlaylists(user.uid).then(setPlaylists).catch(() => setPlaylists([]));
     });
   }, []);
 
-  useEffect(() => {
-    const handleContextMenu = (event: MouseEvent) => {
-      // A new context-click always invalidates a previous fallback menu.
+  const loadSongs = () => {
+    if (songsRef.current) return Promise.resolve(songsRef.current);
+    if (fetchingRef.current) return fetchingRef.current;
+    const request = getThemeDiscovery().then((payload) => {
+      songsRef.current = payload.songs;
+      return payload.songs;
+    }).finally(() => { fetchingRef.current = null; });
+    fetchingRef.current = request;
+    return request;
+  };
+
+  const resolve = async (host: HTMLElement): Promise<SelectedSong | null> => {
+    const names = getCandidateNames(host).map(normalize);
+    const player = playerTracksRef.current;
+    const local: MusicTrack[] = [player.currentTrack, ...player.playbackUpcoming.map((item) => item.track),
+      ...player.playbackHistory.map((item) => item.track)].filter((song): song is MusicTrack => !!song);
+    const directId = host.getAttribute("data-farreo-song-id") || host.getAttribute("data-song-id");
+    const localById = directId ? local.find((song) => song.id === directId) : null;
+    if (localById?.url) return localById as SelectedSong;
+    if (directId?.startsWith("youtube:")) {
+      const found = await lookupYoutubeTracks([directId]);
+      if (found[0]?.url) return found[0];
+    }
+    const all = await loadSongs();
+    if (directId) {
+      const byId = all.find((song) => song.id === directId);
+      if (byId) return byId;
+    }
+    const localByName = local.find((song) => names.includes(normalize(song.name)));
+    if (localByName?.url) return localByName as SelectedSong;
+    for (const name of names) {
+      const matches = all.filter((song) => normalize(song.name) === name);
+      if (matches.length === 1) return matches[0];
+      if (matches.length > 1) {
+        const img = host.querySelector<HTMLImageElement>("img[alt]");
+        const icon = img?.currentSrc || img?.src;
+        const chosen = matches.find((song) => {
+          try { return new URL(getMediaUrl(song.iconUrl || ""), window.location.href).pathname ===
+            new URL(icon || "", window.location.href).pathname; } catch { return false; }
+        });
+        if (chosen) return chosen;
+        return matches[0];
+      }
+    }
+    return null;
+  };
+
+  const submit = async (target: MenuPoint, position: PlaybackQueuePosition, pitch: PlaybackQueuePitch) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      if (modeRef.current === "radio") {
+        await addSongToRadioQueue(target.song.id, { insertAt: position, pitch });
+        notify(`“${target.song.name}” añadida a la radio.`);
+      } else {
+        addToPlaybackQueue(target.song, position, pitch, target.source);
+        notify(`“${target.song.name}” añadida a tu cola.`);
+      }
+      setComposer(null);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "No se pudo añadir la canción.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // One extra action in the *existing* Farreo menu. Opening it brings up one
+  // large pitch/order panel, never nested hover submenus or a second context menu.
+  const inject = (menu: HTMLElement, target: MenuPoint) => {
+    const previous = menu.querySelector<HTMLElement>("[data-farreo-song-queue-entry]");
+    if (previous?.dataset.farreoSongQueueEntry === target.song.id) return;
+    previous?.remove();
+    const parent = document.createElement("div");
+    parent.dataset.farreoSongQueueEntry = target.song.id;
+    parent.className = styles.injectedEntry;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = styles.injectedButton;
+    button.innerHTML = `<span aria-hidden="true">${modeRef.current === "radio" ? "◉" : "☷"}</span><span>${modeRef.current === "radio" ? "Añadir a la radio…" : "Añadir a la cola…"}</span><span aria-hidden="true">›</span>`;
+    button.addEventListener("pointerdown", (event) => event.stopPropagation());
+    button.addEventListener("click", (event) => {
+      event.preventDefault(); event.stopPropagation();
+      window.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
       setFallback(null);
+      setComposer(target);
+    });
+    parent.appendChild(button);
+    menu.appendChild(parent);
+  };
 
-      const host = findSongHost(event.target);
-      if (!host) return;
-      if (host.closest(".playlist-admin__recommendation-card--concealed")) return;
-
-      const strictTarget = isStrictSongTarget(event.target);
-      const menusVisibleBefore = new Set(visibleMenus());
-
-      // Only suppress the browser menu when the click is definitely on a song
-      // surface for which we are allowed to provide our own fallback.
-      // Broader/ambiguous hosts are left untouched unless their own Farreo
-      // context menu appears later in this same event.
-      if (strictTarget) event.preventDefault();
-
-      const serial = ++requestSerialRef.current;
+  useEffect(() => {
+    const context = (event: MouseEvent) => {
+      setFallback(null);
+      // Do not capture our own queue island, composer or existing menus.
+      if (!(event.target instanceof Element) || event.target.closest(`${MENU_SELECTOR}, [role='dialog'], [aria-label='Cola de reproducción']`)) return;
+      const host = event.target.closest<HTMLElement>(HOSTS);
+      if (!host || host.closest(".playlist-admin__recommendation-card--concealed")) return;
+      const strict = Boolean(event.target.closest(STRICT_HOSTS));
+      if (strict) event.preventDefault();
+      const serial = ++serialRef.current;
+      // Repeated right-clicks can reuse the same React menu DOM node. Drop an
+      // injected action from the previous song before the native menu updates.
+      getVisibleMenus().forEach((menu) => menu.querySelectorAll("[data-farreo-song-queue-entry]")
+        .forEach((entry) => entry.remove()));
       const point = { x: event.clientX, y: event.clientY };
-
-      void ensureCatalogue()
-        .then((data) => {
-          if (requestSerialRef.current !== serial || !host.isConnected) return;
-          const song = resolveSong(host, data, songsByNameRef.current);
-          if (!song) return;
-
-          window.requestAnimationFrame(() => {
-            if (requestSerialRef.current !== serial) return;
-            const menu = closestMenuToPoint(point.x, point.y, menusVisibleBefore);
-            if (menu) {
-              injectIntoMenu(menu, song);
-              setFallback(null);
-              return;
-            }
-
-            // Never manufacture a radio-only menu from a fuzzy/broad match.
-            // The bottom player's SONG NAME gets the normal song actions too;
-            // the rest of the player is not a valid target at all.
-            if (strictTarget) {
-              const common = event.target instanceof Element
-                && Boolean(event.target.closest(".playlist-admin__now-playing-title"));
-              setFallback({ ...point, song, common });
-            }
+      const source = host.closest(".app-sidebar__song-result")
+        ? { id: "search", name: "Resultados de búsqueda", type: "song" as const }
+        : sourceFromPage(location.pathname);
+      void resolve(host).then((song) => {
+        if (!song || serial !== serialRef.current || !host.isConnected) return;
+        const target = { ...point, song, source };
+        let handled = false;
+        const tryInject = () => {
+          if (serial !== serialRef.current) return;
+          const menus = getVisibleMenus();
+          // Context menu is close to the click; never inject into an old unrelated menu.
+          const menu = menus.find((node) => {
+            const box = node.getBoundingClientRect();
+            return Math.abs(box.left - point.x) < 400 && Math.abs(box.top - point.y) < 400;
           });
-        })
-        .catch(() => undefined);
+          if (menu) { inject(menu, target); setFallback(null); handled = true; }
+        };
+        tryInject();
+        // React menu state may render after our capture handler or after an
+        // async lookup. Observe a short, bounded window before fallback.
+        const observer = new MutationObserver(tryInject);
+        observer.observe(document.body, { subtree: true, childList: true });
+        window.setTimeout(() => {
+          observer.disconnect();
+          if (serial !== serialRef.current) return;
+          tryInject();
+          if (!handled && strict) setFallback(target);
+        }, 140);
+      }).catch(() => undefined);
     };
-
-    window.addEventListener("contextmenu", handleContextMenu, true);
+    const dismissPending = (event: PointerEvent) => {
+      if (event.button !== 2) serialRef.current += 1;
+    };
+    window.addEventListener("contextmenu", context, true);
+    window.addEventListener("pointerdown", dismissPending, true);
     return () => {
-      window.removeEventListener("contextmenu", handleContextMenu, true);
-      if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
+      window.removeEventListener("contextmenu", context, true);
+      window.removeEventListener("pointerdown", dismissPending, true);
     };
+    // The handler reads live player/radio state through refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return (
-    <>
-      {fallback ? (
-        <FallbackRadioMenu
-          point={fallback}
-          personalPlaylists={personalPlaylists}
-          onClose={() => setFallback(null)}
-          onShare={() => void shareSong(fallback.song)}
-          onAddToPlaylist={(playlistId) => void addToPersonalPlaylist(playlistId, fallback.song)}
-          onAdd={(insertAt, pitch) => void addToRadio(fallback.song, insertAt, pitch)}
-        />
-      ) : null}
+  const fallbackItems: FarreoContextMenuItem[] = fallback ? [
+    { label: "Compartir canción", icon: <Share2Icon size={15}/>, onSelect: () => {
+      void navigator.clipboard.writeText(`${location.origin}/play?song=${encodeURIComponent(fallback.song.id)}`)
+        .then(() => notify("Enlace de la canción copiado."))
+        .catch(() => notify("No se pudo copiar el enlace."));
+    }},
+    { label: "Añadir a playlist", icon: <Music2Icon size={15}/>, disabled: !playlists.length,
+      onSelect: () => undefined,
+      children: playlists.map((playlist) => ({ label: playlist.nombre,
+        onSelect: () => void addSongToPrivatePlaylist(playlist.id, fallback.song.id)
+          .then(() => notify(`Añadida a ${playlist.nombre}.`))
+          .catch(() => notify("No se pudo añadir a la playlist.")),
+      })),
+    },
+    { label: playerMode === "radio" ? "Añadir a la radio…" : "Añadir a la cola…",
+      icon: playerMode === "radio" ? <RadioIcon size={15}/> : <ListMusicIcon size={15}/> ,
+      onSelect: () => setComposer(fallback),
+    },
+  ] : [];
 
-      {notice ? (
-        <div className={`${styles.notice} ${notice.type === "error" ? styles.noticeError : ""}`} role="status">
-          {notice.text}
-        </div>
-      ) : null}
-    </>
-  );
+  return <>
+    {fallback ? <FarreoContextMenu x={fallback.x} y={fallback.y} items={fallbackItems} onClose={() => setFallback(null)} /> : null}
+    {composer ? <QueueComposer key={`${composer.song.id}:${playerMode}:${autoRandomPitch}:${playbackPitch.toFixed(2)}`}
+      target={composer} radio={playerMode === "radio"} defaultRandomPitch={autoRandomPitch}
+      defaultPitch={playbackPitch} busy={busy} onClose={() => setComposer(null)}
+      onSubmit={(position,pitch) => void submit(composer,position,pitch)}/> : null}
+    {notice ? <div className={styles.notice} role="status" onClick={() => setNotice("")}>{notice}</div> : null}
+  </>;
 }

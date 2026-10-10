@@ -1,0 +1,469 @@
+/* FARREO playback queue — restrained, near-black, editorial rather than a card dashboard. */
+.island {
+  position: fixed;
+  top: 96px;
+  left: 91px;
+  z-index: 170;
+  width: 152px;
+  max-width: calc(100vw - 108px);
+  color: #f3f3f3;
+  background: rgba(7, 8, 9, .985);
+  border: 1px solid rgba(255, 255, 255, .085);
+  border-radius: 16px;
+  overflow: hidden;
+  isolation: isolate;
+  box-shadow: 0 22px 65px rgba(0, 0, 0, .49), 0 4px 20px rgba(0, 0, 0, .23);
+  transition: width 240ms cubic-bezier(.22, 1, .36, 1), opacity 180ms ease, transform 180ms ease;
+}
+.open { width: min(356px, calc(100vw - 108px)); }
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  min-height: 62px;
+  padding: 0 18px;
+  color: #f5f5f5;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  &:hover { background: rgba(255,255,255,.022); }
+}
+.open .toggle { min-height: 69px; margin-bottom: 0; }
+.logo { flex: 0 0 auto; color: #21d77b; }
+.toggleName {
+  font-size: 16px;
+  font-weight: 680;
+  letter-spacing: -.32px;
+  white-space: nowrap;
+  line-height: 1.15;
+}
+.toggleArrow { margin-left: auto; color: #f4f4f4; flex: 0 0 auto; }
+.body {
+  min-height: 0;
+  max-height: min(77vh, 740px);
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid rgba(255, 255, 255, .065);
+  animation: reveal 190ms ease-out both;
+}
+.scroll {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 0 15px 5px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,.14) transparent;
+  overscroll-behavior: contain;
+}
+.scroll::-webkit-scrollbar { width: 4px; }
+.scroll::-webkit-scrollbar-thumb { border-radius: 9px; background: rgba(255,255,255,.13); }
+.sectionHeading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+  padding: 0 0 14px;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: .14px;
+  color: #e9e9e9;
+}
+.playingLabel { color: #1ed760; }
+.clearButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: #a7a7a7;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 430;
+  letter-spacing: 0;
+  cursor: pointer;
+  &:hover:not(:disabled) { color: #f5f5f5; }
+  &:disabled { opacity: .33; cursor: default; }
+}
+.history { padding: 26px 0 19px; }
+.nowSection { position: relative; padding: 4px 0 20px; }
+.upNext { padding: 11px 0 20px; }
+.current {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 12px;
+  padding: 10px;
+  border-radius: 10px;
+  background: #242424;
+  border: 1px solid rgba(255,255,255,.025);
+  transition: border-color 140ms ease, background 140ms ease;
+}
+.heroCover, .cover {
+  display: block;
+  width: 49px;
+  height: 49px;
+  flex: 0 0 49px;
+  border-radius: 8px;
+  background: #151515;
+  overflow: hidden;
+  img { display: block; width: 100%; height: 100%; object-fit: cover; }
+}
+.heroCopy, .songCopy {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+.heroCopy strong, .songName {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: #f1f1f1;
+  font-size: 13.5px;
+  font-weight: 620;
+  letter-spacing: -.13px;
+  line-height: 1.3;
+}
+.heroCopy small, .songSource {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #aaa;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.2;
+}
+.equalizer {
+  flex: 0 0 13px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  height: 24px;
+  margin-right: 2px;
+  i {
+    display: block;
+    width: 2px;
+    height: 7px;
+    background: #1ed760;
+    border-radius: 2px;
+    animation: equalize .9s ease-in-out infinite alternate;
+  }
+  i:nth-child(2) { height: 13px; animation-delay: .16s; }
+  i:nth-child(3) { height: 10px; animation-delay: .38s; }
+}
+.equalizerPaused i { animation-play-state: paused; opacity: .48; }
+.songList { display: flex; flex-direction: column; gap: 2px; }
+.song {
+  position: relative;
+  min-height: 61px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 8px;
+  padding: 5px 4px 5px 0;
+  background: transparent;
+  transition: transform 185ms cubic-bezier(.2,.85,.25,1), background 160ms ease, opacity 120ms ease;
+  &:hover { background: rgba(255,255,255,.039); }
+}
+.songPlayed { opacity: .78; &:hover { opacity: 1; } }
+.songPlayed .songMain { padding-left: 0; }
+.songMain {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.songMain .cover { width: 45px; height: 45px; flex-basis: 45px; }
+.grip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 12px;
+  width: 12px;
+  height: 39px;
+  padding: 0;
+  margin-right: -2px;
+  border: 0;
+  color: rgba(255,255,255,.18);
+  background: transparent;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  transition: color 135ms ease;
+  &:hover, &:focus-visible { color: #29d979; outline-offset: 1px; }
+  &:active { cursor: grabbing; }
+}
+.song:hover .grip { color: #767676; }
+.dragOrigin { opacity: .12; }
+.dragOrigin .grip { cursor: grabbing; }
+.remove {
+  display: grid;
+  place-items: center;
+  flex: 0 0 19px;
+  width: 19px;
+  height: 24px;
+  padding: 0;
+  color: #999;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease, color 120ms ease;
+  &:hover { color: #f4a2a2; }
+}
+.song:hover .remove, .remove:focus-visible { opacity: 1; }
+/* Insert guides sit on the row edges rather than filling a large drop area. */
+.dropBefore::before, .dropAfter::after {
+  content: "";
+  position: absolute;
+  z-index: 4;
+  left: 1px;
+  right: 1px;
+  height: 2px;
+  border-radius: 2px;
+  background: #1ed760;
+  box-shadow: 0 0 0 1px rgba(30,215,96,.06), 0 0 10px rgba(30,215,96,.18);
+  pointer-events: none;
+}
+.dropBefore::before { top: -1px; }
+.dropAfter::after { bottom: -1px; }
+.dragGhost {
+  position: fixed;
+  z-index: 700;
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 7px 11px 7px 8px;
+  min-height: 61px;
+  color: #fff;
+  background: rgba(34,35,35,.97);
+  border: 1px solid rgba(30,215,96,.56);
+  border-radius: 10px;
+  box-shadow: 0 16px 42px rgba(0,0,0,.64), 0 0 12px rgba(30,215,96,.07);
+  pointer-events: none;
+  will-change: top;
+  .cover { width: 45px; height: 45px; flex-basis: 45px; }
+  .songName { font-weight: 670; }
+}
+.nowDrop .current { border-color: rgba(30,215,96,.48); background: #222d26; }
+.nowDropLine {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  position: absolute;
+  top: 21px;
+  right: 0;
+  font-size: 10px;
+  color: #1ed760;
+  background: #080909;
+  padding: 2px 3px;
+  white-space: nowrap;
+  z-index: 3;
+}
+.nowDrop::after {
+  content: "";
+  position: absolute;
+  bottom: 16px;
+  left: 1px;
+  right: 1px;
+  height: 2px;
+  background: #1ed760;
+  border-radius: 2px;
+}
+.empty { margin: 0; padding: 4px 0 12px; color: #777; font-size: 12px; line-height: 1.55; }
+.more, .less {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: #999;
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  padding: 9px 0 0;
+  cursor: pointer;
+  &:hover { color: #fff; }
+}
+.less { font-size: 10px; color: #767676; }
+.dragHint {
+  color: #777;
+  font-size: 10px;
+  line-height: 1.5;
+  margin: 13px 0 0 1px;
+}
+.sourcePanel {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px 15px 14px;
+  border-top: 1px solid rgba(255,255,255,.075);
+  color: #999;
+  > svg { color: #1ed760; flex: 0 0 auto; }
+}
+.sourceTitle { font-size: 10px; font-weight: 500; white-space: nowrap; }
+.sourcePanel select {
+  min-width: 0;
+  flex: 1 1 auto;
+  height: 28px;
+  padding: 0 7px;
+  color: #e0e0e0;
+  background: #191919;
+  border: 1px solid rgba(255,255,255,.095);
+  border-radius: 6px;
+  outline: 0;
+  font: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+  &:focus-visible { border-color: #1ed760; }
+  &:disabled { opacity: .6; cursor: wait; }
+  option { background: #1b1b1b; }
+}
+.notice {
+  width: calc(100% - 30px);
+  margin: 0 15px 12px;
+  padding: 8px 10px;
+  text-align: left;
+  color: #b9dfc3;
+  border: 1px solid rgba(30,215,96,.18);
+  background: #132118;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+:global(body:has(.app-sidebar--expanded)) .island {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-16px);
+}
+@media (max-width: 960px) { .island { display: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .island, .body, .song, .dragGhost { animation: none; transition: none; }
+  .equalizer i { animation: none; }
+}
+@keyframes reveal { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes equalize { from { height: 5px; } to { height: 13px; } }
+
+/* October editorial refinement: quieter geometry, less width, custom source picker. */
+.island {
+  border-radius: 5px;
+  background: rgba(7, 7, 8, .992);
+  box-shadow: 0 18px 58px rgba(0, 0, 0, .54);
+}
+.open {
+  width: min(334px, calc(100vw - 108px));
+  overflow: visible;
+}
+.current, .song, .cover, .heroCover, .notice, .dragGhost {
+  border-radius: 4px;
+}
+.current {
+  background: #222324;
+  border-color: rgba(255, 255, 255, .035);
+}
+.dragGhost { background: rgba(26, 27, 27, .98); }
+.sourcePanel { position: relative; z-index: 6; }
+.sourcePickerButton {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 1 1 auto;
+  gap: 8px;
+  min-width: 0;
+  height: 31px;
+  padding: 0 9px;
+  color: #e7e7e7;
+  background: #171818;
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 3px;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  font-size: 11px;
+  transition: border-color 140ms, background 140ms;
+  > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  > svg { flex: 0 0 auto; color: #9b9b9b; transition: transform 140ms ease; }
+  &:hover, &:focus-visible { border-color: rgba(30,215,96,.5); background: #202121; outline: none; }
+  &:disabled { cursor: wait; opacity: .62; }
+}
+.chevronOpen { transform: rotate(180deg); }
+.sourcePickerMenu {
+  position: absolute;
+  z-index: 15;
+  bottom: calc(100% - 1px);
+  left: 12px;
+  right: 12px;
+  max-height: min(275px, 50vh);
+  overflow-y: auto;
+  padding: 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(255,255,255,.16);
+  background: #111213;
+  box-shadow: 0 -12px 36px rgba(0,0,0,.45);
+  scrollbar-width: thin;
+  scrollbar-color: #333 transparent;
+  animation: pickerReveal 130ms ease both;
+}
+.sourceOption {
+  width: 100%;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 10px;
+  background: transparent;
+  border: 0;
+  border-radius: 2px;
+  color: #e7e7e7;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 130ms ease;
+  > span { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  strong { display: block; font-size: 12px; font-weight: 570; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  small { font-size: 10px; color: #898989; }
+  > svg { flex: 0 0 auto; color: #1ed760; }
+  &:hover, &:focus-visible { background: rgba(255,255,255,.075); outline: none; }
+}
+.sourceOptionActive {
+  background: rgba(30,215,96,.065);
+  strong { color: #73e99c; }
+}
+@keyframes pickerReveal { from {opacity: 0; transform: translateY(5px)} to {opacity: 1; transform: translateY(0)} }
+
+/* Hover playback control over the actual song artwork, never a permanent badge. */
+.heroCover { position: relative; }
+.coverPlayback {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  border: 0; color: #fff; background: rgba(0,0,0,.57);
+  cursor: pointer; opacity: 0; border-radius: inherit;
+  transition: opacity 160ms ease, background 160ms ease;
+}
+.heroCover:hover .coverPlayback, .coverPlayback:focus-visible { opacity: 1; }
+.coverPlayback:hover { background: rgba(0,0,0,.66); }
+.coverPlayback:focus-visible { outline: 2px solid #1ed760; outline-offset: -3px; }
+@media (hover: none) { .coverPlayback { opacity: .78; background: rgba(0,0,0,.35); } }

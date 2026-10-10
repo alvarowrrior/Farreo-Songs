@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useMemo, useRef, useState, useEffect, type ReactNode, type SyntheticEvent } from "react";
+import { createContext, useCallback, useContext, useMemo, useRef, useState, useEffect, useLayoutEffect, type ReactNode, type SyntheticEvent } from "react";
 import { ArrowRightIcon, DicesIcon, LoaderCircleIcon, Mic2Icon, PauseIcon, PlayIcon, RotateCcwIcon, ShuffleIcon, SkipBackIcon, SkipForwardIcon, Volume2Icon, VolumeXIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -12,6 +12,7 @@ import { claimAlbumFirstPlay } from "@/lib/albums";
 import { recordSongListened } from "@/lib/listeningHistory";
 import { notifyYoutubeVideoSeek, prepareYoutubeVideoStart } from "@/lib/youtubeVideoStartCoordinator";
 import { prepareAdvancedCoverBeforeAudio, shouldPrepareAdvancedCover } from "@/lib/advancedCoverStartPreparation";
+import { getYoutubeVideoWaitForReady } from "@/lib/youtubeVideoBackgroundPreference";
 
 export interface MusicTrack {
   id: string;
@@ -39,10 +40,41 @@ export interface MusicPlaylistSource {
   type: "global" | "private" | "album" | "song" | "admin" | "radio";
 }
 
+export type PlaybackQueuePitch = { kind: "random" } | { kind: "fixed"; pitch: number };
+export type PlaybackQueuePosition = "next" | "last" | "now";
+export interface PlaybackQueueEntry {
+  key: string;
+  track: MusicTrack;
+  source: MusicPlaylistSource | null;
+  pitch: PlaybackQueuePitch;
+  manual: boolean;
+  placement?: "next" | "last";
+}
+
+export interface PlaybackShuffleSource {
+  source: MusicPlaylistSource;
+  count: number;
+}
+
 interface MusicPlayerContextValue {
   currentTrack: MusicTrack | null;
   currentSource: MusicPlaylistSource | null;
   nextTrackId: string | null;
+  playbackHistory: PlaybackQueueEntry[];
+  playbackUpcoming: PlaybackQueueEntry[];
+  playbackQueueCleared: boolean;
+  playbackShuffleSources: PlaybackShuffleSource[];
+  playbackShuffleSourceKey: string | null;
+  selectPlaybackShuffleSource: (
+    source: MusicPlaylistSource | null, tracks?: MusicTrack[],
+    sourceByTrackId?: Map<string, MusicPlaylistSource>,
+  ) => void;
+  addToPlaybackQueue: (track: MusicTrack, position: PlaybackQueuePosition, pitch: PlaybackQueuePitch, source?: MusicPlaylistSource | null) => void;
+  removeFromPlaybackQueue: (key: string) => void;
+  clearPlaybackHistory: () => void;
+  clearPlaybackUpcoming: () => void;
+  playPlaybackQueueEntry: (key: string) => void;
+  reorderPlaybackQueueEntry: (key: string, targetIndex: number) => void;
   hasCurrentLyrics: boolean;
   isPlaying: boolean;
   playbackPitch: number;
@@ -212,6 +244,19 @@ const formatTime = (s: number) => {
 };
 
 const clampVolume = (value: number) => Math.min(1, Math.max(0, value));
+
+// A YouTube audio URL is a live, on-demand proxy stream, not a normal MP3.
+// Speculatively opening it on an inactive <audio> can exhaust/close its upstream
+// connection before the element becomes active. Start it on the active player.
+const isYoutubeProxyTrack = (track: MusicTrack | null | undefined) => Boolean(
+  track && (track.id.startsWith("youtube:") ||
+    /\/youtube-tracks\/[a-zA-Z0-9_-]{11}\/audio(?:[?#]|$)/.test(track.url || "")),
+);
+
+// Custom video covers also need the normal start path at automatic transitions.
+const needsDirectAudioStart = (track: MusicTrack | null | undefined) => Boolean(
+  isYoutubeProxyTrack(track) || (track?.advancedCoverType === "video" && track.advancedCoverUrl),
+);
 
 const parseSrtTime = (value: string) => {
   const normalized = value.trim().replace(",", ".");
@@ -409,9 +454,54 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   // romper la igualdad silenciosamente, desactivando el doble buffer).
   const preloadedUrlRef = useRef("");
   const lastPreloadRetryRef = useRef(0);
+  // Unplayed candidates are NOT ordered. Only the next two are drawn and
+  // reserved, so the UI, audio preloader and actual next track always agree.
   const shuffleRemainingRef = useRef<string[]>([]);
   const shuffleQueueSignatureRef = useRef("");
+  const plannedAutomaticRef = useRef<PlaybackQueueEntry[]>([]);
+  const shuffleSourceRef = useRef<{source: MusicPlaylistSource; tracks: MusicTrack[]} | null>(null);
+  // In "Todas" the active pool is a union, but each selected song retains its
+  // REAL playlist, so the queue, video background and next-track UI stay correct.
+  const shuffleOriginRef = useRef<Map<string, MusicPlaylistSource> | null>(null);
+  const playlistCursorIdRef = useRef<string | null>(null);
+  // Number of automatic playlist tracks left in the current sequential pass.
+  const playlistRemainingRef = useRef(0);
+  const recentlyPlayedIdsRef = useRef<string[]>([]);
+  const manualQueueRef = useRef<PlaybackQueueEntry[]>([]);
+  const upcomingClearedRef = useRef(false);
+  const entryCounterRef = useRef(0);
+  // A reorder is a real playback decision, not a client-only decoration.
+  // Store the order in refs so audio events, preload and UI see the same first item.
+  const upcomingOrderRef = useRef<string[]>([]);
+  const [upcomingOrder, setUpcomingOrder] = useState<string[]>([]);
+  // Sequential playlists calculate their following songs from a cursor.
+  // Pin the two visible choices while they are being reordered so an out-of-
+  // sequence play does not make the other song vanish from the queue.
+  const sequentialPinsRef = useRef<PlaybackQueueEntry[]>([]);
+  const [sequentialPinsVersion, setSequentialPinsVersion] = useState(0);
+  const resetUpcomingOrder = () => {
+    upcomingOrderRef.current = [];
+    setUpcomingOrder([]);
+    sequentialPinsRef.current = [];
+    setSequentialPinsVersion((n) => n + 1);
+  };
+  const removeSequentialPin = (key: string) => {
+    const before = sequentialPinsRef.current.length;
+    sequentialPinsRef.current = sequentialPinsRef.current.filter((item) => item.key !== key);
+    if (before !== sequentialPinsRef.current.length) setSequentialPinsVersion((n) => n + 1);
+  };
+
   const lastPositionStateRef = useRef({ duration: -1, rate: -1, position: 0, at: 0 });
+  // Radio may change pitch/shuffle/volume for the shared station. None of those
+  // mutations is allowed to become the user's persistent LOCAL preferences.
+  const personalSettingsBeforeRadioRef = useRef<{
+    volume: number;
+    lastNonZeroVolume: number;
+    playbackPitch: number;
+    isShuffle: boolean;
+    autoRandomPitch: boolean;
+    lyricsEnabled: boolean;
+  } | null>(null);
   const volumeRef = useRef(0.8);
   const lastNonZeroVolumeRef = useRef(0.8);
   const playerModeRef = useRef<"local" | "radio">("local");
@@ -429,10 +519,19 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   const lastRadioItemRef = useRef<string | null>(null);
   const hasRestoredRef = useRef(false);
   const pendingPlayRef = useRef(false);
+  // Playback intent is separate from isPlaying: a stalled YouTube stream may
+  // never emit "playing", but still needs to be retried automatically.
+  const localPlaybackIntentRef = useRef(false);
+
   const pitchLockedRef = useRef(false);
+  // Initial state restoration has its own ONE-SHOT seek. Never reuse the
+  // previous track's React currentTime during normal gapless transitions.
+  const startupResumeRef = useRef<{ url: string; position: number } | null>(null);
   const localVideoStartAbortRef = useRef<AbortController | null>(null);
   const localVideoStartGenerationRef = useRef(0);
   const preloadedAdvanceTrackIdRef = useRef<string | null>(null);
+  // Automatic gapless fallback must never wait for optional visuals by default.
+  const bypassVisualPreparationOnceRef = useRef(false);
   const [storageReady, setStorageReady] = useState(false);
   const [playerMode, setPlayerMode] = useState<"local" | "radio">("local");
   const [isRadioBuffering, setIsRadioBuffering] = useState(false);
@@ -454,7 +553,33 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   const [autoRandomPitch, setAutoRandomPitch] = useState(true);
   const [isPitchLocked, setIsPitchLocked] = useState(false);
   const [lyricsEnabled, setLyricsEnabled] = useState(true);
-  const [history, setHistory] = useState<MusicTrack[]>([]);
+  const [history, setHistory] = useState<PlaybackQueueEntry[]>([]);
+  const [manualQueue, setManualQueue] = useState<PlaybackQueueEntry[]>([]);
+  const [upcomingCleared, setUpcomingCleared] = useState(false);
+  const [shuffleVersion, setShuffleVersion] = useState(0);
+  const [plannedAutomatic, setPlannedAutomatic] = useState<PlaybackQueueEntry[]>([]);
+  const [shuffleSource, setShuffleSource] = useState<{source: MusicPlaylistSource; tracks: MusicTrack[]} | null>(null);
+  // Synchronous mirrors: a media event can fire before React commits an update.
+  manualQueueRef.current = manualQueue;
+  upcomingClearedRef.current = upcomingCleared;
+  const nextKey = () => `local-${++entryCounterRef.current}-${Date.now().toString(36)}`;
+  const updateManualQueue = (entries: PlaybackQueueEntry[]) => {
+    manualQueueRef.current = entries;
+    setManualQueue(entries);
+  };
+  const setFutureCleared = (value: boolean) => {
+    upcomingClearedRef.current = value;
+    setUpcomingCleared(value);
+  };
+  const addHistory = () => {
+    if (!currentTrack) return;
+    const previous: PlaybackQueueEntry = {
+      key: nextKey(), track: currentTrack, source: currentSource,
+      pitch: { kind: "fixed", pitch: playbackPitch }, manual: false,
+    };
+    recentlyPlayedIdsRef.current = [...recentlyPlayedIdsRef.current.slice(-31), currentTrack.id];
+    setHistory((existing) => [...existing.slice(-199), previous]);
+  };
 
   const lyricCues = useMemo(() => parseSrt(currentTrack?.lyricsSrt), [currentTrack?.lyricsSrt]);
   const hasCurrentLyrics = lyricCues.length > 0;
@@ -485,51 +610,73 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   });
 
   const getQueueSignature = (tracks: MusicTrack[]) => tracks.map((track) => track.id).join("\u0001");
+  const getSourceKey = (source: MusicPlaylistSource) => `${source.type}:${source.id}`;
+  const updateAutomaticPlan = (entries: PlaybackQueueEntry[]) => {
+    plannedAutomaticRef.current = entries;
+    setPlannedAutomatic(entries);
+  };
 
   const resetShuffleBag = useCallback((tracks: MusicTrack[], currentId?: string | null) => {
     const seen = new Set<string>();
     shuffleQueueSignatureRef.current = getQueueSignature(tracks);
-    shuffleRemainingRef.current = tracks
-      .map((track) => track.id)
-      .filter((id) => {
-        if (!id || id === currentId || seen.has(id)) return false;
-        seen.add(id);
-        return true;
-      });
+    // This is a candidate pool, NOT a shuffled playback order. Selecting all
+    // 150+ future titles in advance was both confusing and unnecessary.
+    shuffleRemainingRef.current = tracks.map((track) => track.id).filter((id) => {
+      if (!id || id === currentId || seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+    plannedAutomaticRef.current = [];
+    setPlannedAutomatic([]);
+    setShuffleVersion((version) => version + 1);
   }, []);
 
-  const ensureShuffleBagForCurrentQueue = () => {
-    const signature = getQueueSignature(queue);
-    const queueIds = new Set(queue.map((track) => track.id));
-
-    if (shuffleQueueSignatureRef.current !== signature) {
-      resetShuffleBag(queue, currentTrack?.id);
-      return;
-    }
-
-    shuffleRemainingRef.current = shuffleRemainingRef.current.filter((id) => (
-      queueIds.has(id) && id !== currentTrack?.id
-    ));
+  const activeShufflePlaylist = () => shuffleSourceRef.current ?? { source: queueSource, tracks: queue };
+  const consumePlannedAutomatic = (trackId: string) => {
+    const entries = plannedAutomaticRef.current;
+    const index = entries.findIndex((entry) => entry.track.id === trackId);
+    if (index < 0) return;
+    updateAutomaticPlan(entries.filter((_, i) => i !== index));
   };
 
-  const pickShuffleTrack = (consume = false): MusicTrack | null => {
-    if (queue.length <= 1) return null;
-
-    ensureShuffleBagForCurrentQueue();
-
-    if (shuffleRemainingRef.current.length === 0) {
-      resetShuffleBag(queue, currentTrack?.id);
+  const refillAutomaticWindow = (
+    tracks: MusicTrack[], source: MusicPlaylistSource | null,
+    currentId: string | null | undefined, hasManualTail: boolean,
+  ) => {
+    if (playerModeRef.current === "radio" || upcomingClearedRef.current || !tracks.length) return;
+    const byId = new Map(tracks.filter((track) => Boolean(track.url)).map((track) => [track.id, track]));
+    const old = plannedAutomaticRef.current;
+    const entries = old.filter((entry) => entry.track.id !== currentId && byId.has(entry.track.id));
+    const originallyDifferent = entries.length !== old.length;
+    // Keep exactly TWO committed automatic selections. Manual insertions are
+    // separate, preserving all user-selected entries and their priorities.
+    while (entries.length < 2) {
+      let available = shuffleRemainingRef.current.filter((id) => byId.has(id) && id !== currentId && !entries.some((e) => e.track.id === id));
+      if (!available.length) {
+        if (hasManualTail || byId.size <= 1) break;
+        // A new cycle begins only when the preceding candidate bag has run
+        // out. The last heard songs are held back whenever alternatives exist.
+        available = [...byId.keys()].filter((id) => id !== currentId && !entries.some((e) => e.track.id === id));
+        if (!available.length) break;
+        shuffleRemainingRef.current = available;
+      }
+      const recentWindow = Math.min(8, Math.max(1, Math.floor(byId.size / 5)));
+      const recent = new Set(recentlyPlayedIdsRef.current.slice(-recentWindow));
+      const preferred = available.filter((id) => !recent.has(id));
+      const candidates = preferred.length ? preferred : available;
+      const id = candidates[Math.floor(Math.random() * candidates.length)];
+      const track = byId.get(id);
+      if (!track) break;
+      shuffleRemainingRef.current = shuffleRemainingRef.current.filter((item) => item !== id);
+      const actualSource = shuffleOriginRef.current?.get(id) ?? source;
+      entries.push({
+        key: `playlist:${getSourceKey(actualSource ?? { id: "local", type: "song", name: "Playlist" })}:${id}`,
+        track, source: actualSource, pitch: { kind: "random" }, manual: false,
+      });
     }
-
-    const candidates = shuffleRemainingRef.current;
-    if (candidates.length === 0) return null;
-
-    const nextId = candidates[Math.floor(Math.random() * candidates.length)];
-    if (consume) {
-      shuffleRemainingRef.current = shuffleRemainingRef.current.filter((id) => id !== nextId);
+    if (originallyDifferent || entries.length !== old.length || entries.some((e,i) => e.key !== old[i]?.key)) {
+      updateAutomaticPlan(entries);
     }
-
-    return queue.find((track) => track.id === nextId) || null;
   };
 
   const syncAudioToLiveRadio = (threshold = 0.9) => {
@@ -581,6 +728,9 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   };
 
   const joinLiveRadioAudio = async (userInitiated = false) => {
+    // Keep the inactive decoder silent even after a rapid local->radio switch.
+    const inactive = activeIdRef.current === "a" ? elBRef.current : elARef.current;
+    if (inactive && !inactive.paused) inactive.pause();
     const audio = audioRef.current;
     const state = radioStateRef.current;
     if (!audio || !state?.currentItem) return;
@@ -696,6 +846,10 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     lastRadioItemRef.current = item.itemId;
 
     window.setTimeout(() => {
+      // An earlier snapshot may have scheduled this callback just before
+      // the station advanced. Never use its old audio/pitch/position.
+      if (playerModeRef.current !== "radio" ||
+        radioStateRef.current?.currentItem?.itemId !== item.itemId) return;
       const audio = audioRef.current;
       if (!audio) return;
 
@@ -758,7 +912,37 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   };
 
   const enableRadioMode = async () => {
+    // Capture exactly once, BEFORE the first radio snapshot modifies the
+    // shared React states. A reconnect while already in Radio must not replace
+    // this with station values.
+    if (playerModeRef.current !== "radio") {
+      personalSettingsBeforeRadioRef.current = {
+        volume: volumeRef.current,
+        lastNonZeroVolume: lastNonZeroVolumeRef.current,
+        playbackPitch,
+        isShuffle,
+        autoRandomPitch,
+        lyricsEnabled,
+      };
+    }
     cancelLocalVideoPreparation();
+    localPlaybackIntentRef.current = false;
+    // The two physical media elements are used for local gapless playback.
+    // Only ONE may remain audible after joining Radio. A buffered/outgoing
+    // local element otherwise survives offscreen and doubles the sound while
+    // the Radio slider controls only audioRef.current.
+    const inactive = activeIdRef.current === "a" ? elBRef.current : elARef.current;
+    if (inactive) {
+      try {
+        inactive.pause();
+        inactive.removeAttribute("src");
+        inactive.load();
+        inactive.volume = volumeRef.current;
+      } catch { /* best effort */ }
+    }
+    preloadedTrackRef.current = null;
+    preloadedUrlRef.current = "";
+    preloadedAdvanceTrackIdRef.current = null;
     playerModeRef.current = "radio";
     setPlayerMode("radio");
     if (!radioEventsRef.current) {
@@ -789,6 +973,23 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
 
   const disableRadioMode = () => {
     playerModeRef.current = "local";
+    const previous = personalSettingsBeforeRadioRef.current;
+    personalSettingsBeforeRadioRef.current = null;
+    if (previous) {
+      // Restore the complete local configuration, not the station's pitch or
+      // shuffle. When a full local-player snapshot follows, it may overwrite
+      // these with the saved local track's exact values.
+      volumeRef.current = previous.volume;
+      lastNonZeroVolumeRef.current = previous.lastNonZeroVolume;
+      setVolume(previous.volume);
+      setLastNonZeroVolume(previous.lastNonZeroVolume);
+      setPlaybackPitch(previous.playbackPitch);
+      setIsShuffle(previous.isShuffle);
+      setAutoRandomPitch(previous.autoRandomPitch);
+      setLyricsEnabled(previous.lyricsEnabled);
+      if (elARef.current) elARef.current.volume = previous.volume;
+      if (elBRef.current) elBRef.current.volume = previous.volume;
+    }
     setPlayerMode("local");
     setIsRadioBuffering(false);
     setRadioAwaitingGesture(false);
@@ -806,12 +1007,14 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
 
   const restoreLocalPlayer = (snapshot: LocalPlayerRestoreState) => {
     cancelLocalVideoPreparation();
+    startupResumeRef.current = null;
     pendingPlayRef.current = false;
     preloadedTrackRef.current = null;
     preloadedUrlRef.current = "";
     preloadedAdvanceTrackIdRef.current = null;
     disableRadioMode();
 
+    localPlaybackIntentRef.current = false;
     const restoredTrack = snapshot.currentTrack ?? null;
     const restoredQueue = Array.isArray(snapshot.queue) ? snapshot.queue : [];
     const restoredTime = Number.isFinite(snapshot.currentTime)
@@ -836,6 +1039,10 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     lastNonZeroVolumeRef.current = restoredLastNonZeroVolume;
     pitchLockedRef.current = false;
 
+    shuffleSourceRef.current = null;
+    shuffleOriginRef.current = null;
+    setShuffleSource(null);
+    resetUpcomingOrder();
     setQueue(restoredQueue);
     setQueueSource(snapshot.queueSource ?? null);
     setCurrentTrack(restoredTrack);
@@ -847,6 +1054,12 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     setAutoRandomPitch(snapshot.autoRandomPitch);
     setLyricsEnabled(snapshot.lyricsEnabled);
     setHistory([]);
+    updateManualQueue([]);
+    resetUpcomingOrder();
+    setFutureCleared(false);
+    playlistCursorIdRef.current = restoredTrack?.id ?? null;
+    resetShuffleBag(restoredQueue, restoredTrack?.id);
+    playlistRemainingRef.current = Math.max(0, restoredQueue.length - 1);
     setIsPitchLocked(false);
     setCurrentTime(restoredTime);
     setVisualCurrentTime(restoredTime);
@@ -920,7 +1133,10 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     // neither image requests in the song list nor one optional visual can race
     // ahead and trigger play() before the other finishes its own preparation.
     await Promise.allSettled([
-      prepareYoutubeVideoStart({
+      // The user's "No esperar al videoclip" setting must apply to EVERY
+      // local start, not only the preloaded/gapless branch. The background
+      // component's own effect attaches the video asynchronously instead.
+      getYoutubeVideoWaitForReady() ? prepareYoutubeVideoStart({
         trackId: track.id,
         source,
         signal: controller.signal,
@@ -928,7 +1144,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
           waitingForBackgroundVideo = waiting;
           reportWaiting();
         },
-      }),
+      }) : Promise.resolve(),
       prepareAdvancedCoverBeforeAudio(track, source, controller.signal)
         .finally(() => {
           waitingForAdvancedCover = false;
@@ -950,11 +1166,23 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     return stillCurrent;
   };
 
-  const startTrack = (track: MusicTrack, source = queueSource) => {
+  const startTrack = (track: MusicTrack, source = queueSource, pitchChoice?: PlaybackQueuePitch) => {
+    const personalPitchOnRadioExit = playerModeRef.current === "radio"
+      ? personalSettingsBeforeRadioRef.current : null;
+    localPlaybackIntentRef.current = true;
+    // Manual insertions do not advance the underlying playlist cursor, even
+    // when the manually selected song also belongs to that playlist.
+    if (!pitchChoice && queue.some((entry) => entry.id === track.id)
+      && (!source || !queueSource || source.id === queueSource.id)) {
+      playlistCursorIdRef.current = track.id;
+    }
     if (!track.url) return;
+    const bypassVisualPreparation = bypassVisualPreparationOnceRef.current;
+    bypassVisualPreparationOnceRef.current = false;
     // Invalidate an earlier start before the first asynchronous album claim.
     // Otherwise its completion could select/play an obsolete song later.
     cancelLocalVideoPreparation();
+    startupResumeRef.current = null;
     preloadedAdvanceTrackIdRef.current = null;
     const startGeneration = localVideoStartGenerationRef.current;
     if (playerMode === "radio") {
@@ -1000,8 +1228,12 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
         shuffleRemainingRef.current = shuffleRemainingRef.current.filter((id) => id !== nextTrack.id);
       }
 
-      let pitch = forcePitch ? 1 : playbackPitch;
-      if (!forcePitch && autoRandomPitch) {
+      let pitch = forcePitch ? 1 : personalPitchOnRadioExit?.playbackPitch ?? playbackPitch;
+      if (!forcePitch && pitchChoice) {
+        pitch = pitchChoice.kind === "random"
+          ? Math.random() * (1.2 - 0.8) + 0.8
+          : Math.max(0.5, Math.min(1.5, pitchChoice.pitch));
+      } else if (!forcePitch && (personalPitchOnRadioExit?.autoRandomPitch ?? autoRandomPitch)) {
         pitch = Math.random() * (1.2 - 0.8) + 0.8;
       }
       setPlaybackPitch(pitch);
@@ -1033,7 +1265,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       audio.volume = volumeRef.current;
 
       const hiddenTab = document.visibilityState !== "visible";
-      const mayStart = hiddenTab
+      const mayStart = hiddenTab || bypassVisualPreparation
         ? true
         : await prepareLocalVideoStart(nextTrack, source ?? null);
       if (
@@ -1064,20 +1296,51 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       : index;
     const track = tracks[startIndex];
     if (!track) return;
+    shuffleSourceRef.current = null;
+    shuffleOriginRef.current = null;
+    setShuffleSource(null);
     resetShuffleBag(tracks, track.id);
+    playlistCursorIdRef.current = track.id;
+    playlistRemainingRef.current = Math.max(0, tracks.length - 1);
+    updateManualQueue([]);
+    setFutureCleared(false);
     setQueue(tracks);
     setQueueSource(source ?? null);
     setHistory([]);
+    resetUpcomingOrder();
     startTrack(track, source ?? null);
   };
 
   const loadQueue = useCallback((tracks: MusicTrack[], source?: MusicPlaylistSource | null) => {
     if (playerMode === "radio") return;
-    resetShuffleBag(tracks, currentTrack?.id);
+    // Merely opening a different playlist must not silently replace the one
+    // that is currently playing or wipe manually inserted queue entries.
+    // The ongoing session is owned by queueSource (A), not by currentSource.
+    // A manually queued song from B may temporarily be current; loading B's
+    // page must NOT overwrite A's candidate pool or strand its two picks.
+    if (currentTrack && queueSource && source &&
+      (queueSource.id !== source.id || queueSource.type !== source.type)) return;
+    if (getQueueSignature(tracks) === getQueueSignature(queue)
+      && source?.id === queueSource?.id && source?.type === queueSource?.type) return;
+    // Live playlist edits may update metadata/order without wiping history.
+    if (currentTrack && currentSource) {
+      setQueue(tracks);
+      setQueueSource(source ?? null);
+      if (!shuffleSourceRef.current && shuffleQueueSignatureRef.current !== getQueueSignature(tracks)) {
+        resetUpcomingOrder();
+        resetShuffleBag(tracks, currentTrack.id);
+        playlistRemainingRef.current = Math.max(0, tracks.length - 1);
+      }
+      return;
+    }
+    if (!shuffleSourceRef.current) resetShuffleBag(tracks, currentTrack?.id);
+    resetUpcomingOrder();
+    playlistRemainingRef.current = currentTrack ? Math.max(0, tracks.length - 1) : tracks.length;
+    playlistCursorIdRef.current = tracks.some((entry) => entry.id === currentTrack?.id)
+      ? currentTrack?.id ?? null : null;
     setQueue(tracks);
     setQueueSource(source ?? null);
-    setHistory([]);
-  }, [currentTrack?.id, playerMode, resetShuffleBag]);
+  }, [currentTrack, currentSource, playerMode, queue, queueSource, resetShuffleBag]);
 
   const toggleTrack = (track: MusicTrack, tracks?: MusicTrack[], source?: MusicPlaylistSource | null) => {
     if (playerMode === "radio") {
@@ -1093,7 +1356,11 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       if (keepsCurrentShuffleCycle) {
         shuffleRemainingRef.current = shuffleRemainingRef.current.filter((id) => id !== track.id);
       } else {
+        shuffleSourceRef.current = null;
+        shuffleOriginRef.current = null;
+        setShuffleSource(null);
         resetShuffleBag(tracks, track.id);
+        resetUpcomingOrder();
       }
       setQueue(tracks);
       setQueueSource(source ?? null);
@@ -1103,16 +1370,208 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       if (isPlaybackPreparing) return;
       if (!audioRef.current) return;
       if (isPlaying) {
+        localPlaybackIntentRef.current = false;
+        pendingPlayRef.current = false;
         audioRef.current.pause();
       } else {
+        localPlaybackIntentRef.current = true;
         audioRef.current.play().catch(() => setIsPlaying(false));
       }
       setIsPlaying(!isPlaying);
       return;
     }
 
-    if (!keepsCurrentShuffleCycle) setHistory([]);
+    if (!keepsCurrentShuffleCycle) {
+      setHistory([]);
+      updateManualQueue([]);
+    } else {
+      addHistory();
+    }
+    setFutureCleared(false);
+    playlistRemainingRef.current = Math.max(0, (tracks ?? queue).length - 1);
     startTrack(track, source ?? queueSource);
+  };
+
+  const selectPlaybackShuffleSource = (
+    source: MusicPlaylistSource | null, tracks?: MusicTrack[],
+    sourceByTrackId?: Map<string, MusicPlaylistSource>,
+  ) => {
+    if (playerModeRef.current === "radio") return;
+    const nextSource = source && tracks?.length ? {source, tracks: tracks.filter((track) => Boolean(track.url))} : null;
+    shuffleSourceRef.current = nextSource;
+    shuffleOriginRef.current = nextSource && sourceByTrackId ? new Map(sourceByTrackId) : null;
+    setShuffleSource(nextSource);
+    const newTracks = nextSource?.tracks ?? queue;
+    resetUpcomingOrder();
+    resetShuffleBag(newTracks, currentTrack?.id);
+    setFutureCleared(false);
+  };
+
+  const buildAutomaticUpcoming = (): PlaybackQueueEntry[] => {
+    if (upcomingClearedRef.current) return [];
+    if (isShuffle) return plannedAutomaticRef.current.slice(0, 2);
+    if (queue.length <= 1 || playlistRemainingRef.current <= 0) return [];
+
+    const anchor = playlistCursorIdRef.current || currentTrack?.id;
+    const cursorIndex = queue.findIndex((entry) => entry.id === anchor);
+    const natural: PlaybackQueueEntry[] = [];
+    const count = Math.min(2, queue.length - 1, playlistRemainingRef.current);
+    for (let step = 1; step <= count; step += 1) {
+      const track = queue[(Math.max(-1, cursorIndex) + step) % queue.length];
+      if (track && track.id !== currentTrack?.id) natural.push({
+        key: `playlist:${track.id}`, track, source: queueSource,
+        pitch: { kind: "random" }, manual: false,
+      });
+    }
+    // During a drag the scheduled songs stay committed even if the next play
+    // advances the sequential cursor past one of them.
+    const pinned = sequentialPinsRef.current.filter((entry) => entry.track.id !== currentTrack?.id);
+    const merged = [...pinned, ...natural];
+    const seen = new Set<string>();
+    return merged.filter((entry) => {
+      if (seen.has(entry.key)) return false;
+      seen.add(entry.key);
+      return true;
+    }).slice(0, 2);
+  };
+
+  const orderVisibleUpcoming = (base: PlaybackQueueEntry[]): PlaybackQueueEntry[] => {
+    if (!upcomingOrderRef.current.length) return base;
+    const lookup = new Map(base.map((entry) => [entry.key, entry]));
+    const existing = upcomingOrderRef.current
+      .map((key) => lookup.get(key))
+      .filter((entry): entry is PlaybackQueueEntry => Boolean(entry));
+    const placed = new Set(existing.map((entry) => entry.key));
+    // "Añadir como siguiente" must still go FIRST even after a custom reorder.
+    // Reconcile it before appending new automatically chosen tracks.
+    const newPriority = base.filter((entry) => entry.manual && entry.placement !== "last" && !placed.has(entry.key));
+    for (const entry of newPriority) placed.add(entry.key);
+    existing.unshift(...newPriority);
+    // New automatic choices enter before the unmodified manual tail. A song
+    // explicitly dragged earlier retains its selected position.
+    for (const entry of base) {
+      if (placed.has(entry.key)) continue;
+      const firstTail = existing.findIndex((other) => other.placement === "last");
+      if (entry.placement === "last" || firstTail < 0) existing.push(entry);
+      else existing.splice(firstTail, 0, entry);
+      placed.add(entry.key);
+    }
+    return existing;
+  };
+
+  const getOrderedUpcoming = (): PlaybackQueueEntry[] => {
+    if (playerModeRef.current === "radio") return [];
+    const priority = manualQueueRef.current.filter((entry) => entry.placement !== "last");
+    const tail = manualQueueRef.current.filter((entry) => entry.placement === "last");
+    return orderVisibleUpcoming([...priority, ...buildAutomaticUpcoming(), ...tail]);
+  };
+
+  const peekNextEntry = (): PlaybackQueueEntry | null => getOrderedUpcoming()[0] || null;
+
+  const reorderPlaybackQueueEntry = (key: string, targetIndex: number) => {
+    if (playerModeRef.current === "radio") return;
+    const visible = getOrderedUpcoming();
+    const from = visible.findIndex((entry) => entry.key === key);
+    if (from < 0) return;
+    const target = Math.max(0, Math.min(visible.length - 1, Math.trunc(targetIndex)));
+    if (from === target) return;
+    const moved = [...visible];
+    const [entry] = moved.splice(from, 1);
+    moved.splice(target, 0, entry);
+    upcomingOrderRef.current = moved.map((item) => item.key);
+    setUpcomingOrder(upcomingOrderRef.current);
+    // Sequential choices normally exist only as an on-demand projection;
+    // preserve both while the user reorders them (same as the shuffle plan).
+    if (!isShuffle) {
+      sequentialPinsRef.current = visible.filter((item) => !item.manual);
+      setSequentialPinsVersion((n) => n + 1);
+    }
+  };
+
+  const clearPlaybackHistory = () => {
+    if (playerModeRef.current === "radio") return;
+    setHistory([]);
+    recentlyPlayedIdsRef.current = [];
+    // Clear recent-song memory as well; the next cycle starts fresh.
+    resetShuffleBag(activeShufflePlaylist().tracks, currentTrack?.id);
+    playlistRemainingRef.current = Math.max(0, queue.length - 1);
+  };
+
+  const clearPlaybackUpcoming = () => {
+    if (playerModeRef.current === "radio") return;
+    updateManualQueue([]);
+    resetUpcomingOrder();
+    setFutureCleared(true);
+    preloadedTrackRef.current = null;
+    preloadedUrlRef.current = "";
+    const inactive = activeIdRef.current === "a" ? elBRef.current : elARef.current;
+    if (inactive) { inactive.pause(); inactive.removeAttribute("src"); inactive.load(); }
+  };
+
+  const addToPlaybackQueue = (
+    track: MusicTrack,
+    position: PlaybackQueuePosition,
+    pitch: PlaybackQueuePitch,
+    source?: MusicPlaylistSource | null,
+  ) => {
+    if (playerModeRef.current === "radio" || !track.url) return;
+    const resolvedSource = source ?? queueSource ?? currentSource ?? {
+      id: "added", name: "Añadidas a cola", type: "song" as const,
+    };
+    const entry: PlaybackQueueEntry = {
+      key: nextKey(), track, source: resolvedSource,
+      pitch: pitch.kind === "fixed"
+        ? { kind: "fixed", pitch: Math.max(0.5, Math.min(1.5, pitch.pitch)) }
+        : { kind: "random" },
+      manual: true,
+      placement: position === "last" ? "last" : "next",
+    };
+    if (position === "now") {
+      addHistory();
+      startTrack(track, resolvedSource, entry.pitch);
+      return;
+    }
+    updateManualQueue(position === "next"
+      ? [entry, ...manualQueueRef.current]
+      : [...manualQueueRef.current, entry]);
+  };
+
+  const removeFromPlaybackQueue = (key: string) => {
+    if (playerModeRef.current === "radio") return;
+    updateManualQueue(manualQueueRef.current.filter((entry) => entry.key !== key));
+  };
+
+  const playPlaybackQueueEntry = (key: string) => {
+    if (playerModeRef.current === "radio") return;
+    const previous = history.find((entry) => entry.key === key);
+    if (previous) {
+      addHistory();
+      setHistory((all) => all.filter((entry) => entry.key !== key));
+      startTrack(previous.track, previous.source, previous.pitch);
+      return;
+    }
+    const manual = manualQueueRef.current.find((entry) => entry.key === key);
+    if (manual) {
+      addHistory();
+      updateManualQueue(manualQueueRef.current.filter((entry) => entry.key !== key));
+      startTrack(manual.track, manual.source, manual.pitch);
+      return;
+    }
+    const planned = getOrderedUpcoming().find((entry) => entry.key === key);
+    const track = planned?.track;
+    if (!track) return;
+    addHistory();
+    const previousCursor = playlistCursorIdRef.current;
+    const previousPosition = queue.findIndex((entry) => entry.id === previousCursor);
+    const nextPosition = queue.findIndex((entry) => entry.id === track.id);
+    const preserveCursor = !isShuffle && sequentialPinsRef.current.some((entry) => entry.key === key)
+      && previousPosition >= 0 && nextPosition >= 0 && nextPosition < previousPosition;
+    if (isShuffle) consumePlannedAutomatic(track.id);
+    removeSequentialPin(key);
+    if (!preserveCursor) playlistCursorIdRef.current = track.id;
+    playlistRemainingRef.current = Math.max(0, queue.length - 1);
+    startTrack(track, planned?.source ?? queueSource);
+    if (preserveCursor) playlistCursorIdRef.current = previousCursor;
   };
 
   const playNext = () => {
@@ -1120,26 +1579,42 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       void radioPost<RadioState>("/radio/skip").then(applyRadioSnapshot).catch(() => undefined);
       return;
     }
-
-    if (queue.length === 0) return;
-    
-    if (currentTrack) {
-      setHistory((prev) => [...prev, currentTrack]);
+    const planned = peekNextEntry();
+    if (!planned) return;
+    addHistory();
+    if (planned.manual) {
+      updateManualQueue(manualQueueRef.current.filter((entry) => entry.key !== planned.key));
+    } else if (isShuffle) {
+      // Consume exactly the entry the UI and the preload chose.
+      consumePlannedAutomatic(planned.track.id);
+    } else {
+      playlistRemainingRef.current = Math.max(0, playlistRemainingRef.current - 1);
     }
-
-    if (isShuffle) {
-      const nextTrack = pickShuffleTrack(true);
-      if (nextTrack) startTrack(nextTrack, queueSource);
-      return;
+    const previousCursor = playlistCursorIdRef.current;
+    const previousPosition = queue.findIndex((entry) => entry.id === previousCursor);
+    const nextPosition = queue.findIndex((entry) => entry.id === planned.track.id);
+    const preserveCursor = !isShuffle && !planned.manual
+      && sequentialPinsRef.current.some((entry) => entry.key === planned.key)
+      && previousPosition >= 0 && nextPosition >= 0 && nextPosition < previousPosition;
+    removeSequentialPin(planned.key);
+    // At the end of a complete playlist pass, append the manually queued tail
+    // before starting a fresh pass. No manual tail => normal infinite autoplay.
+    const hasTail = manualQueueRef.current.some((entry) => entry.placement === "last");
+    if (!upcomingClearedRef.current && !hasTail) {
+      if (!isShuffle && playlistRemainingRef.current === 0) playlistRemainingRef.current = Math.max(0, queue.length - 1);
     }
+    startTrack(planned.track, planned.source, planned.manual ? planned.pitch : undefined);
+    if (preserveCursor) playlistCursorIdRef.current = previousCursor;
+  };
 
-    if (!currentTrack) {
-      startTrack(queue[0], queueSource);
-      return;
-    }
-
-    const idx = queue.findIndex((track) => track.id === currentTrack.id);
-    startTrack(queue[(idx + 1) % queue.length], queueSource);
+  // An automatic change of song is never allowed to strand the audio on a
+  // visual asset that the user did not ask to wait for. The current preference
+  // only affects manual song starts and explicit wait-for-video transitions.
+  const advanceWithoutReadyPreload = () => {
+    if (!getYoutubeVideoWaitForReady()) bypassVisualPreparationOnceRef.current = true;
+    playNext();
+    // A missing next track must not affect a future manual song start.
+    bypassVisualPreparationOnceRef.current = false;
   };
 
   // ===== Doble buffer (reproduccion gapless en segundo plano) =====
@@ -1198,29 +1673,29 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   }, []);
 
   // Elige la siguiente pista SIN efectos secundarios (replica la logica de playNext).
-  const pickNextTrack = (): MusicTrack | null => {
-    if (queue.length === 0) return null;
-    if (isShuffle) {
-      return pickShuffleTrack(false);
-    }
-    if (!currentTrack) return queue[0];
-    if (queue.length === 1) return null;
-    const idx = queue.findIndex((track) => track.id === currentTrack.id);
-    return queue[(idx + 1) % queue.length];
-  };
+  const pickNextTrack = (): MusicTrack | null => peekNextEntry()?.track ?? null;
 
   // Precarga (bufferiza) la siguiente pista en el elemento inactivo.
   const preloadNext = () => {
     if (playerModeRef.current === "radio") return;
     const preEl = getPreloadAudio();
     const next = pickNextTrack();
-    if (!preEl || !next || !next.url) {
+    if (!preEl || !next || !next.url || needsDirectAudioStart(next)) {
+      // Do not open a second long-lived YouTube stream before playback.
+      // The Linux backend can still prewarm its extractor URL cache.
       preloadedTrackRef.current = null;
       preloadedUrlRef.current = "";
+      if (preEl?.getAttribute("src")) {
+        preEl.pause(); preEl.removeAttribute("src"); preEl.load();
+      }
       return;
     }
     preloadedTrackRef.current = next;
-    preloadedPitchRef.current = autoRandomPitch ? Math.random() * (1.2 - 0.8) + 0.8 : playbackPitch;
+    const upcoming = peekNextEntry();
+    const forced = upcoming?.manual ? upcoming.pitch : null;
+    preloadedPitchRef.current = forced?.kind === "fixed" ? forced.pitch
+      : forced?.kind === "random" || autoRandomPitch
+        ? Math.random() * (1.2 - 0.8) + 0.8 : playbackPitch;
     if (preloadedUrlRef.current !== next.url || preEl.error) {
       preloadedUrlRef.current = next.url;
       preEl.preload = "auto";
@@ -1264,21 +1739,26 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   };
 
   const advanceToPreloaded = (opts?: { letOldFinish?: boolean }) => {
-    if (queue.length <= 1 && currentTrack) {
-      finishSingleTrackQueue();
+    const planned = peekNextEntry();
+    if (!planned) { finishSingleTrackQueue(); return; }
+    // Use the SAME active-audio startup path as a manual Play for YouTube and
+    // custom video covers. Their hidden buffer may have been prepared long
+    // before the transition and is not a reliable playback source.
+    if (needsDirectAudioStart(planned.track)) {
+      advanceWithoutReadyPreload();
       return;
     }
 
     const next = preloadedTrackRef.current;
     const preEl = getPreloadAudio();
     const oldActive = getActiveAudio();
-    if (!next || !preEl || !isPreloadReady()) {
-      playNext();
+    if (!next || !preEl || !isPreloadReady() || next.id !== planned.track.id) {
+      advanceWithoutReadyPreload();
       return;
     }
 
     if (next.firstListenPending && next.albumId && next.albumEntryId) {
-      playNext();
+      advanceWithoutReadyPreload();
       return;
     }
 
@@ -1291,31 +1771,63 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       pendingPlayRef.current = false;
       const hiddenTab = document.visibilityState !== "visible";
       if (hiddenTab) cancelLocalVideoPreparation();
-      const mayStart = hiddenTab
+      // Audio continuity first: with the default "do not wait" preference,
+      // commit the buffered audio immediately. The background loader will
+      // attach/sync the videoclip after React commits the new current track.
+      const mayStart = hiddenTab || !getYoutubeVideoWaitForReady()
         ? true
-        : await prepareLocalVideoStart(next, queueSource);
+        : await prepareLocalVideoStart(next, planned.source);
 
       if (
         !mayStart
+        || peekNextEntry()?.key !== planned.key
         || preloadedAdvanceTrackIdRef.current !== next.id
         || preloadedTrackRef.current?.id !== next.id
         || getPreloadAudio() !== preEl
       ) {
         if (preloadedAdvanceTrackIdRef.current === next.id) {
           preloadedAdvanceTrackIdRef.current = null;
+          // A playlist switch, background-prep cancellation or slow metadata
+          // can invalidate the preloaded transition after the outgoing track
+          // has already ended. Never leave playback stranded on the old audio.
+          const outgoingFinished = Boolean(oldActive && (
+            oldActive.ended || oldActive.paused && Number.isFinite(oldActive.duration)
+              && oldActive.duration - oldActive.currentTime < 0.65
+          ));
+          if (outgoingFinished && playerModeRef.current === "local") {
+            const replacement = peekNextEntry();
+            if (replacement) advanceWithoutReadyPreload();
+          }
         }
         return;
       }
 
       pitchLockedRef.current = false;
       setIsPitchLocked(false);
-      if (currentTrack) setHistory((prev) => [...prev, currentTrack]);
-      if (isShuffle) {
-        shuffleRemainingRef.current = shuffleRemainingRef.current.filter((id) => id !== next.id);
+      addHistory();
+      if (planned.manual) {
+        updateManualQueue(manualQueueRef.current.filter((entry) => entry.key !== planned.key));
+      } else if (isShuffle) {
+        consumePlannedAutomatic(next.id);
+      } else {
+        playlistRemainingRef.current = Math.max(0, playlistRemainingRef.current - 1);
+      }
+      const oldPlaylistCursor = playlistCursorIdRef.current;
+      const oldCursorIndex = queue.findIndex((entry) => entry.id === oldPlaylistCursor);
+      const nextCursorIndex = queue.findIndex((entry) => entry.id === next.id);
+      const preserveCursor = !isShuffle && !planned.manual
+        && sequentialPinsRef.current.some((entry) => entry.key === planned.key)
+        && oldCursorIndex >= 0 && nextCursorIndex >= 0 && nextCursorIndex < oldCursorIndex;
+      removeSequentialPin(planned.key);
+      if (!planned.manual && !preserveCursor) playlistCursorIdRef.current = next.id;
+      const hasTail = manualQueueRef.current.some((entry) => entry.placement === "last");
+      if (!upcomingClearedRef.current && !hasTail) {
+        if (!isShuffle && playlistRemainingRef.current === 0) playlistRemainingRef.current = Math.max(0, queue.length - 1);
       }
 
       // Swap only after the optional video is ready (or has failed open). Until
       // here the outgoing track remains the active player.
+      localPlaybackIntentRef.current = true;
       activeIdRef.current = activeIdRef.current === "a" ? "b" : "a";
       audioRef.current = preEl;
       const pitch = preloadedPitchRef.current;
@@ -1327,18 +1839,26 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       preloadedAdvanceTrackIdRef.current = null;
       setPlaybackPitch(pitch);
       setCurrentTrack(next);
-      setCurrentSource(queueSource);
+      setCurrentSource(planned.source);
       setCurrentTime(0);
       setVisualCurrentTime(0);
       setDuration(preEl.duration || 0);
       setIsPlaying(false);
+      // A previous preparation's spinner must never disable the controls for
+      // a new automatic track, including when preparation was bypassed.
+      setIsPlaybackPreparing(false);
 
       pendingPlayRef.current = true;
-      void preEl.play()
-        .then(() => {
-          if (audioRef.current === preEl) pendingPlayRef.current = false;
-        })
-        .catch(() => setIsPlaying(false));
+      void preEl.play().catch((error: unknown) => {
+        if (audioRef.current !== preEl) return;
+        // A preloaded media element has often ALREADY emitted canplay before
+        // becoming active. That event will not necessarily occur a second
+        // time. Keep the intent and allow a direct user Play retry.
+        pendingPlayRef.current = true;
+        setIsPlaying(false);
+        setIsPlaybackPreparing(false);
+        console.warn("FARREO: no se pudo iniciar la pista precargada", error);
+      });
 
       if (oldActive && !opts?.letOldFinish) {
         try { oldActive.pause(); } catch { /* no-op */ }
@@ -1404,7 +1924,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       // por si este evento no llega a ver la ventana final.
       if (Number.isFinite(el.duration) && el.duration > 0) {
         const remaining = el.duration - el.currentTime;
-        if (queue.length > 1 && remaining <= 0.3 && isPreloadReady()) {
+        if (remaining <= 0.3 && peekNextEntry() && isPreloadReady()) {
           advanceToPreloaded({ letOldFinish: true });
         }
       }
@@ -1415,8 +1935,11 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       setDuration(el.duration);
       el.volume = volumeRef.current;
       el.preservesPitch = false;
-      el.playbackRate = playbackPitch;
+      // Local track start/gapless swap already assigned its chosen pitch.
+      // Reapplying an older render's playbackPitch during loadedmetadata can
+      // overwrite the incoming song's fixed/custom pitch.
       if (playerModeRef.current === "radio" && radioStateRef.current) {
+        el.playbackRate = radioStateRef.current.currentItem?.pitch ?? playbackPitch;
         const livePosition = getLiveRadioPosition(radioStateRef.current);
         if (Math.abs(el.currentTime - livePosition) > 0.5) {
           el.currentTime = livePosition;
@@ -1424,12 +1947,25 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
         setCurrentTime(livePosition);
         setVisualCurrentTime(livePosition);
       }
-      if (playerModeRef.current !== "radio" && !isPlaying && currentTime > 0 && el.currentTime !== currentTime) {
-        el.currentTime = currentTime;
+      // Do NOT seek local audio to React's currentTime here. During an A->B
+      // gapless swap the closure may still hold A's last timestamp. Seek only
+      // if this exact URL is being reloaded from persistent startup state.
+      if (playerModeRef.current !== "radio") {
+        const restore = startupResumeRef.current;
+        if (restore && el.getAttribute("src") === restore.url) {
+          startupResumeRef.current = null;
+          try {
+            el.currentTime = Number.isFinite(el.duration) && el.duration > 0
+              ? Math.min(restore.position, Math.max(0, el.duration - 0.05))
+              : restore.position;
+          } catch { /* A later manual seek can still recover. */ }
+        }
       }
       if (playerModeRef.current !== "radio" && pendingPlayRef.current) {
-        pendingPlayRef.current = false;
-        el.play().catch(() => setIsPlaying(false));
+        void el.play().catch(() => {
+          // A transient stream stall must not consume the pending play intent.
+          setIsPlaying(false);
+        });
       }
     },
     onLoadStart: (e: SyntheticEvent<HTMLAudioElement>) => {
@@ -1473,13 +2009,22 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
         return;
       }
       if (playerModeRef.current !== "radio" && pendingPlayRef.current) {
-        pendingPlayRef.current = false;
-        e.currentTarget.play().catch(() => setIsPlaying(false));
+        void e.currentTarget.play().catch(() => {
+          // Keep the request until actual playback (onPlaying), not just one
+          // "canplay" notification that may arrive before enough data.
+          setIsPlaying(false);
+        });
       }
     },
     onPlaying: (e: SyntheticEvent<HTMLAudioElement>) => {
       if (e.currentTarget !== audioRef.current) return;
-      if (playerModeRef.current === "radio") {
+      if (playerModeRef.current !== "radio") {
+        pendingPlayRef.current = false;
+        // Media events can arrive in a different order after replacing the
+        // outgoing source; `playing` is authoritative for the new track.
+        setIsPlaying(true);
+      } else if (radioStateRef.current?.status === "playing") {
+        setIsPlaying(true);
         syncAudioToLiveRadio(pendingRadioJoinSyncRef.current ? 0.5 : 0.75);
         setIsRadioBuffering(false);
       }
@@ -1492,26 +2037,28 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       return;
     }
 
-    if (queue.length === 0) return;
-
     if (history.length > 0) {
-      const prevTrack = history[history.length - 1];
+      const previous = history[history.length - 1];
       setHistory((prev) => prev.slice(0, -1));
-      startTrack(prevTrack, currentSource);
+      if (currentTrack) {
+        const forward: PlaybackQueueEntry = {
+          key: nextKey(), track: currentTrack, source: currentSource,
+          pitch: { kind: "fixed", pitch: playbackPitch }, manual: true,
+        };
+        updateManualQueue([forward, ...manualQueueRef.current]);
+      }
+      startTrack(previous.track, previous.source, previous.pitch);
       return;
     }
 
-    if (!currentTrack) {
-      startTrack(queue[queue.length - 1], queueSource);
-      return;
-    }
-
-    const idx = queue.findIndex((track) => track.id === currentTrack.id);
-    startTrack(queue[(idx - 1 + queue.length) % queue.length], queueSource);
+    // With no history there is no previous song to return to. This also makes
+    // the "Limpiar anteriores" action genuinely clear backwards navigation.
+    return;
   };
 
   const togglePlayPause = () => {
-    if (isPlaybackPreparing) return;
+    // Never let a stale waiting-for-video state disable the local Play button.
+    // A deliberate click overrides optional visual preparation.
     if (playerMode === "radio") {
       if (radioState?.status === "playing" && !isPlaying && audioRef.current) {
         void joinLiveRadioAudio(true);
@@ -1522,24 +2069,71 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       return;
     }
 
-    if (!currentTrack && queue.length > 0) {
-      const nextTrack = isShuffle ? pickShuffleTrack(true) : queue[0];
-      if (nextTrack) startTrack(nextTrack, queueSource);
+    if (!currentTrack && (queue.length > 0 || manualQueueRef.current.length > 0)) {
+      const next = peekNextEntry();
+      if (next) {
+        if (next.manual) updateManualQueue(manualQueueRef.current.filter((entry) => entry.key !== next.key));
+        else if (isShuffle) consumePlannedAutomatic(next.track.id);
+        else playlistRemainingRef.current = Math.max(0, playlistRemainingRef.current - 1);
+        startTrack(next.track, next.source, next.manual ? next.pitch : undefined);
+      }
       return;
     }
 
-    if (!audioRef.current) return;
-    if (isPlaying) {
-      audioRef.current.pause();
-    } else {
-      audioRef.current.play().catch(() => setIsPlaying(false));
+    if (isPlaybackPreparing) {
+      const pendingNext = preloadedAdvanceTrackIdRef.current;
+      const outgoing = audioRef.current;
+      cancelLocalVideoPreparation();
+      preloadedAdvanceTrackIdRef.current = null;
+      // If the old song has already ended, advance rather than retrying it.
+      if (pendingNext && outgoing?.ended && peekNextEntry()) {
+        advanceWithoutReadyPreload();
+        return;
+      }
     }
-    setIsPlaying(!isPlaying);
+    const audio = audioRef.current;
+    if (!audio) return;
+    // React's isPlaying can lag behind actual HTMLMediaElement state when a
+    // double-buffer transition fails. Trust the media element, not stale UI.
+    if (!audio.paused) {
+      localPlaybackIntentRef.current = false;
+      pendingPlayRef.current = false;
+      audio.pause();
+    } else {
+      localPlaybackIntentRef.current = true;
+      pendingPlayRef.current = true;
+      // A failed on-demand stream can leave the <audio> permanently in a
+      // MEDIA_ERR state. Pressing Play must create a NEW request instead of
+      // retrying play() against the same unusable media resource.
+      if (audio.error || audio.networkState === HTMLMediaElement.NETWORK_NO_SOURCE) {
+        const original = currentTrack?.url || audio.getAttribute("src") || "";
+        if (original) {
+          const separator = original.includes("?") ? "&" : "?";
+          const retry = isYoutubeProxyTrack(currentTrack)
+            ? `${original}${separator}fresh=1&manualRetry=${Date.now()}` : original;
+          audio.src = retry;
+          audio.load();
+        }
+      }
+      void audio.play().then(() => {
+        if (audioRef.current === audio) pendingPlayRef.current = false;
+      }).catch((error: unknown) => {
+        if (audioRef.current === audio) {
+          setIsPlaying(false);
+          setIsPlaybackPreparing(false);
+          console.warn("FARREO: la reproduccion requiere un nuevo intento", error);
+        }
+      });
+    }
   };
 
   const handleVolumeChange = (val: number) => {
     const nextVolume = clampVolume(val);
     volumeRef.current = nextVolume;
+    // Set BOTH elements to the same chosen volume; never let the inactive
+    // preloader retain an old gain when it becomes the active player.
+    if (elARef.current) elARef.current.volume = nextVolume;
+    if (elBRef.current) elBRef.current.volume = nextVolume;
     setVolume(nextVolume);
     if (nextVolume > 0.01) {
       lastNonZeroVolumeRef.current = nextVolume;
@@ -1585,8 +2179,10 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   const updateShuffle = (val: boolean | ((prev: boolean) => boolean)) => {
     const next = typeof val === "function" ? val(isShuffle) : val;
     setIsShuffle(next);
+    if (playerMode !== "radio" && !next) resetUpcomingOrder();
     if (next && playerMode !== "radio") {
-      resetShuffleBag(queue, currentTrack?.id);
+      resetUpcomingOrder();
+      resetShuffleBag(activeShufflePlaylist().tracks, currentTrack?.id);
     }
     if (playerMode === "radio") {
       void radioPatch<RadioState>("/radio/settings", { shuffle: next }).then(applyRadioSnapshot).catch(() => undefined);
@@ -1594,6 +2190,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   };
 
   const stop = () => {
+    localPlaybackIntentRef.current = false;
     cancelLocalVideoPreparation();
     pendingPlayRef.current = false;
     preloadedAdvanceTrackIdRef.current = null;
@@ -1606,13 +2203,29 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     }
     setCurrentTrack(null);
     setCurrentSource(null);
+    setQueue([]);
+    setQueueSource(null);
+    shuffleSourceRef.current = null;
+    shuffleOriginRef.current = null;
+    setShuffleSource(null);
+    shuffleRemainingRef.current = [];
+    shuffleQueueSignatureRef.current = "";
+    resetUpcomingOrder();
+    playlistCursorIdRef.current = null;
+    playlistRemainingRef.current = 0;
+    updateAutomaticPlan([]);
+    setHistory([]);
+    updateManualQueue([]);
+    resetUpcomingOrder();
+    setFutureCleared(false);
     setIsPlaying(false);
     setCurrentTime(0);
     setVisualCurrentTime(0);
     setDuration(0);
   };
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    // Apply saved settings before the browser paints the default 80% volume.
     if (typeof window === "undefined" || hasRestoredRef.current) return;
     hasRestoredRef.current = true;
 
@@ -1624,11 +2237,20 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       }
       const state = JSON.parse(rawState) as Partial<StoredPlayerState>;
 
-      setQueue(Array.isArray(state.queue) ? state.queue : []);
+      const restoredTracks = Array.isArray(state.queue) ? state.queue : [];
+      shuffleSourceRef.current = null;
+      shuffleOriginRef.current = null;
+      setShuffleSource(null);
+      setQueue(restoredTracks);
+      resetShuffleBag(restoredTracks, state.currentTrack?.id);
+      playlistRemainingRef.current = Math.max(0, restoredTracks.length - 1);
+      playlistCursorIdRef.current = state.currentTrack?.id ?? null;
       setQueueSource(state.queueSource ?? null);
       setCurrentTrack(state.currentTrack ?? null);
       setCurrentSource(state.currentSource ?? null);
-      const restoredTime = typeof state.currentTime === "number" ? state.currentTime : 0;
+      const restoredTime = typeof state.currentTime === "number" ? Math.max(0, state.currentTime) : 0;
+      startupResumeRef.current = state.currentTrack?.url && restoredTime > 0
+        ? {url: state.currentTrack.url, position: restoredTime} : null;
       setCurrentTime(restoredTime);
       setVisualCurrentTime(restoredTime);
       setPlaybackPitch(typeof state.playbackPitch === "number" ? state.playbackPitch : 1);
@@ -1675,7 +2297,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
 
   useEffect(() => {
     if (typeof window === "undefined" || !storageReady) return;
-    if (playerMode === "radio") return;
+    if (playerMode !== "local" || playerModeRef.current !== "local") return;
 
     const keepOnlyMobilePlaylistReference = isMobileRoute && (
       currentSource?.type === "global" || currentSource?.type === "private" || currentSource?.type === "album"
@@ -1700,7 +2322,10 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   }, [autoRandomPitch, currentSource, isMobileRoute, persistedTime, currentTrack, isShuffle, lastNonZeroVolume, lyricsEnabled, playbackPitch, playerMode, playerStorageKey, queue, queueSource, storageReady, volume]);
 
   useEffect(() => {
-    if (typeof window === "undefined" || !storageReady) return;
+    // This second volume-only write was leaking Radio's volume into the local
+    // session despite the main persistence effect correctly skipping Radio.
+    if (typeof window === "undefined" || !storageReady ||
+      playerMode !== "local" || playerModeRef.current !== "local") return;
 
     try {
       const rawState = window.localStorage.getItem(playerStorageKey);
@@ -1716,7 +2341,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
         lastNonZeroVolume,
       });
     }
-  }, [lastNonZeroVolume, playerStorageKey, storageReady, volume]);
+  }, [lastNonZeroVolume, playerMode, playerStorageKey, storageReady, volume]);
 
   useEffect(() => {
     if (!isPlaying) return;
@@ -1767,7 +2392,9 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     if (!audio) return;
     const url = currentTrack?.url || "";
     if (url) {
-      if (audio.src !== url) {
+      // getAttribute retains the original URL; .src may be normalized and
+      // comparing it directly can trigger an unwanted reload during gapless.
+      if (audio.getAttribute("src") !== url) {
         audio.src = url;
         audio.load();
       }
@@ -1777,6 +2404,23 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     }
   }, [currentTrack?.url]);
 
+  // The two upcoming automatic choices are committed only as needed. The
+  // selection is updated AFTER render, never as a side effect of useMemo.
+  useEffect(() => {
+    if (playerMode !== "local" || !isShuffle || upcomingCleared) return;
+    const active = shuffleSourceRef.current ?? {source: queueSource, tracks: queue};
+    if (!active.tracks.length) return;
+    if (shuffleQueueSignatureRef.current !== getQueueSignature(active.tracks)) {
+      resetShuffleBag(active.tracks, currentTrack?.id);
+      return;
+    }
+    refillAutomaticWindow(active.tracks, active.source, currentTrack?.id,
+      manualQueue.some((entry) => entry.placement === "last"));
+    // Refill is stable after two reservations; it never rerolls existing slots.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queue, queueSource, currentTrack?.id, isShuffle, playerMode, manualQueue,
+      upcomingCleared, shuffleSource, shuffleVersion, plannedAutomatic.length]);
+
   // Precargar la siguiente cancion en el elemento inactivo (doble buffer) para
   // poder encadenar sin hueco en segundo plano. Solo en modo local.
   useEffect(() => {
@@ -1785,7 +2429,64 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     preloadNext();
     // preloadNext lee el estado actual via closure; no es una dependencia.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentTrack?.id, queue, isShuffle, autoRandomPitch, playerMode]);
+  }, [currentTrack?.id, queue, isShuffle, autoRandomPitch, playerMode, manualQueue, upcomingCleared, shuffleVersion, upcomingOrder, sequentialPinsVersion, plannedAutomatic]);
+
+  // YouTube audio is an on-demand proxy. A transient extractor/upstream
+  // failure can leave its <audio> at 0 without another canplay event, while
+  // native MP3s continue normally. Keep a bounded, per-track recovery path.
+  useEffect(() => {
+    if (playerMode !== "local" || !currentTrack?.url ||
+      !/\/youtube-tracks\/[a-zA-Z0-9_-]{11}\/audio(?:[?#]|$)/.test(currentTrack.url)) return;
+
+    const songId = currentTrack.id;
+    const canonicalUrl = currentTrack.url;
+    let retries = 0;
+    let lastAttemptAt = Date.now();
+    let inFlight = false;
+    const check = () => {
+      const audio = audioRef.current;
+      if (!audio || playerModeRef.current !== "local" ||
+        !localPlaybackIntentRef.current || !audio.getAttribute("src") ||
+        !audio.src.includes("/youtube-tracks/") ||
+        // Never intervene while the user intentionally waits for visuals.
+        localVideoStartAbortRef.current !== null) return;
+      if (audio.currentTime >= 0.35) {
+        window.clearInterval(timer);
+        return;
+      }
+      if (inFlight || retries >= 2) return;
+      const age = Date.now() - lastAttemptAt;
+      const minWaitMs = audio.error ? 1000 : retries ? 11000 : 8500;
+      if (age < minWaitMs) return;
+      retries += 1;
+      lastAttemptAt = Date.now();
+      inFlight = true;
+      const errorCode = audio.error?.code ?? 0;
+      console.warn("FARREO: recuperando audio YouTube bloqueado en 0", {
+        songId, attempt: retries, errorCode,
+        paused: audio.paused, readyState: audio.readyState,
+        networkState: audio.networkState,
+      });
+      const separator = canonicalUrl.includes("?") ? "&" : "?";
+      // fresh=1 asks the existing Linux proxy to resolve a new signed URL.
+      // retry makes the browser fetch a new resource rather than the failed one.
+      const retryUrl = `${canonicalUrl}${separator}fresh=1&retry=${retries}`;
+      pendingPlayRef.current = true;
+      try {
+        audio.pause();
+        audio.src = retryUrl;
+        audio.load();
+        void audio.play().catch((err) => {
+          console.warn("FARREO: reintento de stream YouTube pendiente", err);
+        }).finally(() => { inFlight = false; });
+      } catch (err) {
+        inFlight = false;
+        console.warn("FARREO: fallo en recuperación de stream YouTube", err);
+      }
+    };
+    const timer = window.setInterval(check, 1000);
+    return () => window.clearInterval(timer);
+  }, [currentTrack?.id, currentTrack?.url, playerMode]);
 
   // Media Session API Sync
   useEffect(() => {
@@ -1929,6 +2630,13 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     loadQueue,
     playQueue,
     toggleTrack,
+    addToPlaybackQueue,
+    removeFromPlaybackQueue,
+    clearPlaybackHistory,
+    clearPlaybackUpcoming,
+    playPlaybackQueueEntry,
+    reorderPlaybackQueueEntry,
+    selectPlaybackShuffleSource,
     playNext,
     playPrev,
     togglePlayPause,
@@ -1946,6 +2654,13 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       loadQueue,
       playQueue,
       toggleTrack,
+      addToPlaybackQueue,
+      removeFromPlaybackQueue,
+      clearPlaybackHistory,
+      clearPlaybackUpcoming,
+      playPlaybackQueueEntry,
+      reorderPlaybackQueueEntry,
+      selectPlaybackShuffleSource,
       playNext,
       playPrev,
       togglePlayPause,
@@ -1964,6 +2679,16 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     loadQueue: (tracks: MusicTrack[], source?: MusicPlaylistSource | null) => apiRef.current.loadQueue(tracks, source),
     playQueue: (tracks: MusicTrack[], index: number, source?: MusicPlaylistSource | null) => apiRef.current.playQueue(tracks, index, source),
     toggleTrack: (track: MusicTrack, tracks?: MusicTrack[], source?: MusicPlaylistSource | null) => apiRef.current.toggleTrack(track, tracks, source),
+    addToPlaybackQueue: (track: MusicTrack, position: PlaybackQueuePosition, pitch: PlaybackQueuePitch, source?: MusicPlaylistSource | null) => apiRef.current.addToPlaybackQueue(track, position, pitch, source),
+    removeFromPlaybackQueue: (key: string) => apiRef.current.removeFromPlaybackQueue(key),
+    clearPlaybackHistory: () => apiRef.current.clearPlaybackHistory(),
+    clearPlaybackUpcoming: () => apiRef.current.clearPlaybackUpcoming(),
+    playPlaybackQueueEntry: (key: string) => apiRef.current.playPlaybackQueueEntry(key),
+    reorderPlaybackQueueEntry: (key: string, targetIndex: number) => apiRef.current.reorderPlaybackQueueEntry(key, targetIndex),
+    selectPlaybackShuffleSource: (
+      source: MusicPlaylistSource | null, tracks?: MusicTrack[],
+      sourceByTrackId?: Map<string, MusicPlaylistSource>,
+    ) => apiRef.current.selectPlaybackShuffleSource(source, tracks, sourceByTrackId),
     playNext: () => apiRef.current.playNext(),
     playPrev: () => apiRef.current.playPrev(),
     togglePlayPause: () => apiRef.current.togglePlayPause(),
@@ -1977,19 +2702,48 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     stop: () => apiRef.current.stop(),
   }), []);
 
-  const nextTrackId = useMemo(() => {
-    if (playerMode !== "local" || isShuffle || !currentTrack || queue.length < 2) return null;
-    const index = queue.findIndex((entry) => entry.id === currentTrack.id);
-    return index < 0 ? null : queue[(index + 1) % queue.length]?.id ?? null;
-  }, [currentTrack?.id, isShuffle, playerMode, queue]);
-
-  const canPlayNext = playerMode === "radio" ? Boolean(radioState?.currentItem) : queue.length > 1 || (!currentTrack && queue.length > 0);
-  const canPlayPrev = playerMode === "radio" ? Boolean(radioState?.currentItem) : history.length > 0 || queue.length > 1;
+  // The visible future contains manually inserted songs plus ONLY two
+  // automatic candidates. Other playlist songs remain uncommitted candidates.
+  const playbackUpcoming = useMemo<PlaybackQueueEntry[]>(() => getOrderedUpcoming(), [
+    queue, queueSource, currentTrack?.id, isShuffle, playerMode, manualQueue,
+    upcomingCleared, plannedAutomatic, shuffleVersion, upcomingOrder, sequentialPinsVersion,
+  ]);
+  const playbackShuffleSources = useMemo<PlaybackShuffleSource[]>(() => {
+    const sources = new Map<string, PlaybackShuffleSource>();
+    const consider = (source: MusicPlaylistSource | null | undefined, count = 1) => {
+      if (!source || source.type === "radio"
+        || (source.type === "song" && !source.id.startsWith("recommendation:"))) return;
+      const key = getSourceKey(source);
+      const previous = sources.get(key);
+      if (!previous || previous.count < count) sources.set(key, {source, count});
+    };
+    consider(queueSource, queue.length);
+    consider(currentSource);
+    manualQueue.forEach((entry) => consider(entry.source));
+    history.forEach((entry) => consider(entry.source));
+    // "Todas" is a synthetic union, not a real playlist option.
+    if (shuffleSource?.source.id !== "__farreo_all__") {
+      consider(shuffleSource?.source, shuffleSource?.tracks.length);
+    }
+    return [...sources.values()];
+  }, [currentSource, history, manualQueue, queue.length, queueSource, shuffleSource]);
+  const playbackShuffleSourceKey = shuffleSource?.source
+    ? getSourceKey(shuffleSource.source)
+    : queueSource ? getSourceKey(queueSource)
+    : currentSource ? getSourceKey(currentSource) : null;
+  const nextTrackId = playbackUpcoming[0]?.track.id ?? null;
+  const canPlayNext = playerMode === "radio" ? Boolean(radioState?.currentItem) : playbackUpcoming.length > 0;
+  const canPlayPrev = playerMode === "radio" ? Boolean(radioState?.currentItem) : history.length > 0;
 
   const contextValue = useMemo<MusicPlayerContextValue>(() => ({
     currentTrack,
     currentSource,
     nextTrackId,
+    playbackHistory: history,
+    playbackUpcoming,
+    playbackQueueCleared: upcomingCleared,
+    playbackShuffleSources,
+    playbackShuffleSourceKey,
     hasCurrentLyrics,
     isPlaying,
     playbackPitch,
@@ -2009,7 +2763,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     setAutoRandomPitch,
     setLyricsEnabled,
     ...stableApi,
-  }), [autoRandomPitch, canPlayNext, canPlayPrev, currentSource, currentTrack, duration, getAudioFrequencyData, hasCurrentLyrics, isPitchLocked, isPlaying, nextTrackId, isRadioAwaitingUserGesture, isRadioBuffering, isShuffle, lyricsEnabled, playbackPitch, playerMode, radioState, stableApi, volume]);
+  }), [autoRandomPitch, canPlayNext, canPlayPrev, currentSource, currentTrack, duration, getAudioFrequencyData, hasCurrentLyrics, isPitchLocked, isPlaying, nextTrackId, history, playbackUpcoming, playbackShuffleSources, playbackShuffleSourceKey, upcomingCleared, isRadioAwaitingUserGesture, isRadioBuffering, isShuffle, lyricsEnabled, playbackPitch, playerMode, radioState, stableApi, volume]);
 
   const timeContextValue = useMemo<MusicPlayerTimeContextValue>(() => ({
     currentTime,
@@ -2024,7 +2778,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       <MusicPlayerTimeContext.Provider value={timeContextValue}>
       {children}
 
-      {showDesktopPlayer && (
+      {showDesktopPlayer && storageReady && (
       <>
       <LyricsDisplay lyric={currentLyric} visible={lyricsEnabled && hasCurrentLyrics} />
       <div className="playlist-admin__player">
@@ -2083,8 +2837,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
             <button
               className="playlist-admin__control-btn playlist-admin__control-btn--play"
               onClick={togglePlayPause}
-              disabled={isPlaybackPreparing}
-              title={isPlaybackPreparing ? "Preparando videoclip" : isPlaying ? "Pausar" : "Reproducir"}
+              title={isPlaybackPreparing ? "Forzar reproducción sin esperar al vídeo" : isPlaying ? "Pausar" : "Reproducir"}
             >
               {isPlaybackPreparing
                 ? <LoaderCircleIcon className="farreo-video-start-spinner" size={16} />

@@ -1,0 +1,8 @@
+.menu { max-width: min(310px, calc(100vw - 16px)); max-height: min(320px, calc(100vh - 16px)); }
+.menu[data-flip="true"] :global(.farreo-context-menu__submenu) {
+  left: auto;
+  right: calc(100% + 5px);
+}
+.menu :global(.farreo-context-menu__submenu) {
+  max-height: min(280px, calc(100vh - 22px));
+}

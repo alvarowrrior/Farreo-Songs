@@ -2,6 +2,7 @@
 
 import { usePathname } from "next/navigation";
 import AppSidebar from "@/components/AppSidebar";
+import PlaybackQueueIsland from "@/components/PlaybackQueueIsland";
 import BackendAuthBridge from "@/components/BackendAuthBridge";
 import DesktopDiscVisualController from "@/components/DesktopDiscVisualController";
 import DesktopRadioClientLayer from "@/components/DesktopRadioClientLayer";
@@ -26,6 +27,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       {!isSimplePage && <DesktopYoutubeVideoBackground />}
       {!isSimplePage && <DesktopYoutubeVideoToggle />}
       {!isSimplePage && <AppSidebar />}
+      {!isSimplePage && <PlaybackQueueIsland />}
       {!isSimplePage && <ThemeDiscoverySidebarEnhancer />}
       {!isSimplePage && <DesktopSongRadioContextEnhancer />}
       {!isSimplePage && <DesktopRadioClientLayer />}

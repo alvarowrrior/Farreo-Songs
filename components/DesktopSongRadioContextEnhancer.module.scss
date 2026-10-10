@@ -1,235 +1,142 @@
-.fallbackMenu {
-  position: fixed;
-  z-index: 710;
-  width: 202px;
-  padding: 4px;
-  border: 1px solid rgba(255, 255, 255, 0.11);
-  border-radius: 7px;
-  background: #202022;
-  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.46);
-}
-
-.menuEntry,
-.injectedEntry,
-.positionEntry {
-  position: relative;
-  width: 100%;
-}
-
-.injectedEntry {
-  // Igual que .farreo-context-menu__entry: sin padding horizontal propio.
-  // El padding ya pertenece al botón y al contenedor nativo del menú.
-  padding: 2px 0;
-}
-
-.menuButton,
+.injectedEntry { padding: 2px 0; border-top: 1px solid rgba(255,255,255,.065); margin-top: 3px; }
 .injectedButton {
-  width: 100%;
-  min-height: 34px;
-  border: 0;
+  width: 100%; display: flex; align-items: center; gap: 9px; min-height: 34px;
+  border: none; background: transparent; border-radius: 5px; color: #e7e8e7;
+  font: inherit; font-size: 12.5px; text-align: left; padding: 0 9px; cursor: pointer;
+  &:hover { background: rgba(30,215,96,.095); color: #eafff0; }
+  span:first-child { color: #1ed760; font-size: 16px; min-width: 19px; }
+  span:last-child { margin-left: auto; color: #8eaaa0; }
+}
+.composerBackdrop { position: fixed; inset: 0; z-index: 860; background: rgba(0,0,0,.10); }
+.composer {
+  position: fixed; max-height: calc(100vh - 24px); overflow: auto;
+  padding: 16px; box-sizing: border-box; border-radius: 16px; border: 1px solid rgba(255,255,255,.13);
+  background: linear-gradient(140deg, #282b2a, #161918 65%, #101312);
+  box-shadow: 0 22px 75px rgba(0,0,0,.65), inset 0 1px rgba(255,255,255,.045);
+  color: #f5f6f5; font-family: inherit;
+}
+.composerHeader { display: flex; align-items: center; gap: 12px; padding-bottom: 18px;
+  border-bottom: 1px solid rgba(255,255,255,.075); }
+.composerIcon { width: 40px; height: 40px; flex: 0 0 auto; display: grid; place-items: center;
+  border-radius: 12px; background: rgba(30,215,96,.14); color: #1ed760; }
+.composerTitle { min-width: 0; flex: 1;
+  h3 { font-size: 15px; letter-spacing: -.2px; margin: 0 0 4px; }
+  p { font-size: 11px; color: #acb4ae; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+.close { display: grid; place-items: center; flex: 0 0 26px; width: 26px; height: 26px;
+  background: rgba(255,255,255,.065); border: 0; border-radius: 7px; color: #a8b0ab; cursor: pointer;
+  &:hover { background: rgba(255,255,255,.13); color: white; }
+}
+.composerSection { padding: 17px 0 0; }
+.caption { display: block; margin-bottom: 10px; color: #9caaa1; font-weight: 900; font-size: 9px; letter-spacing: 1.3px; }
+.segmented, .pitchChoices { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 6px;
+  button { min-height: 39px; border-radius: 9px; border: 1px solid rgba(255,255,255,.10);
+    background: rgba(255,255,255,.045); color: #c4cbc5; font: inherit; font-size: 11px;
+    font-weight: 800; cursor: pointer;
+    &:hover { border-color: rgba(30,215,96,.35); background: rgba(30,215,96,.07); }
+    &.selected { border-color: rgba(30,215,96,.55); background: rgba(30,215,96,.15); color: #9bf0b4; }
+  }
+}
+.pitchChoices { button { min-height: 42px; font-size: 10px; } }
+.pitchCustom { display: flex; align-items: center; gap: 6px; margin-top: 12px; color: #9df0b3;
+  input[type="range"] { min-width: 0; flex: 1; accent-color: #1ed760; }
+  input[type="number"] { width: 64px; min-height: 32px; border: 1px solid rgba(255,255,255,.12); border-radius: 7px;
+    background: #111613; color: white; padding: 0 6px; text-align: center; font: inherit; font-size: 12px; }
+}
+.submit { display: flex; width: 100%; min-height: 43px; align-items: center; justify-content: center; gap: 9px;
+  margin-top: 20px; background: #1ed760; color: #08150c; font: inherit; font-weight: 900; font-size: 12px;
+  border: 0; border-radius: 10px; cursor: pointer;
+  &:hover:not(:disabled) { background: #4df083; }
+  &:disabled { opacity: .55; cursor: wait; }
+}
+.notice { position: fixed; bottom: 112px; left: 50%; transform: translateX(-50%); z-index: 880;
+  max-width: calc(100vw - 30px); border-radius: 9px; padding: 11px 18px;
+  background: #253d2d; color: #d9ffe6; border: 1px solid rgba(30,215,96,.22);
+  box-shadow: 0 10px 36px rgba(0,0,0,.5); font-size: 12px; font-weight: 750;
+}
+:global(.playlist-song-table__menu--fixed[data-farreo-flip="true"] .playlist-song-table__submenu) {
+  left: auto !important;
+  right: calc(100% + 4px) !important;
+}
+
+/* Compact FARREO menu shared by the local queue and Radio. */
+.composerBackdrop { background: rgba(0, 0, 0, .06); }
+.composer {
+  padding: 16px 15px 14px;
   border-radius: 4px;
-  display: flex;
-  align-items: center;
-  gap: 0.55rem;
-  padding: 0 0.55rem;
-  color: #e8e8e8;
+  border-color: rgba(255,255,255,.16);
+  background: #0c0d0e;
+  box-shadow: 0 16px 56px rgba(0,0,0,.66), 0 0 0 1px rgba(0,0,0,.42);
+}
+.composerHeader {
+  padding-bottom: 14px;
+  gap: 10px;
+  border-bottom-color: rgba(255,255,255,.095);
+}
+.composerIcon {
+  width: 31px;
+  height: 31px;
+  border: 1px solid rgba(30,215,96,.22);
+  border-radius: 3px;
+  background: rgba(30,215,96,.06);
+}
+.composerTitle {
+  h3 { font-size: 14px; font-weight: 650; letter-spacing: -.15px; }
+  p { font-size: 11px; color: #999; }
+}
+.close {
+  border-radius: 3px;
+  color: #9d9d9d;
   background: transparent;
-  font: inherit;
-  font-size: 0.84rem;
-  text-align: left;
-  cursor: pointer;
+  &:hover { background: rgba(255,255,255,.07); }
 }
-
-.menuButton > span:nth-child(2),
-.injectedButton > span:nth-child(2) {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.composerSection { padding-top: 15px; }
+.caption {
+  margin-bottom: 9px;
+  color: #a6a6a6;
+  font-weight: 620;
+  font-size: 10px;
+  letter-spacing: .55px;
 }
-
-.menuButton > span:last-child,
-.injectedButton > span:last-child {
-  margin-left: auto;
-}
-
-.pitchButton {
-  width: 100%;
-  min-height: 34px;
-  border: 0;
-  border-radius: 5px;
-  display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
-  align-items: center;
-  gap: 7px;
-  padding: 0 9px;
-  color: #efeff1;
-  background: transparent;
-  font: inherit;
-  font-size: 0.76rem;
-  text-align: left;
-  cursor: pointer;
-}
-
-.menuButton:hover,
-.injectedButton:hover,
-.menuEntry:focus-within > .menuButton,
-.injectedEntry:focus-within > .injectedButton,
-.positionEntry:focus-within > .menuButton,
-.positionEntry:focus-within > .injectedButton,
-.pitchButton:hover {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.rawLeading,
-.positionDot {
-  display: grid;
-  place-items: center;
-  color: #1ed760;
-  font-size: 0.66rem;
-}
-
-.radioSourceIcon {
-  display: block;
-  flex: 0 0 auto;
-  color: #9a9aa0;
-  opacity: 0.94;
-}
-
-.injectedArrow,
-.arrow {
-  color: #8b8b90;
-  font-size: 1rem;
-}
-
-.positionPanel,
-.pitchPanel {
-  position: absolute;
-  z-index: 720;
-  top: -4px;
-  left: calc(100% - 2px);
-  display: none;
-  width: 208px;
-  padding: 4px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 7px;
-  background: #202022;
-  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.46);
-}
-
-.pitchPanel {
-  z-index: 730;
-  width: 220px;
-}
-
-.menuEntry:hover > .positionPanel,
-.menuEntry:focus-within > .positionPanel,
-.injectedEntry:hover > .positionPanel,
-.injectedEntry:focus-within > .positionPanel,
-.positionEntry:hover > .pitchPanel,
-.positionEntry:focus-within > .pitchPanel {
-  display: block;
-}
-
-
-.fallbackMenu[data-farreo-radio-flip="true"] .menuEntry > .positionPanel {
-  left: auto;
-  right: calc(100% - 2px);
-}
-
-.fallbackMenu[data-farreo-radio-flip="true"] .positionEntry > .pitchPanel {
-  left: auto;
-  right: calc(100% - 2px);
-}
-
-.injectedEntry[data-farreo-radio-flip="true"] > .positionPanel {
-  left: auto;
-  right: calc(100% - 2px);
-}
-
-.injectedEntry[data-farreo-radio-flip="true"] .positionEntry > .pitchPanel {
-  left: auto;
-  right: calc(100% - 2px);
-}
-
-.pitchButton {
-  grid-template-columns: 28px minmax(0, 1fr);
-  color: #d8d8dc;
-
-  > span:first-child {
-    color: #7de89f;
-    font-size: 0.68rem;
-    font-weight: 900;
-  }
-}
-
-.customPitch {
-  display: grid;
-  grid-template-columns: auto 62px auto;
-  align-items: center;
-  gap: 6px;
-  margin-top: 3px;
-  padding: 7px 7px 6px;
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
-  color: #b9b9be;
-  font-size: 0.68rem;
-  font-weight: 750;
-
-  input {
-    min-width: 0;
-    height: 29px;
-    padding: 0 5px;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 5px;
-    outline: 0;
-    color: #fff;
-    background: rgba(0, 0, 0, 0.25);
-    font: inherit;
-
-    &:focus {
-      border-color: rgba(30, 215, 96, 0.55);
-    }
-  }
-
+.segmented, .pitchChoices {
+  gap: 4px;
   button {
-    height: 29px;
-    padding: 0 7px;
-    border: 0;
-    border-radius: 5px;
-    color: #061109;
-    background: #1ed760;
-    font-size: 0.64rem;
-    font-weight: 900;
-    cursor: pointer;
-
-    &:hover {
-      background: #42e77b;
+    border-radius: 3px;
+    border-color: rgba(255,255,255,.11);
+    background: #171819;
+    font-size: 10.5px;
+    font-weight: 500;
+    color: #c7c7c7;
+    min-height: 36px;
+    transition: background 140ms ease, border-color 140ms ease;
+    &:hover { background: #242626; border-color: rgba(255,255,255,.25); }
+    &.selected {
+      background: rgba(30,215,96,.095);
+      border-color: rgba(30,215,96,.53);
+      color: #55e18a;
     }
   }
 }
-
-.notice {
-  position: fixed;
-  z-index: 900;
-  left: 50%;
-  bottom: 104px;
-  transform: translateX(-50%);
-  max-width: min(560px, calc(100vw - 32px));
-  padding: 10px 14px;
-  border: 1px solid rgba(30, 215, 96, 0.28);
-  border-radius: 999px;
-  color: #dfffe8;
-  background: rgba(12, 24, 16, 0.96);
-  box-shadow: 0 14px 42px rgba(0, 0, 0, 0.4);
-  backdrop-filter: blur(14px);
-  font-size: 0.76rem;
-  font-weight: 750;
-  pointer-events: none;
+.pitchChoices button { min-height: 38px; font-size: 10.5px; }
+.pitchCustom {
+  margin-top: 10px;
+  color: #90eab0;
+  input[type="number"] {
+    min-height: 31px;
+    border-radius: 3px;
+    background: #171819;
+    border-color: rgba(255,255,255,.15);
+  }
 }
-
-.noticeError {
-  border-color: rgba(255, 92, 104, 0.34);
-  color: #ffd9dd;
-  background: rgba(31, 13, 16, 0.96);
+.submit {
+  margin-top: 18px;
+  border-radius: 3px;
+  min-height: 40px;
+  font-size: 11.5px;
+  color: #06180c;
+  background: #1ed760;
+  font-weight: 700;
+  &:hover:not(:disabled) { background: #4be785; }
 }
+.injectedButton { border-radius: 3px; }
+.notice { border-radius: 4px; background: #101d15; color: #c6e7d1; }

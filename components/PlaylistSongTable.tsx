@@ -185,7 +185,11 @@ export default function PlaylistSongTable({
   const renderMenu = (track: PlaylistSongRow, fixedPosition?: { x: number; y: number }) => (
     <div
       className={`playlist-song-table__menu ${fixedPosition ? "playlist-song-table__menu--fixed" : ""}`}
-      style={fixedPosition ? { left: fixedPosition.x, top: fixedPosition.y } : undefined}
+      style={fixedPosition ? {
+        left: Math.min(fixedPosition.x, Math.max(8, window.innerWidth - 245)),
+        top: Math.min(fixedPosition.y, Math.max(8, window.innerHeight - 295)),
+      } : undefined}
+      data-farreo-flip={fixedPosition && fixedPosition.x > window.innerWidth - 450 ? "true" : "false"}
       onPointerDown={(event) => event.stopPropagation()}
       onContextMenu={(event) => event.preventDefault()}
       onClick={(event) => event.stopPropagation()}
@@ -201,7 +205,9 @@ export default function PlaylistSongTable({
       {allowAddToPlaylist && (
         <div className="playlist-song-table__menu-item playlist-song-table__menu-item--submenu">
           <span>Añadir a playlist</span>
-          <div className="playlist-song-table__submenu">
+          <div className="playlist-song-table__submenu" style={fixedPosition && fixedPosition.x > window.innerWidth - 450
+            ? {left: "auto", right: "calc(100% + 5px)"}
+            : undefined}>
             {personalPlaylists.length === 0 || !onAddToPlaylist ? (
               <span className="playlist-song-table__submenu-empty">Sin playlists propias</span>
             ) : (
@@ -266,6 +272,7 @@ export default function PlaylistSongTable({
         return (
           <div
             key={track.id}
+            data-farreo-song-id={track.id}
             className={`playlist-song-table__row ${active ? "playlist-song-table__row--active" : ""} ${draggedId === track.id ? "playlist-song-table__row--dragging" : ""}`}
             draggable={reorderEnabled}
             onDragStart={(event) => {

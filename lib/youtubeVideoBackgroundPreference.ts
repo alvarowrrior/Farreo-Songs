@@ -8,6 +8,12 @@ export const YOUTUBE_RADIO_BACKGROUND_STORAGE_KEY = "farreo-youtube-radio-backgr
 export const YOUTUBE_RADIO_BACKGROUND_CHANGE_EVENT = "farreo:youtube-radio-background-change";
 export const DEFAULT_YOUTUBE_RADIO_BACKGROUND_ENABLED = true;
 
+// Whether a local song waits for its optional YouTube background before audio.
+// False by default: the background can join the already-running audio timeline.
+export const YOUTUBE_VIDEO_WAIT_FOR_READY_STORAGE_KEY = "farreo-youtube-video-wait-for-ready-v1";
+export const YOUTUBE_VIDEO_WAIT_FOR_READY_CHANGE_EVENT = "farreo:youtube-video-wait-for-ready-change";
+export const DEFAULT_YOUTUBE_VIDEO_WAIT_FOR_READY = false;
+
 type PlayerSourceLike = { id: string; type: string } | null | undefined;
 
 function readBooleanPreference(key: string, fallback: boolean) {
@@ -33,6 +39,13 @@ export function getYoutubeVideoBackgroundEnabled() {
 export function setYoutubeVideoBackgroundEnabled(enabled: boolean) {
   writeBooleanPreference(YOUTUBE_VIDEO_BACKGROUND_STORAGE_KEY, YOUTUBE_VIDEO_BACKGROUND_CHANGE_EVENT, enabled);
 }
+export function getYoutubeVideoWaitForReady() {
+  return readBooleanPreference(YOUTUBE_VIDEO_WAIT_FOR_READY_STORAGE_KEY, DEFAULT_YOUTUBE_VIDEO_WAIT_FOR_READY);
+}
+export function setYoutubeVideoWaitForReady(enabled: boolean) {
+  writeBooleanPreference(YOUTUBE_VIDEO_WAIT_FOR_READY_STORAGE_KEY, YOUTUBE_VIDEO_WAIT_FOR_READY_CHANGE_EVENT, enabled);
+}
+
 export function getYoutubeRadioBackgroundEnabled() {
   return readBooleanPreference(YOUTUBE_RADIO_BACKGROUND_STORAGE_KEY, DEFAULT_YOUTUBE_RADIO_BACKGROUND_ENABLED);
 }

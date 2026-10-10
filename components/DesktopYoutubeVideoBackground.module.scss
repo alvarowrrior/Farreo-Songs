@@ -6,7 +6,7 @@
   overflow: hidden;
   background: #09090b;
   opacity: 0;
-  transition: opacity 420ms ease;
+  transition: opacity 780ms ease-in-out;
 }
 
 .ready {
@@ -20,7 +20,6 @@
   height: 100%;
   object-fit: cover;
   object-position: center center;
-  will-change: opacity;
   backface-visibility: hidden;
 }
 
@@ -39,6 +38,10 @@
       rgba(9, 9, 11, 0.10),
       rgba(9, 9, 11, 0.48) 78%
     );
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .root { transition: none; }
 }
 
 @media (max-width: 720px) {
