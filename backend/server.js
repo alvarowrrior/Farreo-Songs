@@ -36,6 +36,8 @@ const RADIO_STATE_PATH = path.join(RADIO_DIR, 'radio-state.json');
 const RADIO_START_GRACE_MS = 2200;
 const { createSongThemeStore } = require('./songThemes');
 const songThemeStore = createSongThemeStore({ storage: BASE_DIR, songsDirectory: CANCIONES_DIR });
+const { createYouTubeSongCatalog } = require('./youtubeTracks');
+const youtubeSongCatalog = createYouTubeSongCatalog(BASE_DIR);
 
 // Crear carpetas si no existen
 [BASE_DIR, AUDIOS_DIR, CANCIONES_DIR, LYRICS_DIR, PLAYLISTS_DIR, PLAYLIST_ICONS_DIR, ALBUM_ICONS_DIR, SONG_ICONS_DIR, SONG_ICON_VARIANTS_DIR, SONG_ADVANCED_COVERS_DIR, RADIO_DIR].forEach(dir => {
@@ -1050,6 +1052,8 @@ function sanitizeRadioSong(song) {
         id: song.id,
         name: song.name,
         url: song.url,
+        provider: song.provider || null,
+        youtubeUrl: song.youtubeUrl || null,
         iconUrl: song.iconUrl || null,
         advancedCoverUrl: song.advancedCoverUrl || null,
         advancedCoverType: song.advancedCoverType || null,
@@ -1335,7 +1339,11 @@ function shufflePendingRadioQueue() {
 }
 
 async function findSongsByInputs(inputs) {
-    const allSongs = await listAllSongs(true);
+    // Explicit YouTube IDs are already resolved by the small JSON catalogue.
+    // Avoid scanning and probing every native MP3 just to enqueue a video.
+    const onlyYouTubeReferences = Array.isArray(inputs) && inputs.length > 0 &&
+        inputs.every(id => /^youtube:[a-zA-Z0-9_-]{11}$/.test(String(id || '').trim()));
+    const allSongs = onlyYouTubeReferences ? [] : await listAllSongs(true);
     const found = [];
     const missing = [];
 
@@ -1343,7 +1351,7 @@ async function findSongsByInputs(inputs) {
         const raw = String(input || '').trim();
         if (!raw) return;
         const normalized = normalizeLookup(raw);
-        const song = allSongs.find(item =>
+        const song = youtubeSongCatalog.getSongById(raw) || allSongs.find(item =>
             item.id === raw ||
             normalizeLookup(item.name) === normalized ||
             (item.variantes || []).some(variant => normalizeLookup(variant) === normalized)
@@ -1448,7 +1456,8 @@ async function getPublicUserPlaylistSongsFromUrl(value) {
         ? data.songEntries.map(entry => String(entry.songId || '')).filter(Boolean)
         : Array.isArray(data.songIds) ? data.songIds.map(String) : [];
     const allSongs = await listAllSongs(true);
-    const songs = songIds.map(id => allSongs.find(song => song.id === id)).filter(Boolean);
+    const youtubeById = new Map(youtubeSongCatalog.findSongsByIds(songIds).map(song => [song.id, song]));
+    const songs = songIds.map(id => allSongs.find(song => song.id === id) || youtubeById.get(id)).filter(Boolean);
 
     return {
         playlist: {
@@ -2005,6 +2014,28 @@ songThemeStore.registerRoutes({
 // ==========================================
 const { registerYoutubeRoutes } = require('./youtube');
 registerYoutubeRoutes({ app, requireAdmin: albumApi.requireAdmin });
+youtubeSongCatalog.registerRoutes(app, {
+    requireAdmin: albumApi.requireAdmin,
+    onDelete(songId) {
+        const previousLength = radioState.queue.length;
+        const wasCurrent = radioState.queue[0]?.song.id === songId;
+        radioState.queue = radioState.queue.filter(item => item.song.id !== songId);
+        if (radioState.queue.length !== previousLength) {
+            if (wasCurrent) scheduleRadioCurrentFromStart();
+            if (radioState.queue.length === 0) radioState.status = 'paused';
+            commitRadioState('queue');
+        }
+    },
+    onUpdate(song) {
+        let updated = false;
+        radioState.queue = radioState.queue.map(item => {
+            if (item.song.id !== song.id) return item;
+            updated = true;
+            return { ...item, song: sanitizeRadioSong(song) };
+        });
+        if (updated) commitRadioState('queue');
+    },
+});
 
 // ==========================================
 // RUTAS DE RADIO

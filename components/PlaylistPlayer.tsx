@@ -22,6 +22,7 @@ import {
 import { useHiddenSongs } from "@/lib/useHiddenSongs";
 import { getMediaUrl, MUSIC_API_URL, type ApiSong } from "@/lib/radioApi";
 import { formatPlaylistDuration } from "@/lib/playlistDuration";
+import { lookupYoutubeTracks, youtubeSourceUrl } from "@/lib/youtubeTracks";
 
 interface ApiPlaylist {
   id?: string;
@@ -67,6 +68,7 @@ export default function PlaylistPlayer({ playlistId, songId }: PlaylistPlayerPro
   const [shareSongTitle, setShareSongTitle] = useState("");
   const [shareSongLink, setShareSongLink] = useState("");
   const [shareInternalLink, setShareInternalLink] = useState("");
+  const [shareIsYouTube, setShareIsYouTube] = useState(false);
   const [copiedLink, setCopiedLink] = useState<"normal" | "internal" | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [isFollowing, setIsFollowing] = useState(false);
@@ -134,10 +136,18 @@ export default function PlaylistPlayer({ playlistId, songId }: PlaylistPlayerPro
         }
 
         if (songId) {
-          const songsRes = await fetch(`${MUSIC_API_URL}/canciones`);
-          if (!songsRes.ok) throw new Error("Error cargando base de datos de canciones.");
-          const songsData = (await songsRes.json()) as ApiSong[];
-          const dbSong = songsData.find((song) => song.id === songId);
+          // YouTube references are intentionally absent from /canciones.
+          // Resolve only this explicitly shared song, keeping public search native-only.
+          let dbSong: ApiSong | undefined;
+          if (youtubeSourceUrl(songId)) {
+            const matches = await lookupYoutubeTracks([songId]);
+            dbSong = matches.find((song) => song.id === songId);
+          } else {
+            const songsRes = await fetch(`${MUSIC_API_URL}/canciones`);
+            if (!songsRes.ok) throw new Error("Error cargando base de datos de canciones.");
+            const songsData = (await songsRes.json()) as ApiSong[];
+            dbSong = songsData.find((song) => song.id === songId);
+          }
           if (!dbSong || !isVisible(dbSong.id)) throw new Error("Canción no encontrada.");
 
           const tracks = [mapSongToTrack(dbSong)];
@@ -221,7 +231,9 @@ export default function PlaylistPlayer({ playlistId, songId }: PlaylistPlayerPro
   const shareSong = (track: PlaylistSongRow) => {
     setShareSongTitle(track.name);
     setShareSongLink(`${window.location.origin}/play?song=${encodeURIComponent(track.id)}`);
-    setShareInternalLink(getMediaUrl(track.url));
+    const youtubeUrl = youtubeSourceUrl(track.id);
+    setShareInternalLink(youtubeUrl || getMediaUrl(track.url));
+    setShareIsYouTube(Boolean(youtubeUrl));
     setCopiedLink(null);
     setShareModalOpen(true);
   };
@@ -379,7 +391,7 @@ export default function PlaylistPlayer({ playlistId, songId }: PlaylistPlayerPro
             </div>
 
             <div className="playlist-admin__upload-form-group" style={{ marginBottom: "1.5rem" }}>
-              <label className="playlist-admin__upload-form-label">Link interno (MP3 real)</label>
+              <label className="playlist-admin__upload-form-label">{shareIsYouTube ? "Link original de YouTube" : "Link interno (MP3 real)"}</label>
               <div className="playlist-admin__upload-form-row">
                 <input type="text" readOnly value={shareInternalLink} className="playlist-admin__upload-form-input" style={{ background: "rgba(255, 255, 255, 0.05)" }} />
                 <button

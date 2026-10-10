@@ -40,6 +40,8 @@ import {
   XIcon,
 } from "lucide-react";
 import SongArtwork from "@/components/SongArtwork";
+import YouTubeSongImport from "@/components/YouTubeSongImport";
+import { lookupYoutubeTracks } from "@/lib/youtubeTracks";
 import RecommendationArtwork from "@/components/RecommendationArtwork";
 import AlbumDiscBackdrop from "@/components/AlbumDiscBackdrop";
 import SongDiscoverySections from "@/components/SongDiscoverySections";
@@ -789,8 +791,8 @@ export default function MobilePage() {
     return () => window.cancelAnimationFrame(frame);
   }, [allGlobalCards.length]);
 
-  const privatePlaylistTracks = useCallback((playlist: PrivatePlaylist) => {
-    const byId = new Map(visibleSongs.map((song) => [song.id, song]));
+  const privatePlaylistTracks = useCallback((playlist: PrivatePlaylist, youtubeSongs: ApiSong[] = []) => {
+    const byId = new Map([...visibleSongs, ...youtubeSongs.filter((song) => isVisible(song.id))].map((song) => [song.id, song]));
     const entries = playlist.songEntries.length > 0
       ? playlist.songEntries
       : playlist.songIds.map((songId) => ({ songId, addedAt: null }));
@@ -801,7 +803,7 @@ export default function MobilePage() {
         return song ? mapSongToTrack(song, entry.addedAt) : null;
       })
       .filter((track): track is MusicTrack => Boolean(track));
-  }, [visibleSongs]);
+  }, [isVisible, visibleSongs]);
 
   const showMessage = useCallback((text: string) => {
     setMessage(text);
@@ -1432,7 +1434,8 @@ export default function MobilePage() {
         setSelectedAlbum(null);
         const fullPlaylist = await getPrivatePlaylist(playlist.id);
         if (!fullPlaylist) throw new Error("Playlist no encontrada.");
-        tracks = privatePlaylistTracks(fullPlaylist);
+        const youtubeSongs = await lookupYoutubeTracks(fullPlaylist.songIds);
+        tracks = privatePlaylistTracks(fullPlaylist, youtubeSongs);
         resolvedPlaylist = toMobilePrivatePlaylist(fullPlaylist);
         source = { id: playlist.id, name: resolvedPlaylist.name, type: "private" };
         if (openPlaylistTab && user?.uid === fullPlaylist.ownerId) {
@@ -1602,7 +1605,10 @@ export default function MobilePage() {
 
   const openSongShareSheet = (song: Pick<ApiSong, "id" | "name"> & { url?: string }) => {
     const farreoUrl = `${window.location.origin}/play?song=${encodeURIComponent(song.id)}`;
-    const mediaUrl = getMediaUrl(song.url);
+    const youtubeSource = song.id.startsWith("youtube:");
+    const mediaUrl = youtubeSource
+      ? `https://www.youtube.com/watch?v=${song.id.slice("youtube:".length)}`
+      : getMediaUrl(song.url);
     setActionSheet({
       title: "Compartir cancion",
       subtitle: song.name,
@@ -1614,11 +1620,11 @@ export default function MobilePage() {
           onSelect: () => copyShareLink(farreoUrl, "Enlace de Farreo copiado."),
         },
         {
-          label: "Copiar enlace del MP3",
-          detail: "Archivo de audio directo",
+          label: youtubeSource ? "Copiar enlace de YouTube" : "Copiar enlace del MP3",
+          detail: youtubeSource ? "Vídeo original" : "Archivo de audio directo",
           icon: <Music2Icon size={18} />,
           disabled: !mediaUrl,
-          onSelect: () => copyShareLink(mediaUrl, "Enlace del MP3 copiado."),
+          onSelect: () => copyShareLink(mediaUrl, youtubeSource ? "Enlace de YouTube copiado." : "Enlace del MP3 copiado."),
         },
       ],
     });
@@ -1632,7 +1638,8 @@ export default function MobilePage() {
         const refreshedPlaylist = await getPrivatePlaylist(playlist.id);
         if (refreshedPlaylist) {
           setSelectedPlaylist(toMobilePrivatePlaylist(refreshedPlaylist));
-          setSelectedTracks(privatePlaylistTracks(refreshedPlaylist));
+          const youtubeSongs = await lookupYoutubeTracks(refreshedPlaylist.songIds);
+          setSelectedTracks(privatePlaylistTracks(refreshedPlaylist, youtubeSongs));
         }
       }
       showMessage(`Anadida a ${playlist.nombre}.`);
@@ -2116,7 +2123,7 @@ export default function MobilePage() {
             type: mobilePlaylistSourceType(selectedPlaylist),
           }, Math.max(0, playbackIndex), { shuffle: false });
         } else {
-          const apiSong = songs.find((entry) => entry.id === song.id);
+          const apiSong = songs.find((entry) => entry.id === song.id) || (options?.track ? { ...options.track, id: song.id, url: options.track.url || "", createdAt: options.track.createdAt instanceof Date ? options.track.createdAt.toISOString() : options.track.createdAt } : null);
           if (apiSong) void playSong(apiSong);
         }
       } },
@@ -2126,7 +2133,7 @@ export default function MobilePage() {
 
     if (!options?.fromPlaylist) {
       items.splice(2, 0, { label: "Anadir a radio", icon: <RadioIcon size={18} />, onSelect: () => {
-        const apiSong = songs.find((entry) => entry.id === song.id);
+        const apiSong = songs.find((entry) => entry.id === song.id) || (options?.track ? { ...options.track, id: song.id, url: options.track.url || "", createdAt: options.track.createdAt instanceof Date ? options.track.createdAt.toISOString() : options.track.createdAt } : null);
         if (apiSong) void addSongToRadio(apiSong);
       } });
     }
@@ -2773,6 +2780,22 @@ export default function MobilePage() {
               placeholder="Buscar canciones..."
             />
           </label>
+          <YouTubeSongImport
+            value={query}
+            label="Importar canción desde YouTube"
+            onImported={(song) => {
+              setQuery("");
+              setActionSheet({
+                title: song.name,
+                subtitle: "Canción importada de YouTube",
+                items: [
+                  { label: "Añadir a playlist", icon: <PlusIcon size={18} />, onSelect: () => openAddToPlaylistSheet(song) },
+                  { label: "Añadir a radio", icon: <RadioIcon size={18} />, onSelect: () => void addSongToRadio(song) },
+                  { label: "Reproducir", icon: <PlayIcon size={18} />, onSelect: () => void playSong(song) },
+                ],
+              });
+            }}
+          />
           {hiddenLoading ? (
             <div className="mobile-farreo__empty">Preparando busqueda...</div>
           ) : (

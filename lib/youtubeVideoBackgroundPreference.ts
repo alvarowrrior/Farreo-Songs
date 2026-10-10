@@ -57,6 +57,10 @@ export function isYoutubeVideoBackgroundContext(
 
   if (source.type === "global") return path === `/playlist/${source.id}`;
   if (source.type === "private") return path === `/user-playlist/${source.id}`;
+  // A shared single-song link plays through /play?song=... using a "song"
+  // source. Keep YouTube video backgrounds available there without changing
+  // the behavior of searches, other pages, or the native music catalog.
+  if (source.type === "song" && path === "/play") return true;
   // The weekly recommendation uses source.type="song" rather than "global".
   // Match its token exactly; do not activate backgrounds for unrelated songs.
   if (source.type === "song" && source.id.startsWith("recommendation:")) {

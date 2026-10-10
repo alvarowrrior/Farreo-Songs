@@ -1,0 +1,37 @@
+.container {
+  width: 100%;
+  min-width: 0;
+  margin: 0.4rem 0;
+}
+
+.button {
+  display: flex;
+  width: 100%;
+  min-height: 43px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem;
+  padding: 0.65rem 0.9rem;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 11px;
+  background: rgba(30, 215, 96, 0.14);
+  color: #e7ffec;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 700;
+  text-align: left;
+
+  span { flex: 1; }
+  &:disabled { opacity: 0.72; cursor: progress; }
+}
+
+.error {
+  margin: 0.4rem 0 0;
+  color: #ffc0bf;
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+}
+
+.spinner { animation: youtubeImportSpin 1s linear infinite; }
+@keyframes youtubeImportSpin { to { transform: rotate(360deg); } }

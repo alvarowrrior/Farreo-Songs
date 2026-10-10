@@ -22,6 +22,9 @@ import { listFollowedGlobalPlaylists, unfollowGlobalPlaylist } from "@/lib/globa
 import { useHiddenSongs } from "@/lib/useHiddenSongs";
 import PlaylistSongTable, { type PlaylistSongRow } from "@/components/PlaylistSongTable";
 import SongArtwork from "@/components/SongArtwork";
+import YouTubeSongImport from "@/components/YouTubeSongImport";
+import { lookupYoutubeTracks, youtubeSourceUrl } from "@/lib/youtubeTracks";
+import YouTubeSongAdminPanel from "@/components/YouTubeSongAdminPanel";
 import FarreoContextMenu, { type FarreoContextMenuItem } from "@/components/FarreoContextMenu";
 import { formatPlaylistDuration } from "@/lib/playlistDuration";
 import { playlistActivityTime } from "@/lib/playlistLibraryOrder";
@@ -203,6 +206,7 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
 
   // Picker de canciones para añadir a playlist
   const [showSongPicker, setShowSongPicker] = useState(false);
+  const [showYoutubeAdmin, setShowYoutubeAdmin] = useState(false);
   const [songPickerPosition, setSongPickerPosition] = useState<{ left: number; top: number } | null>(null);
   const [allSongs, setAllSongs] = useState<PlaylistItem[]>([]);
   const [songSearchQuery, setSongSearchQuery] = useState("");
@@ -229,6 +233,7 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
   const [shareSongTitle, setShareSongTitle] = useState("");
   const [shareSongLink, setShareSongLink] = useState("");
   const [shareInternalLink, setShareInternalLink] = useState("");
+  const [shareIsYouTube, setShareIsYouTube] = useState(false);
   const [copiedLink, setCopiedLink] = useState<'normal' | 'internal' | null>(null);
   const [playlistContextMenu, setPlaylistContextMenu] = useState<{
     x: number;
@@ -412,10 +417,13 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
   const loadPrivatePlaylistCanciones = async (songIds: string[]) => {
     try {
       setLoading(true);
-      const res = await fetch(`${TUNNEL_URL}/canciones`);
+      const [res, youtubeSongs] = await Promise.all([
+        fetch(`${TUNNEL_URL}/canciones`),
+        lookupYoutubeTracks(songIds),
+      ]);
       if (res.ok) {
         const data = (await res.json()) as PlaylistItem[];
-        const songsById = new Map(data.map((item) => [item.id, item]));
+        const songsById = new Map([...data, ...youtubeSongs].map((item) => [item.id, item as PlaylistItem]));
         const absoluteData = songIds
           .map((songId) => songsById.get(songId))
           .filter((item): item is PlaylistItem => Boolean(item))
@@ -849,7 +857,9 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
       if (!song) return;
       setShareSongTitle(song.name);
       setShareSongLink(`${window.location.origin}/play?song=${encodeURIComponent(song.id)}`);
-      setShareInternalLink(getMediaUrl(song.url));
+      const youtubeUrl = youtubeSourceUrl(song.id);
+      setShareInternalLink(youtubeUrl || getMediaUrl(song.url));
+      setShareIsYouTube(Boolean(youtubeUrl));
       setCopiedLink(null);
       setShareModalOpen(true);
     }
@@ -1078,7 +1088,7 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
         </div>
 
         <div className="playlist-admin__upload-form-group" style={{ marginBottom: "1.5rem" }}>
-          <label className="playlist-admin__upload-form-label">Link interno (MP3 real)</label>
+          <label className="playlist-admin__upload-form-label">{shareIsYouTube ? "Link original de YouTube" : "Link interno (MP3 real)"}</label>
           <div className="playlist-admin__upload-form-row">
             <input
               type="text"
@@ -1257,6 +1267,15 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
               <Link href="/admin/lyrics" className="playlist-admin__lyrics-editor-link">
                 <Mic2Icon size={18} /> Editor de Lyrics
               </Link>
+              <button
+                type="button"
+                className="playlist-admin__lyrics-editor-link"
+                onClick={() => setShowYoutubeAdmin((visible) => !visible)}
+                aria-expanded={showYoutubeAdmin}
+              >
+                <PlayIcon size={18} /> {showYoutubeAdmin ? "Ocultar canciones YouTube" : "Gestionar canciones YouTube"}
+              </button>
+              {showYoutubeAdmin && <YouTubeSongAdminPanel />}
             </section>
           )}
 
@@ -2113,6 +2132,28 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
                 </div>
                 <button onClick={() => setShowSongPicker(false)} className="playlist-admin__btn-cancel-small">✕</button>
               </div>
+              {playlistScope === "private" && (
+                <YouTubeSongImport
+                  value={songSearchQuery}
+                  label="Importar y añadir a la playlist"
+                  onImported={async (song) => {
+                    if (!playlistActual) throw new Error("Playlist no encontrada.");
+                    await addSongToPrivatePlaylist(playlistActual, song.id);
+                    const updated = privatePlaylists.map((item) =>
+                      item.id === playlistActual && !item.songIds.includes(song.id)
+                        ? { ...item, songIds: [...item.songIds, song.id] }
+                        : item
+                    );
+                    setPrivatePlaylists(updated);
+                    const current = updated.find((item) => item.id === playlistActual);
+                    if (current) await loadPrivatePlaylistCanciones(current.songIds);
+                    setShowSongPicker(false);
+                    setSongSearchQuery("");
+                    setMessage({ type: "success", text: `"${song.name}" añadida.` });
+                    window.dispatchEvent(new Event("farreo:library-updated"));
+                  }}
+                />
+              )}
               <div className="playlist-admin__song-picker-list">
                 {filteredPickerSongs.length === 0 ? (
                   <p className="playlist-admin__empty">No hay canciones disponibles para añadir.</p>
@@ -2392,7 +2433,7 @@ export default function PlaylistLibrary({ adminMode = false }: PlaylistLibraryPr
             </div>
 
             <div className="playlist-admin__upload-form-group" style={{ marginBottom: "1.5rem" }}>
-              <label className="playlist-admin__upload-form-label">Link interno (MP3 real)</label>
+              <label className="playlist-admin__upload-form-label">{shareIsYouTube ? "Link original de YouTube" : "Link interno (MP3 real)"}</label>
               <div className="playlist-admin__upload-form-row">
                 <input
                   type="text"

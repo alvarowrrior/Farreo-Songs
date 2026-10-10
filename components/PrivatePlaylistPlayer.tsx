@@ -35,6 +35,8 @@ import { useHiddenSongs } from "@/lib/useHiddenSongs";
 import { useMusicPlayer, type MusicPlaylistSource } from "@/components/MusicPlayerProvider";
 import PlaylistSongTable, { type PlaylistSongRow } from "@/components/PlaylistSongTable";
 import SongArtwork from "@/components/SongArtwork";
+import YouTubeSongImport from "@/components/YouTubeSongImport";
+import { lookupYoutubeTracks, youtubeSourceUrl } from "@/lib/youtubeTracks";
 import { getMediaUrl, MUSIC_API_URL, type ApiSong } from "@/lib/radioApi";
 import { formatPlaylistDuration } from "@/lib/playlistDuration";
 
@@ -91,6 +93,7 @@ export default function PrivatePlaylistPlayer({ playlistId }: { playlistId: stri
   const [shareSongTitle, setShareSongTitle] = useState("");
   const [shareSongLink, setShareSongLink] = useState("");
   const [shareInternalLink, setShareInternalLink] = useState("");
+  const [shareIsYouTube, setShareIsYouTube] = useState(false);
   const [copiedLink, setCopiedLink] = useState<"normal" | "internal" | null>(null);
 
   const isOwner = Boolean(user?.uid && playlist?.ownerId === user.uid);
@@ -132,8 +135,8 @@ export default function PrivatePlaylistPlayer({ playlistId }: { playlistId: stri
   };
 
   const loadSongsForPlaylist = async (pl: PrivatePlaylist) => {
-    const mapped = await fetchAllSongs();
-    const byId = new Map(mapped.map((song) => [song.id, song]));
+    const [mapped, youtubeSongs] = await Promise.all([fetchAllSongs(), lookupYoutubeTracks(pl.songIds)]);
+    const byId = new Map([...mapped, ...youtubeSongs.map(song => mapSongToTrack(song))].map((song) => [song.id, song]));
     const entries = pl.songEntries.length > 0
       ? pl.songEntries
       : pl.songIds.map((songId) => ({ songId, addedAt: null }));
@@ -351,7 +354,9 @@ export default function PrivatePlaylistPlayer({ playlistId }: { playlistId: stri
   const shareSong = (track: PlaylistSongRow) => {
     setShareSongTitle(track.name);
     setShareSongLink(`${window.location.origin}/play?song=${encodeURIComponent(track.id)}`);
-    setShareInternalLink(getMediaUrl(track.url));
+    const youtubeUrl = youtubeSourceUrl(track.id);
+    setShareInternalLink(youtubeUrl || getMediaUrl(track.url));
+    setShareIsYouTube(Boolean(youtubeUrl));
     setCopiedLink(null);
     setShareModalOpen(true);
   };
@@ -502,6 +507,22 @@ export default function PrivatePlaylistPlayer({ playlistId }: { playlistId: stri
               <XIcon size={18} />
             </button>
           </div>
+          <YouTubeSongImport
+            value={songSearchQuery}
+            label="Importar y añadir a esta playlist"
+            onImported={async (song) => {
+              if (!playlist) throw new Error("Playlist no encontrada.");
+              await addSongToPrivatePlaylist(playlist.id, song.id);
+              const updated = await getPrivatePlaylist(playlist.id);
+              if (!updated) throw new Error("Playlist no encontrada.");
+              setPlaylist(updated);
+              await loadSongsForPlaylist(updated);
+              setSongSearchQuery("");
+              setShowSongPicker(false);
+              setMessage({ type: "success", text: `"${song.name}" añadida.` });
+              window.dispatchEvent(new Event("farreo:library-updated"));
+            }}
+          />
           <div className="playlist-admin__song-picker-list">
             {filteredPickerSongs.length === 0 ? (
               <p className="playlist-admin__empty">No hay canciones disponibles para añadir.</p>
@@ -618,7 +639,7 @@ export default function PrivatePlaylistPlayer({ playlistId }: { playlistId: stri
               </div>
             </div>
             <div className="playlist-admin__upload-form-group" style={{ marginBottom: "1.5rem" }}>
-              <label className="playlist-admin__upload-form-label">Link interno (MP3 real)</label>
+              <label className="playlist-admin__upload-form-label">{shareIsYouTube ? "Link original de YouTube" : "Link interno (MP3 real)"}</label>
               <div className="playlist-admin__upload-form-row">
                 <input type="text" readOnly value={shareInternalLink} className="playlist-admin__upload-form-input" />
                 <button

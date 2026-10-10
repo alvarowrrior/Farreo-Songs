@@ -22,6 +22,7 @@ import { useMusicPlayer, useMusicPlayerTime } from "@/components/MusicPlayerProv
 import { auth } from "@/lib/firebase";
 import { getPrivatePlaylist, listOwnPrivatePlaylists, type PrivatePlaylist } from "@/lib/privatePlaylists";
 import { useHiddenSongs } from "@/lib/useHiddenSongs";
+import YouTubeSongImport from "@/components/YouTubeSongImport";
 import {
   getLiveRadioPosition,
   radioDelete,
@@ -571,6 +572,18 @@ export default function RadioPage() {
                     placeholder="Buscar por nombre o etiqueta"
                   />
                 </div>
+                <YouTubeSongImport
+                  value={songQuery}
+                  label="Importar y añadir a la radio"
+                  onImported={async (song) => {
+                    await radioPost<RadioState>("/radio/queue/songs", {
+                      songIds: [song.id],
+                      ...addOptions(),
+                    });
+                    setSongQuery("");
+                    setMessage({ type: "success", text: `"${song.name}" añadida a la radio.` });
+                  }}
+                />
                 <div className="radio-page__song-results">
                   {filteredSongs.map((song) => (
                     <button

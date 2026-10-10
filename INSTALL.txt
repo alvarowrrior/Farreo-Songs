@@ -1,0 +1,40 @@
+FARREO - YouTube songs integration
+
+The archive contains 4 new source files under their repository-relative paths.
+5 existing files need small edits. To avoid overwriting the rest of these large
+files, the archive includes a deterministic local patch applicator.
+
+1. Unzip the archive at the root of your Farreo-Songs checkout, so the
+   backend/, components/ and lib/ subdirectories are preserved.
+2. In a terminal opened at the checkout root, run:
+      python apply_farreo_youtube.py --check
+      python apply_farreo_youtube.py
+   On Windows, you can double-click apply_farreo_youtube.bat instead.
+3. Run the normal tests, inspect your git diff, and commit/push yourself.
+4. Deploy the Next.js site and copy/restart the backend service on Linux.
+   There are NO Android Java changes; no new APK is needed for this feature.
+
+The script patches only these existing files:
+   backend/server.js
+   components/RadioPage.tsx
+   components/PrivatePlaylistPlayer.tsx
+   components/PlaylistLibrary.tsx
+   app/mobile/page.tsx
+
+The newly added files are:
+   backend/youtubeTracks.js
+   components/YouTubeSongImport.tsx
+   components/YouTubeSongImport.module.scss
+   lib/youtubeTracks.ts
+
+Data:
+   almacenamiento_compartido/youtube-tracks.json   (auto-created by backend)
+   almacenamiento_compartido/youtube-backgrounds.json (existing shared file)
+
+The backend uses the existing YT_DLP_BIN / yt-dlp runtime. It never stores an
+MP3 or a transient Googlevideo URL. Dynamic VTT lyrics use subtitles when
+YouTube makes them available. No Musixmatch integration/API key is needed.
+
+This feature was validated with simulated yt-dlp output only; verify real
+YouTube playback, Media3 and browser cross-origin redirects on your server.
+No GitHub repository was modified by ChatGPT.

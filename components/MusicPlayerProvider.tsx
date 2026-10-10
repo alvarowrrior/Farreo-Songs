@@ -7,6 +7,7 @@ import { usePathname } from "next/navigation";
 import { MUSIC_API_URL, calibrateRadioClock, getLiveRadioPosition, getMediaUrl, getRadioServerNow, radioPatch, radioPost, type RadioState } from "@/lib/radioApi";
 import { computeCurrentLyric } from "@/lib/lyrics";
 import SongArtwork from "@/components/SongArtwork";
+import staticLyricsStyles from "./StaticLyricsPopover.module.scss";
 import { claimAlbumFirstPlay } from "@/lib/albums";
 import { recordSongListened } from "@/lib/listeningHistory";
 import { notifyYoutubeVideoSeek, prepareYoutubeVideoStart } from "@/lib/youtubeVideoStartCoordinator";
@@ -326,9 +327,36 @@ export function LyricsDisplay({ lyric, visible }: { lyric: CurrentLyric | null; 
 }
 
 export function MusicLyricsBar() {
-  const { hasCurrentLyrics, lyricsEnabled } = useMusicPlayer();
+  const { currentTrack, hasCurrentLyrics, lyricsEnabled } = useMusicPlayer();
   const { currentLyric } = useMusicPlayerTime();
-  return <LyricsDisplay lyric={currentLyric} visible={lyricsEnabled && hasCurrentLyrics} />;
+  const [staticLyricsOpen, setStaticLyricsOpen] = useState(false);
+  const trackId = currentTrack?.id;
+  useEffect(() => { setStaticLyricsOpen(false); }, [trackId]);
+  if (!lyricsEnabled) return null;
+  if (hasCurrentLyrics) return <LyricsDisplay lyric={currentLyric} visible />;
+  if (!currentTrack?.staticLyrics) return null;
+  return (
+    <div className={staticLyricsStyles.root}>
+      <button
+        type="button"
+        className={staticLyricsStyles.toggle}
+        onClick={() => setStaticLyricsOpen((open) => !open)}
+        aria-expanded={staticLyricsOpen}
+        aria-label={staticLyricsOpen ? "Ocultar letra" : "Ver letra de la canción"}
+      >
+        <Mic2Icon size={17} /> {staticLyricsOpen ? "Ocultar letra" : "Ver letra"}
+      </button>
+      {staticLyricsOpen && (
+        <section className={staticLyricsStyles.panel} aria-label={`Letra de ${currentTrack.name}`}>
+          <div className={staticLyricsStyles.heading}>
+            <strong>{currentTrack.name}</strong>
+            <span>Letra no sincronizada</span>
+          </div>
+          <pre className={staticLyricsStyles.lyrics}>{currentTrack.staticLyrics}</pre>
+        </section>
+      )}
+    </div>
+  );
 }
 
 // Barra de progreso compartida (reproductor global y biblioteca). Es el unico
