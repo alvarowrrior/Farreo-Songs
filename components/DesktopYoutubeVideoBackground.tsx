@@ -19,6 +19,7 @@ import {
   YOUTUBE_VIDEO_BACKGROUND_STORAGE_KEY,
   getYoutubeRadioBackgroundEnabled,
   getYoutubeVideoBackgroundEnabled,
+  getYoutubeVideoWaitForReady,
   isYoutubeVideoBackgroundContext,
 } from "@/lib/youtubeVideoBackgroundPreference";
 import {
@@ -26,6 +27,7 @@ import {
   registerYoutubeVideoStartHandler,
   type YoutubeVideoStartRequest,
 } from "@/lib/youtubeVideoStartCoordinator";
+import { onActiveAudioPlaying, onQueuedAudioPrepared } from "@/lib/queueMediaPreload";
 import styles from "./DesktopYoutubeVideoBackground.module.scss";
 
 interface StreamInfo {
@@ -104,6 +106,10 @@ export default function DesktopYoutubeVideoBackground() {
   const initialSeekAttemptsRef = useRef(0);
 
   const [stream, setStream] = useState<StreamInfo | null>(null);
+  // Only the immediate next video's stream is allowed to warm. Its CDN URL
+  // and the first video bytes are requested AFTER the audio prewarm signal.
+  const [queuedVideoStream, setQueuedVideoStream] = useState<StreamInfo | null>(null);
+  const [audioReadySongId, setAudioReadySongId] = useState<string | null>(null);
   const [readySongId, setReadySongId] = useState<string | null>(null);
   const [enabled, setEnabled] = useState(
     DEFAULT_YOUTUBE_VIDEO_BACKGROUND_ENABLED,
@@ -592,16 +598,30 @@ export default function DesktopYoutubeVideoBackground() {
     unloadCurrentVideo,
   ]);
 
+  // React isPlaying can be set by the early 'play' event; only the browser's
+  // 'playing' event proves the audio has enough decoded data to run.
+  useEffect(() => {
+    setAudioReadySongId(null);
+    if (!currentTrack?.id || playerMode !== "local") return;
+    return onActiveAudioPlaying(currentTrack.id, (ready) => {
+      setAudioReadySongId(ready ? currentTrack.id : null);
+    });
+  }, [currentTrack?.id, playerMode]);
+
   // Non-blocking load for Radio, mid-song activation/navigation, and hidden-tab
   // track changes. This path never gates or pauses audio.
   useEffect(() => {
     const trackId = currentTrack?.id || null;
     if (!contextEligible || !trackId) return;
 
-    // Radio audio is authoritative. A videoclip can begin resolving only after
-    // this client has already joined the audio timeline, so video work can
-    // never delay or define the shared Radio transition.
-    if (playerMode === "radio" && !isPlaying) return;
+    // In "No esperar" mode the local AUDIO must actually be playing before
+    // we resolve or download any video. Otherwise yt-dlp/video bandwidth can
+    // compete with the first bytes of the new YouTube audio track.
+    // The explicit wait-for-video mode has its own prepareVideoBeforeLocalStart
+    // path and is not affected by this rule.
+    if (!isPlaying && (playerMode === "radio" || !getYoutubeVideoWaitForReady())) return;
+    if (playerMode === "local" && !getYoutubeVideoWaitForReady()
+      && audioReadySongId !== trackId) return;
 
     if (
       streamRef.current?.songId === trackId
@@ -620,19 +640,41 @@ export default function DesktopYoutubeVideoBackground() {
       nonBlockingLoadsRef.current.add(trackId);
       void (async () => {
         try {
-          // /stream itself validates the association and returns 404 for
-          // tracks without a video. Avoid a second serial network round-trip
-          // (/youtube-backgrounds/:id) for every background start.
-          const info = await getStreamInfo(trackId);
-          if (!info) {
+          const availabilityResponse = await fetch(
+            `${MUSIC_API_URL}/youtube-backgrounds/${encodeURIComponent(trackId)}`,
+            { cache: "no-store" },
+          );
+          if (availabilityResponse.status === 404) {
+            noVideoTracksRef.current.set(trackId, Date.now());
+            clearNonBlockingRetry(trackId);
+            return;
+          }
+          if (!availabilityResponse.ok) {
+            throw new Error(`Videoclip association HTTP ${availabilityResponse.status}`);
+          }
+
+          const availability = await availabilityResponse.json().catch(() => ({})) as {
+            youtubeUrl?: string | null;
+          };
+
+          if (!availability.youtubeUrl) {
+            noVideoTracksRef.current.set(trackId, Date.now());
             clearNonBlockingRetry(trackId);
             return;
           }
 
+          noVideoTracksRef.current.delete(trackId);
+
           if (
             pendingVideoStartRef.current
             && !pendingVideoStartRef.current.settled
-          ) return;
+          ) {
+            return;
+          }
+
+          if (currentTrackRef.current?.id !== trackId) return;
+
+          const info = await getStreamInfo(trackId);
 
           if (
             info
@@ -655,12 +697,13 @@ export default function DesktopYoutubeVideoBackground() {
           nonBlockingLoadsRef.current.delete(trackId);
         }
       })();
-    }, playerMode === "radio" ? 180 : 0);
+    }, playerMode === "radio" ? 650 : 250);
 
     return () => window.clearTimeout(timer);
   }, [
     contextEligible,
     currentTrack?.id,
+    audioReadySongId,
     getStreamInfo,
     isPlaying,
     loadRetryNonce,
@@ -930,39 +973,56 @@ export default function DesktopYoutubeVideoBackground() {
     };
   }, [settlePendingVideoStart, unloadCurrentVideo]);
 
-  // Resolve the *next* track's direct stream URL while this one plays.
-  // Only metadata is prefetched (no second video element/download) and only
-  // for predictable sequential playback. Saves yt-dlp startup on transitions.
+  // Next-song video preparation follows a real AUDIO readiness signal from
+  // MusicPlayerProvider. Never try to resolve a queued video's yt-dlp URL or
+  // open its media stream concurrently with the next song's audio prewarm.
+  // A single muted, offscreen <video> warms the first video bytes only after
+  // the audio has priority. The cached URL still helps when browsers decide
+  // not to reuse the offscreen element's video buffer.
   useEffect(() => {
-    if (
-      !contextEligible || playerMode !== "local" || !isPlaying
-      || !backgroundReadyForCurrentTrack || !nextTrackId
-      || nextTrackId === currentTrack?.id
-    ) return;
+    setQueuedVideoStream(null);
+    if (!contextEligible || playerMode !== "local" || !isPlaying
+      || audioReadySongId !== currentTrack?.id
+      || !nextTrackId || nextTrackId === currentTrack?.id
+      || getYoutubeVideoWaitForReady()) return;
     const connection = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection;
     if (connection?.saveData) return;
     let cancelled = false;
-    const timer = window.setTimeout(() => {
-      if (!cancelled) {
-        // The resolver returns 404 immediately for songs without a background.
-        // Prefetch only the signed URL (not video bytes), without an extra
-        // association request, to give yt-dlp more time before the next song.
-        void getStreamInfo(nextTrackId).catch(() => undefined);
-      }
-    }, 800);
-    return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [
-    backgroundReadyForCurrentTrack, contextEligible, currentTrack?.id,
-    getStreamInfo, isPlaying, nextTrackId, playerMode,
-  ]);
+    let timer = 0;
+    let scheduled = false;
+    const unsubscribe = onQueuedAudioPrepared(nextTrackId, () => {
+      if (scheduled || cancelled) return;
+      scheduled = true;
+      // A deliberate head start for the next audio's resolver/byte buffer.
+      timer = window.setTimeout(() => {
+        void hasVideoAssociation(nextTrackId).then((available) => {
+          if (cancelled || !available) return null;
+          return getStreamInfo(nextTrackId);
+        }).then((info) => {
+          if (!cancelled && info?.songId === nextTrackId) {
+            setQueuedVideoStream(info);
+          }
+        }).catch(() => undefined);
+      }, 1600);
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+      window.clearTimeout(timer);
+    };
+  }, [contextEligible, currentTrack?.id, nextTrackId, isPlaying,
+      audioReadySongId, getStreamInfo, hasVideoAssociation, playerMode]);
 
-  if (!stream) return null;
+  if (!stream && !queuedVideoStream) return null;
 
   return (
+    <>
+    {stream ? (
     <div
       className={`${styles.root} ${backgroundVisible ? styles.ready : ""}`}
       aria-hidden="true"
     >
+
       <video
         ref={videoRef}
         key={`${stream.songId}:${stream.directUrl}`}
@@ -1084,5 +1144,23 @@ export default function DesktopYoutubeVideoBackground() {
       />
       <div className={styles.shade} />
     </div>
+    ) : null}
+    {queuedVideoStream && queuedVideoStream.songId !== stream?.songId ? (
+      <video
+        key={`${queuedVideoStream.songId}:${queuedVideoStream.directUrl}`}
+        src={queuedVideoStream.directUrl}
+        muted
+        playsInline
+        preload="metadata"
+        aria-hidden="true"
+        // Resolve the next video's stream URL, but fetch only metadata while
+        // it is queued. A hidden preload=auto video could otherwise download
+        // continuously, then race the NEXT audio at exactly the worst moment.
+        // The active video loads fully when the next audio has real headroom.
+        style={{ position: "fixed", left: "-8px", top: "-8px", width: 1,
+          height: 1, opacity: 0, pointerEvents: "none", zIndex: -1 }}
+      />
+    ) : null}
+    </>
   );
 }

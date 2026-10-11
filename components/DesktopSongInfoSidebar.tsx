@@ -1,7 +1,10 @@
 "use client";
 
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import SongInfoSidebar from "@/components/SongInfoSidebar";
+import { useMusicPlayer } from "@/components/MusicPlayerProvider";
+import { getYoutubeVideoWaitForReady } from "@/lib/youtubeVideoBackgroundPreference";
+import { onActiveAudioPlaying } from "@/lib/queueMediaPreload";
 
 // The sidebar's synchronous media gate must never run on mobile, where the
 // sidebar is hidden by CSS and Android owns playback independently.
@@ -17,10 +20,24 @@ const getServerSnapshot = () => false;
 
 export default function DesktopSongInfoSidebar() {
   const visible = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  const { currentTrack, isPlaying, playerMode } = useMusicPlayer();
+  const [audioReadyTrackId, setAudioReadyTrackId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setAudioReadyTrackId(null);
+    if (!currentTrack?.id || playerMode !== "local") return;
+    return onActiveAudioPlaying(currentTrack.id, (ready) => {
+      setAudioReadyTrackId(ready ? currentTrack.id : null);
+    });
+  }, [currentTrack?.id, playerMode]);
 
   useEffect(() => {
     if (!visible) return;
     const warmVisibleCover = () => {
+      // A queued audio-first transition must acquire real audio data before
+      // the panel forces a competing advanced-video preload and decoder.
+      const audioFirst = playerMode === "local" && !getYoutubeVideoWaitForReady();
+      if (audioFirst && (!isPlaying || audioReadyTrackId !== currentTrack?.id)) return;
       const panel = document.querySelector(".song-info-sidebar--open");
       if (!panel) return;
       // Advanced video must be able to reach loadeddata while local audio is
@@ -43,7 +60,7 @@ export default function DesktopSongInfoSidebar() {
     });
     warmVisibleCover();
     return () => observer.disconnect();
-  }, [visible]);
+  }, [visible, currentTrack?.id, isPlaying, playerMode, audioReadyTrackId]);
 
   return visible ? <SongInfoSidebar /> : null;
 }

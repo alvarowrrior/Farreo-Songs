@@ -13,6 +13,7 @@ import { recordSongListened } from "@/lib/listeningHistory";
 import { notifyYoutubeVideoSeek, prepareYoutubeVideoStart } from "@/lib/youtubeVideoStartCoordinator";
 import { prepareAdvancedCoverBeforeAudio, shouldPrepareAdvancedCover } from "@/lib/advancedCoverStartPreparation";
 import { getYoutubeVideoWaitForReady } from "@/lib/youtubeVideoBackgroundPreference";
+import { markActiveAudioPlaying, markAudioFirstTransition, markQueuedAudioPrepared, resetActiveAudioPlaying, resetQueuedAudioPrepared } from "@/lib/queueMediaPreload";
 
 export interface MusicTrack {
   id: string;
@@ -253,10 +254,10 @@ const isYoutubeProxyTrack = (track: MusicTrack | null | undefined) => Boolean(
     /\/youtube-tracks\/[a-zA-Z0-9_-]{11}\/audio(?:[?#]|$)/.test(track.url || "")),
 );
 
-// Custom video covers also need the normal start path at automatic transitions.
-const needsDirectAudioStart = (track: MusicTrack | null | undefined) => Boolean(
-  isYoutubeProxyTrack(track) || (track?.advancedCoverType === "video" && track.advancedCoverUrl),
-);
+// Native MP3/FLAC audio can stay gapless even when its artwork is a video.
+// Only YouTube proxy audio requires a FRESH playback connection on transition.
+const needsDirectAudioStart = (track: MusicTrack | null | undefined) =>
+  isYoutubeProxyTrack(track);
 
 const parseSrtTime = (value: string) => {
   const normalized = value.trim().replace(",", ".");
@@ -522,6 +523,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   // Playback intent is separate from isPlaying: a stalled YouTube stream may
   // never emit "playing", but still needs to be retried automatically.
   const localPlaybackIntentRef = useRef(false);
+  const activeLocalTrackIdRef = useRef<string | null>(null);
 
   const pitchLockedRef = useRef(false);
   // Initial state restoration has its own ONE-SHOT seek. Never reuse the
@@ -530,6 +532,9 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   const localVideoStartAbortRef = useRef<AbortController | null>(null);
   const localVideoStartGenerationRef = useRef(0);
   const preloadedAdvanceTrackIdRef = useRef<string | null>(null);
+  // Protect a direct A->B transition from stale ended/timeupdate events issued
+  // by A just before its source was replaced.
+  const automaticTransitionRef = useRef<{ from: HTMLAudioElement; at: number } | null>(null);
   // Automatic gapless fallback must never wait for optional visuals by default.
   const bypassVisualPreparationOnceRef = useRef(false);
   const [storageReady, setStorageReady] = useState(false);
@@ -1179,6 +1184,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     if (!track.url) return;
     const bypassVisualPreparation = bypassVisualPreparationOnceRef.current;
     bypassVisualPreparationOnceRef.current = false;
+    if (bypassVisualPreparation) markAudioFirstTransition(track.id);
     // Invalidate an earlier start before the first asynchronous album claim.
     // Otherwise its completion could select/play an obsolete song later.
     cancelLocalVideoPreparation();
@@ -1245,6 +1251,8 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       preloadedTrackRef.current = null;
       preloadedUrlRef.current = "";
       preloadedAdvanceTrackIdRef.current = null;
+      activeLocalTrackIdRef.current = nextTrack.id;
+      resetActiveAudioPlaying(nextTrack.id);
       setCurrentTrack(nextTrack);
       setCurrentSource(source);
       setCurrentTime(0);
@@ -1255,8 +1263,10 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       const audio = audioRef.current;
       if (!audio) return;
 
-      // Load immediately so the audio itself can buffer while the optional
-      // background prepares. Crucially, there is no play() before the await.
+      // For a non-blocking queue transition, playback intent MUST precede the
+      // network load. A delayed metadata event cannot leave the audio paused
+      // while an optional video takes its first frame.
+      pendingPlayRef.current = bypassVisualPreparation;
       audio.src = nextTrack.url!;
       audio.load();
       audio.preservesPitch = false;
@@ -1265,6 +1275,9 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       audio.volume = volumeRef.current;
 
       const hiddenTab = document.visibilityState !== "visible";
+      // "No esperar" is definitive for automatic transitions: do not also
+      // wait for the advanced-cover preparation, which can create another
+      // video decoder and compete with the fresh YouTube audio connection.
       const mayStart = hiddenTab || bypassVisualPreparation
         ? true
         : await prepareLocalVideoStart(nextTrack, source ?? null);
@@ -1515,11 +1528,15 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     source?: MusicPlaylistSource | null,
   ) => {
     if (playerModeRef.current === "radio" || !track.url) return;
+    // API catalogue / YouTube lookup can supply relative media paths. A manual
+    // insert must be normalized exactly like an automatically queued track.
+    const playableTrack = getMediaUrl(track.url) === track.url
+      ? track : { ...track, url: getMediaUrl(track.url) };
     const resolvedSource = source ?? queueSource ?? currentSource ?? {
       id: "added", name: "Añadidas a cola", type: "song" as const,
     };
     const entry: PlaybackQueueEntry = {
-      key: nextKey(), track, source: resolvedSource,
+      key: nextKey(), track: playableTrack, source: resolvedSource,
       pitch: pitch.kind === "fixed"
         ? { kind: "fixed", pitch: Math.max(0.5, Math.min(1.5, pitch.pitch)) }
         : { kind: "random" },
@@ -1528,7 +1545,11 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     };
     if (position === "now") {
       addHistory();
-      startTrack(track, resolvedSource, entry.pitch);
+      // Queue actions are direct user intent. In "No esperar" mode the
+      // optional advanced cover must never gate the new audio.
+      if (!getYoutubeVideoWaitForReady()) bypassVisualPreparationOnceRef.current = true;
+      startTrack(playableTrack, resolvedSource, entry.pitch);
+      bypassVisualPreparationOnceRef.current = false;
       return;
     }
     updateManualQueue(position === "next"
@@ -1554,7 +1575,9 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     if (manual) {
       addHistory();
       updateManualQueue(manualQueueRef.current.filter((entry) => entry.key !== key));
+      if (!getYoutubeVideoWaitForReady()) bypassVisualPreparationOnceRef.current = true;
       startTrack(manual.track, manual.source, manual.pitch);
+      bypassVisualPreparationOnceRef.current = false;
       return;
     }
     const planned = getOrderedUpcoming().find((entry) => entry.key === key);
@@ -1611,6 +1634,35 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   // visual asset that the user did not ask to wait for. The current preference
   // only affects manual song starts and explicit wait-for-video transitions.
   const advanceWithoutReadyPreload = () => {
+    const upcoming = peekNextEntry();
+    if (!upcoming) return;
+    const oldActive = audioRef.current;
+    if (!oldActive || playerModeRef.current !== "local") return;
+    const previous = automaticTransitionRef.current;
+    if (previous?.from === oldActive && performance.now() - previous.at < 2_000) return;
+    automaticTransitionRef.current = { from: oldActive, at: performance.now() };
+
+    // The outgoing element may have an 'ended' callback already queued. Never
+    // start the next YouTube stream on that SAME nearly-ended element: promote
+    // the fresh, inactive <audio> first, then the old callbacks are ignored.
+    // Manual queue insertions used to take a different transition path from
+    // automatically chosen songs: the old hidden buffer could be reused while
+    // the source/pitch and React queue were being changed. Recreate the active
+    // element for manual handoffs (in non-wait mode) so the browser starts the
+    // song exactly as a fresh click-to-play, without stale media events.
+    const freshHandoff = needsDirectAudioStart(upcoming.track)
+      || (upcoming.manual && !getYoutubeVideoWaitForReady());
+    if (freshHandoff) {
+      const fresh = getPreloadAudio();
+      if (fresh && fresh !== oldActive) {
+        try { fresh.pause(); fresh.removeAttribute("src"); fresh.load(); } catch { /* best effort */ }
+        activeIdRef.current = activeIdRef.current === "a" ? "b" : "a";
+        audioRef.current = fresh;
+        try { oldActive.pause(); } catch { /* stale outgoing audio */ }
+        preloadedTrackRef.current = null;
+        preloadedUrlRef.current = "";
+      }
+    }
     if (!getYoutubeVideoWaitForReady()) bypassVisualPreparationOnceRef.current = true;
     playNext();
     // A missing next track must not affect a future manual song start.
@@ -1681,8 +1733,8 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     const preEl = getPreloadAudio();
     const next = pickNextTrack();
     if (!preEl || !next || !next.url || needsDirectAudioStart(next)) {
-      // Do not open a second long-lived YouTube stream before playback.
-      // The Linux backend can still prewarm its extractor URL cache.
+      // A YouTube audio stream must start on a fresh active element, not sit
+      // half-open in the inactive buffer. Its signed URL is prewarmed below.
       preloadedTrackRef.current = null;
       preloadedUrlRef.current = "";
       if (preEl?.getAttribute("src")) {
@@ -1690,6 +1742,8 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       }
       return;
     }
+    // The identity can change when the user drags a queued song.
+    if (preloadedTrackRef.current?.id !== next.id) resetQueuedAudioPrepared(next.id);
     preloadedTrackRef.current = next;
     const upcoming = peekNextEntry();
     const forced = upcoming?.manual ? upcoming.pitch : null;
@@ -1701,6 +1755,9 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       preEl.preload = "auto";
       preEl.src = next.url;
       preEl.load();
+    }
+    if (preEl.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+      markQueuedAudioPrepared(next.id);
     }
   };
 
@@ -1744,7 +1801,10 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     // Use the SAME active-audio startup path as a manual Play for YouTube and
     // custom video covers. Their hidden buffer may have been prepared long
     // before the transition and is not a reliable playback source.
-    if (needsDirectAudioStart(planned.track)) {
+    if (needsDirectAudioStart(planned.track)
+      || (planned.manual && !getYoutubeVideoWaitForReady())) {
+      // Preserve the stable automatic/gapless path. Only manually inserted
+      // songs use a fresh source instead of reusing the speculative buffer.
       advanceWithoutReadyPreload();
       return;
     }
@@ -1825,8 +1885,9 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
         if (!isShuffle && playlistRemainingRef.current === 0) playlistRemainingRef.current = Math.max(0, queue.length - 1);
       }
 
-      // Swap only after the optional video is ready (or has failed open). Until
-      // here the outgoing track remains the active player.
+      // The sidebar's own synchronous cover gate must not pause a gapless
+      // audio-first transition after the provider has already committed it.
+      if (!getYoutubeVideoWaitForReady()) markAudioFirstTransition(next.id);
       localPlaybackIntentRef.current = true;
       activeIdRef.current = activeIdRef.current === "a" ? "b" : "a";
       audioRef.current = preEl;
@@ -1838,6 +1899,8 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       preloadedTrackRef.current = null;
       preloadedAdvanceTrackIdRef.current = null;
       setPlaybackPitch(pitch);
+      activeLocalTrackIdRef.current = next.id;
+      resetActiveAudioPlaying(next.id);
       setCurrentTrack(next);
       setCurrentSource(planned.source);
       setCurrentTime(0);
@@ -1872,7 +1935,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   // el estado; los eventos del precargador se ignoran (guard por currentTarget).
   const audioEventProps = {
     onEnded: (e: SyntheticEvent<HTMLAudioElement>) => {
-      if (e.currentTarget !== audioRef.current) return;
+      if (e.currentTarget !== audioRef.current || !e.currentTarget.ended) return;
       if (playerModeRef.current === "radio") return;
       advanceToPreloaded();
     },
@@ -1987,7 +2050,14 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       }
     },
     onCanPlay: (e: SyntheticEvent<HTMLAudioElement>) => {
-      if (e.currentTarget !== audioRef.current) return;
+      if (e.currentTarget !== audioRef.current) {
+        const candidate = preloadedTrackRef.current;
+        if (candidate && e.currentTarget === getPreloadAudio()
+          && preloadedUrlRef.current === candidate.url) {
+          markQueuedAudioPrepared(candidate.id);
+        }
+        return;
+      }
       if (playerModeRef.current === "radio" && radioStateRef.current?.status === "playing") {
         const liveState = radioStateRef.current;
         syncAudioToLiveRadio(pendingRadioJoinSyncRef.current ? 0.5 : 0.75);
@@ -2020,6 +2090,10 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
       if (e.currentTarget !== audioRef.current) return;
       if (playerModeRef.current !== "radio") {
         pendingPlayRef.current = false;
+        automaticTransitionRef.current = null;
+        if (activeLocalTrackIdRef.current) {
+          markActiveAudioPlaying(activeLocalTrackIdRef.current);
+        }
         // Media events can arrive in a different order after replacing the
         // outgoing source; `playing` is authoritative for the new track.
         setIsPlaying(true);
@@ -2190,6 +2264,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   };
 
   const stop = () => {
+    activeLocalTrackIdRef.current = null;
     localPlaybackIntentRef.current = false;
     cancelLocalVideoPreparation();
     pendingPlayRef.current = false;
@@ -2421,15 +2496,52 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
   }, [queue, queueSource, currentTrack?.id, isShuffle, playerMode, manualQueue,
       upcomingCleared, shuffleSource, shuffleVersion, plannedAutomatic.length]);
 
-  // Precargar la siguiente cancion en el elemento inactivo (doble buffer) para
-  // poder encadenar sin hueco en segundo plano. Solo en modo local.
+  // Prioridad de red: primero unos segundos de audio ACTUAL, después la
+  // siguiente pista; y solo cuando esa pista está preparada se permite
+  // comenzar a descargar su videoclip. Incluye la cola manual sin playlist.
   useEffect(() => {
-    if (playerMode === "radio") return;
-    if (!currentTrack || queue.length === 0) return;
-    preloadNext();
-    // preloadNext lee el estado actual via closure; no es una dependencia.
+    if (playerMode !== "local" || !currentTrack || !isPlaying || !peekNextEntry()) return;
+    let cancelled = false;
+    let attempts = 0;
+    let timer = 0;
+    const prepare = () => {
+      if (cancelled || playerModeRef.current !== "local") return;
+      const current = audioRef.current;
+      let secondsAhead = 0;
+      if (current) {
+        for (let i = 0; i < current.buffered.length; i += 1) {
+          if (current.buffered.start(i) <= current.currentTime + 0.1
+            && current.buffered.end(i) > current.currentTime) {
+            secondsAhead = current.buffered.end(i) - current.currentTime;
+          }
+        }
+      }
+      if (current && (secondsAhead >= 3 || current.readyState >= 4
+        || attempts >= 14 || (Number.isFinite(current.duration)
+          && current.duration - current.currentTime < 8))) {
+        const upcoming = peekNextEntry();
+        if (!upcoming) return;
+        preloadNext();
+        if (isYoutubeProxyTrack(upcoming.track)) {
+          resetQueuedAudioPrepared(upcoming.track.id);
+          // Existing Linux endpoint queues one yt-dlp URL prewarm, WITHOUT
+          // opening a browser-side streaming <audio> connection.
+          void fetch(`${MUSIC_API_URL}/youtube-tracks/lookup`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ songIds: [upcoming.track.id] }),
+          }).then((response) => {
+            if (!cancelled && response.ok) markQueuedAudioPrepared(upcoming.track.id);
+          }).catch(() => undefined);
+        }
+        return;
+      }
+      attempts += 1;
+      timer = window.setTimeout(prepare, 450);
+    };
+    timer = window.setTimeout(prepare, 240);
+    return () => { cancelled = true; window.clearTimeout(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentTrack?.id, queue, isShuffle, autoRandomPitch, playerMode, manualQueue, upcomingCleared, shuffleVersion, upcomingOrder, sequentialPinsVersion, plannedAutomatic]);
+  }, [currentTrack?.id, isPlaying, queue, isShuffle, autoRandomPitch, playerMode, manualQueue, upcomingCleared, shuffleVersion, upcomingOrder, sequentialPinsVersion, plannedAutomatic]);
 
   // YouTube audio is an on-demand proxy. A transient extractor/upstream
   // failure can leave its <audio> at 0 without another canplay event, while

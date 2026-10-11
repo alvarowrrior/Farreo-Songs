@@ -1,20 +1,15 @@
 "use client";
 
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { ChevronLeftIcon, ChevronRightIcon, ListMusicIcon, Maximize2Icon, Minimize2Icon, PauseIcon, PlayIcon } from "lucide-react";
 import SongArtwork from "@/components/SongArtwork";
 import AdvancedCoverMedia from "@/components/AdvancedCoverMedia";
-import {
-  ADVANCED_COVER_SYNC_CHANGE_EVENT,
-  ADVANCED_COVER_SYNC_STORAGE_KEY,
-  DEFAULT_ADVANCED_COVER_SYNC,
-  getAdvancedCoverSyncEnabled,
-} from "@/lib/advancedCoverPlaybackPreference";
 import { useMusicPlayer, useMusicPlayerTime, type MusicPlaylistSource, type MusicTrack } from "@/components/MusicPlayerProvider";
 import { getMediaUrl } from "@/lib/radioApi";
 import { parseSrt } from "@/lib/lyrics";
 import SongDiscoverySections from "@/components/SongDiscoverySections";
+import { isAudioFirstTransition, onActiveAudioPlaying } from "@/lib/queueMediaPreload";
 
 const SIDEBAR_VISIBILITY_KEY = "farreo-song-info-sidebar";
 
@@ -142,7 +137,7 @@ const LyricsWindow = memo(function LyricsWindow({
 });
 
 export default function SongInfoSidebar() {
-  const { currentTrack, currentSource, duration, handleSeek, isPitchLocked, isPlaying, playbackPitch, togglePlayPause, toggleTrack } = useMusicPlayer();
+  const { currentTrack, currentSource, duration, handleSeek, isPitchLocked, isPlaying, playbackPitch, playerMode, togglePlayPause, toggleTrack } = useMusicPlayer();
   const { visualCurrentTime } = useMusicPlayerTime();
   const [preferredOpen, setPreferredOpen] = useState(() => (
     typeof window === "undefined"
@@ -154,36 +149,23 @@ export default function SongInfoSidebar() {
   const [autoFollow, setAutoFollow] = useState(true);
   const [metadataOverride, setMetadataOverride] = useState<MusicTrack | null>(null);
   const [metadataRevision, setMetadataRevision] = useState(0);
-  const [advancedCoverSyncEnabled, setAdvancedCoverSyncEnabledState] = useState(
-    DEFAULT_ADVANCED_COVER_SYNC,
-  );
-  const [advancedMediaReadyTrackId, setAdvancedMediaReadyTrackId] = useState<string | null>(null);
-  const [artworkReadyTrackId, setArtworkReadyTrackId] = useState<string | null>(null);
-  const previousTrackIdRef = useRef<string | null>(null);
-  const gatedTrackIdRef = useRef<string | null>(null);
-  const pausedByPanelGateRef = useRef(false);
+  const [audioBufferedTrackId, setAudioBufferedTrackId] = useState<string | null>(null);
+  useEffect(() => {
+    setAudioBufferedTrackId(null);
+    if (!currentTrack?.id || playerMode !== "local") return;
+    return onActiveAudioPlaying(currentTrack.id, (ready) => {
+      setAudioBufferedTrackId(ready ? currentTrack.id : null);
+    });
+  }, [currentTrack?.id, playerMode]);
+  // The player is the sole authority for audio play/pause and optional
+  // media synchronization. The sidebar must NEVER toggle playback
+  // automatically: an audio-first transition would otherwise deadlock while
+  // this sidebar waits for its own image/video to load.
 
   useEffect(() => {
     setMetadataOverride(null);
     setMetadataRevision(0);
   }, [currentTrack?.id]);
-
-  useEffect(() => {
-    const refresh = () => setAdvancedCoverSyncEnabledState(
-      getAdvancedCoverSyncEnabled(),
-    );
-    const onStorage = (event: StorageEvent) => {
-      if (event.key === ADVANCED_COVER_SYNC_STORAGE_KEY) refresh();
-    };
-
-    refresh();
-    window.addEventListener(ADVANCED_COVER_SYNC_CHANGE_EVENT, refresh);
-    window.addEventListener("storage", onStorage);
-    return () => {
-      window.removeEventListener(ADVANCED_COVER_SYNC_CHANGE_EVENT, refresh);
-      window.removeEventListener("storage", onStorage);
-    };
-  }, []);
 
 
   useEffect(() => {
@@ -217,78 +199,9 @@ export default function SongInfoSidebar() {
     ? openedAlbumId === currentSource.id && preferredOpen
     : preferredOpen;
   const displayTrackId = displayTrack?.id || null;
-  const panelArtworkReady = Boolean(
-    displayTrackId
-    && artworkReadyTrackId === displayTrackId
-    && (
-      !advancedCoverUrl
-      || advancedMediaReadyTrackId === displayTrackId
-    )
-  );
-
-  // Playback gate for desktop only. The gate is armed only when a NEW track
-  // starts while the right panel is already open. Opening the panel halfway
-  // through an existing song never pauses it.
-  useLayoutEffect(() => {
-    if (!displayTrackId) {
-      previousTrackIdRef.current = null;
-      gatedTrackIdRef.current = null;
-      pausedByPanelGateRef.current = false;
-      return;
-    }
-
-    if (previousTrackIdRef.current !== displayTrackId) {
-      previousTrackIdRef.current = displayTrackId;
-      setAdvancedMediaReadyTrackId(null);
-      setArtworkReadyTrackId(null);
-
-      gatedTrackIdRef.current = (
-        advancedCoverSyncEnabled
-        && open
-        && !albumFirstListenLocked
-      )
-        ? displayTrackId
-        : null;
-      pausedByPanelGateRef.current = false;
-    }
-
-    const gateActive = (
-      gatedTrackIdRef.current === displayTrackId
-      && advancedCoverSyncEnabled
-      && open
-      && !albumFirstListenLocked
-      && !panelArtworkReady
-    );
-
-    if (gateActive) {
-      // startTrack() can begin audio imperatively before React paints the new
-      // sidebar. useLayoutEffect runs at the first commit and immediately puts
-      // it back on hold while the visible panel media finishes loading.
-      if (isPlaying) {
-        pausedByPanelGateRef.current = true;
-        togglePlayPause();
-      }
-      return;
-    }
-
-    if (gatedTrackIdRef.current === displayTrackId) {
-      gatedTrackIdRef.current = null;
-      if (pausedByPanelGateRef.current && !isPlaying) {
-        pausedByPanelGateRef.current = false;
-        togglePlayPause();
-      } else {
-        pausedByPanelGateRef.current = false;
-      }
-    }
-  }, [
-    advancedCoverSyncEnabled,
-    albumFirstListenLocked,
-    displayTrackId,
-    isPlaying,
-    open,
-    panelArtworkReady,
-    togglePlayPause,
-  ]);
+  // Artwork and animated covers continue loading independently. The provider
+  // already waits for them when the user explicitly enables synchronized
+  // advanced covers; this view must never add another playback gate.
 
   const hidePanel = () => {
     window.localStorage.setItem(SIDEBAR_VISIBILITY_KEY, "closed");
@@ -346,7 +259,12 @@ export default function SongInfoSidebar() {
               mimeType={displayTrack.advancedCoverType}
               isPlaying={isPlaying}
               playbackRate={playbackPitch}
-              onReady={() => setAdvancedMediaReadyTrackId(displayTrack.id)}
+              // Never fetch competing cover video during the first critical
+              // seconds of an audio-first queue transition. The sidebar NEVER
+              // pauses the audio; manual and explicit-wait starts are unchanged.
+              audioPriorityReady={playerMode !== "local"
+                || !isAudioFirstTransition(displayTrack.id)
+                || audioBufferedTrackId === displayTrack.id}
             />
             <div className="song-info-sidebar__advanced-cover-info">
               <SongArtwork
@@ -356,7 +274,6 @@ export default function SongInfoSidebar() {
                 sizes="160px"
                 eager
                 nativeQuality
-                onReady={() => setArtworkReadyTrackId(displayTrack.id)}
               />
               <div className="song-info-sidebar__advanced-cover-text">
                 <h2>{displayTrack.name}</h2>
@@ -378,7 +295,6 @@ export default function SongInfoSidebar() {
             className="song-info-sidebar__artwork"
             sizes="420px"
             eager
-            onReady={() => setArtworkReadyTrackId(displayTrack.id)}
           />
         )}
 

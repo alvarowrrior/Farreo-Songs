@@ -13,7 +13,7 @@ import {
   type PlaybackQueuePosition,
 } from "@/components/MusicPlayerProvider";
 import { auth } from "@/lib/firebase";
-import { getThemeDiscovery, type ThemeDiscoverySong } from "@/lib/themeDiscovery";
+import { getThemeDiscovery, getThemeDiscoverySong, type ThemeDiscoverySong } from "@/lib/themeDiscovery";
 import { getMediaUrl } from "@/lib/radioApi";
 import { lookupYoutubeTracks } from "@/lib/youtubeTracks";
 import { addSongToPrivatePlaylist, listOwnPrivatePlaylists, type PrivatePlaylist } from "@/lib/privatePlaylists";
@@ -32,13 +32,23 @@ const HOSTS = [STRICT_HOSTS,
   "[class*='songResult']", "[class*='songRow']", "[class*='songCard']",
   "[class*='SongResult']", "[class*='SongRow']", "[class*='SongCard']",
 ].join(",");
-const MENU_SELECTOR = ".farreo-context-menu, .playlist-song-table__menu--fixed";
+// PlaylistSongTable includes the queue action in its own React menu.
+// The enhancer only augments other legacy menu implementations.
+const MENU_SELECTOR = ".farreo-context-menu";
+const OPEN_COMPOSER_EVENT = "farreo:open-song-queue-composer";
 
 const normalize = (value: string) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
 const clamp = (n: number) => Math.max(0.5, Math.min(1.5, Number.isFinite(n) ? n : 1));
 
-type SelectedSong = Pick<ThemeDiscoverySong, "id" | "name" | "url" | "iconUrl" | "duration">;
+type SelectedSong = MusicTrack & { url: string };
 type MenuPoint = { x: number; y: number; song: SelectedSong; source: MusicPlaylistSource | null };
+type PendingContext = {
+  x: number;
+  y: number;
+  source: MusicPlaylistSource | null;
+  host: HTMLElement;
+  serial: number;
+};
 
 function getCandidateNames(host: HTMLElement) {
   const selectors = [".playlist-song-table__song-title", ".album-track__copy strong",
@@ -160,6 +170,7 @@ export default function DesktopSongRadioContextEnhancer() {
   const songsRef = useRef<SelectedSong[] | null>(null);
   const fetchingRef = useRef<Promise<SelectedSong[]> | null>(null);
   const serialRef = useRef(0);
+  const pendingContextRef = useRef<PendingContext | null>(null);
   const [fallback, setFallback] = useState<MenuPoint | null>(null);
   const [composer, setComposer] = useState<MenuPoint | null>(null);
   const [busy, setBusy] = useState(false);
@@ -227,6 +238,27 @@ export default function DesktopSongRadioContextEnhancer() {
     return null;
   };
 
+  // Context menus previously forwarded raw /youtube-tracks/... or /canciones/...
+  // paths from discovery straight to <audio>. Those paths point at the Next.js
+  // origin instead of the music API! Automatically queued songs already have
+  // their URLs normalized, which is why only manual inserts were failing.
+  const normalizeAudioTrack = (song: SelectedSong): MusicTrack => ({
+    ...song,
+    url: getMediaUrl(song.url),
+  });
+
+  const enrichSelectedSong = async (song: SelectedSong): Promise<SelectedSong> => {
+    // Preserve full metadata when it is available. Discovery rows are only
+    // summaries and omit optional advanced video cover fields.
+    try {
+      const full = song.id.startsWith("youtube:")
+        ? (await lookupYoutubeTracks([song.id]))[0]
+        : await getThemeDiscoverySong(song.id);
+      if (full?.url) return { ...song, ...full, url: getMediaUrl(full.url) };
+    } catch { /* The base track is still usable without optional metadata. */ }
+    return { ...song, url: getMediaUrl(song.url) };
+  };
+
   const submit = async (target: MenuPoint, position: PlaybackQueuePosition, pitch: PlaybackQueuePitch) => {
     if (busy) return;
     setBusy(true);
@@ -235,7 +267,7 @@ export default function DesktopSongRadioContextEnhancer() {
         await addSongToRadioQueue(target.song.id, { insertAt: position, pitch });
         notify(`“${target.song.name}” añadida a la radio.`);
       } else {
-        addToPlaybackQueue(target.song, position, pitch, target.source);
+        addToPlaybackQueue(normalizeAudioTrack(target.song), position, pitch, target.source);
         notify(`“${target.song.name}” añadida a tu cola.`);
       }
       setComposer(null);
@@ -246,14 +278,16 @@ export default function DesktopSongRadioContextEnhancer() {
     }
   };
 
-  // One extra action in the *existing* Farreo menu. Opening it brings up one
-  // large pitch/order panel, never nested hover submenus or a second context menu.
-  const inject = (menu: HTMLElement, target: MenuPoint) => {
+  // Inject the entry immediately, with no song lookup on the contextmenu
+  // path. Previously resolve() fetched the whole discovery catalogue BEFORE
+  // appending a button, so a rapid right-click showed an incomplete menu.
+  // Lookup now runs only after a user clicks the extra action.
+  const inject = (menu: HTMLElement, request: PendingContext) => {
     const previous = menu.querySelector<HTMLElement>("[data-farreo-song-queue-entry]");
-    if (previous?.dataset.farreoSongQueueEntry === target.song.id) return;
+    if (previous?.dataset.farreoSongQueueEntry === String(request.serial)) return;
     previous?.remove();
     const parent = document.createElement("div");
-    parent.dataset.farreoSongQueueEntry = target.song.id;
+    parent.dataset.farreoSongQueueEntry = String(request.serial);
     parent.className = styles.injectedEntry;
     const button = document.createElement("button");
     button.type = "button";
@@ -261,70 +295,112 @@ export default function DesktopSongRadioContextEnhancer() {
     button.innerHTML = `<span aria-hidden="true">${modeRef.current === "radio" ? "◉" : "☷"}</span><span>${modeRef.current === "radio" ? "Añadir a la radio…" : "Añadir a la cola…"}</span><span aria-hidden="true">›</span>`;
     button.addEventListener("pointerdown", (event) => event.stopPropagation());
     button.addEventListener("click", (event) => {
-      event.preventDefault(); event.stopPropagation();
+      event.preventDefault();
+      event.stopPropagation();
+      // Clicking a menu option dismisses the original context menu. Resolve
+      // from the DOM row captured on right-click, not from whatever row is
+      // currently under the pointer.
       window.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
       setFallback(null);
-      setComposer(target);
+      const selection = ++serialRef.current;
+      void resolve(request.host).then(async (song) => {
+        if (serialRef.current !== selection) return;
+        if (!song?.url) {
+          notify("No se pudo encontrar esta canción. Prueba a recargar la página.");
+          return;
+        }
+        // The compositor can open immediately with the song, while optional
+        // cover metadata is enhanced asynchronously before the user submits.
+        const normalized = { ...song, url: getMediaUrl(song.url) };
+        setComposer({ x: request.x, y: request.y, song: normalized, source: request.source });
+        const rich = await enrichSelectedSong(normalized);
+        if (serialRef.current === selection) {
+          setComposer((current) => current?.song.id === rich.id
+            ? { ...current, song: rich } : current);
+        }
+      }).catch(() => {
+        if (serialRef.current === selection) notify("No se pudieron cargar los datos de la canción.");
+      });
     });
     parent.appendChild(button);
     menu.appendChild(parent);
   };
 
   useEffect(() => {
+    const openFromNativeMenu = (event: Event) => {
+      const detail = (event as CustomEvent<MenuPoint>).detail;
+      if (!detail?.song?.id || !detail.song.url) return;
+      serialRef.current += 1;
+      pendingContextRef.current = null;
+      setFallback(null);
+      // PlaylistSongTable already has the complete MusicTrack, including
+      // video/cover metadata; do not degrade it to discovery catalogue data.
+      setComposer({ ...detail, song: { ...detail.song, url: getMediaUrl(detail.song.url) } });
+    };
     const context = (event: MouseEvent) => {
       setFallback(null);
-      // Do not capture our own queue island, composer or existing menus.
       if (!(event.target instanceof Element) || event.target.closest(`${MENU_SELECTOR}, [role='dialog'], [aria-label='Cola de reproducción']`)) return;
       const host = event.target.closest<HTMLElement>(HOSTS);
       if (!host || host.closest(".playlist-admin__recommendation-card--concealed")) return;
       const strict = Boolean(event.target.closest(STRICT_HOSTS));
       if (strict) event.preventDefault();
       const serial = ++serialRef.current;
-      // Repeated right-clicks can reuse the same React menu DOM node. Drop an
-      // injected action from the previous song before the native menu updates.
-      getVisibleMenus().forEach((menu) => menu.querySelectorAll("[data-farreo-song-queue-entry]")
-        .forEach((entry) => entry.remove()));
-      const point = { x: event.clientX, y: event.clientY };
       const source = host.closest(".app-sidebar__song-result")
         ? { id: "search", name: "Resultados de búsqueda", type: "song" as const }
         : sourceFromPage(location.pathname);
-      void resolve(host).then((song) => {
-        if (!song || serial !== serialRef.current || !host.isConnected) return;
-        const target = { ...point, song, source };
-        let handled = false;
-        const tryInject = () => {
-          if (serial !== serialRef.current) return;
-          const menus = getVisibleMenus();
-          // Context menu is close to the click; never inject into an old unrelated menu.
-          const menu = menus.find((node) => {
-            const box = node.getBoundingClientRect();
-            return Math.abs(box.left - point.x) < 400 && Math.abs(box.top - point.y) < 400;
-          });
-          if (menu) { inject(menu, target); setFallback(null); handled = true; }
-        };
+      const request: PendingContext = {
+        x: event.clientX, y: event.clientY, source, host, serial,
+      };
+      pendingContextRef.current = request;
+      // The playlist table renders this entry natively in its own menu.
+      if (host.matches(".playlist-song-table__row")) return;
+      getVisibleMenus().forEach((menu) => menu.querySelectorAll("[data-farreo-song-queue-entry]")
+        .forEach((entry) => entry.remove()));
+      let found = false;
+      const tryInject = () => {
+        if (serial !== serialRef.current) return;
+        const menu = getVisibleMenus().find((node) => {
+          const rect = node.getBoundingClientRect();
+          return Math.abs(rect.left - request.x) < 400
+            && Math.abs(rect.top - request.y) < 400;
+        });
+        if (!menu) return;
+        inject(menu, request);
+        found = true;
+      };
+      // React typically commits the menu during this event. Observe its first
+      // DOM insertion and inject the action before the browser's next paint.
+      const observer = new MutationObserver(tryInject);
+      observer.observe(document.body, { subtree: true, childList: true });
+      queueMicrotask(tryInject);
+      const frame = window.requestAnimationFrame(tryInject);
+      window.setTimeout(() => {
+        observer.disconnect();
+        window.cancelAnimationFrame(frame);
+        if (serial !== serialRef.current) return;
         tryInject();
-        // React menu state may render after our capture handler or after an
-        // async lookup. Observe a short, bounded window before fallback.
-        const observer = new MutationObserver(tryInject);
-        observer.observe(document.body, { subtree: true, childList: true });
-        window.setTimeout(() => {
-          observer.disconnect();
-          if (serial !== serialRef.current) return;
-          tryInject();
-          if (!handled && strict) setFallback(target);
-        }, 140);
-      }).catch(() => undefined);
+        if (found || !strict) return;
+        // Some third-party lists have no native context menu; for these only,
+        // resolve lazily and display a complete Farreo fallback menu.
+        void resolve(request.host).then((song) => {
+          if (song?.url && serial === serialRef.current) {
+            setFallback({ x: request.x, y: request.y, song, source });
+          }
+        }).catch(() => undefined);
+      }, 160);
     };
     const dismissPending = (event: PointerEvent) => {
       if (event.button !== 2) serialRef.current += 1;
     };
+    window.addEventListener(OPEN_COMPOSER_EVENT, openFromNativeMenu);
     window.addEventListener("contextmenu", context, true);
     window.addEventListener("pointerdown", dismissPending, true);
     return () => {
+      window.removeEventListener(OPEN_COMPOSER_EVENT, openFromNativeMenu);
       window.removeEventListener("contextmenu", context, true);
       window.removeEventListener("pointerdown", dismissPending, true);
     };
-    // The handler reads live player/radio state through refs.
+    // The handler reads current player/radio state through refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

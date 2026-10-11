@@ -20,6 +20,8 @@ interface AdvancedCoverMediaProps {
   playbackRate: number;
   className?: string;
   onReady?: () => void;
+  // Only audio-first queue transitions should defer optional video.
+  audioPriorityReady?: boolean;
 }
 
 interface DecodedGifImage {
@@ -79,6 +81,7 @@ function SyncedVideo({
   isPlaying,
   playbackRate,
   syncEnabled,
+  audioPriorityReady,
   className,
   onReady,
 }: {
@@ -86,6 +89,7 @@ function SyncedVideo({
   isPlaying: boolean;
   playbackRate: number;
   syncEnabled: boolean;
+  audioPriorityReady: boolean;
   className?: string;
   onReady?: () => void;
 }) {
@@ -99,7 +103,7 @@ function SyncedVideo({
       ? clampPlaybackRate(playbackRate)
       : 1;
 
-    if (syncEnabled && !isPlaying) {
+    if (!audioPriorityReady || (syncEnabled && !isPlaying)) {
       video.pause();
       return;
     }
@@ -108,16 +112,17 @@ function SyncedVideo({
       // Muted inline media normally autoplays. If the browser still blocks it,
       // the next playback-state change will try again.
     });
-  }, [isPlaying, playbackRate, syncEnabled, src]);
+  }, [isPlaying, playbackRate, syncEnabled, src, audioPriorityReady]);
 
   return (
     <video
       ref={ref}
-      src={src}
+      src={audioPriorityReady ? src : undefined}
+      preload={audioPriorityReady ? "auto" : "none"}
       muted
       loop
       playsInline
-      autoPlay={!syncEnabled || isPlaying}
+      autoPlay={audioPriorityReady && (!syncEnabled || isPlaying)}
       className={className}
       style={MEDIA_STYLE}
       onLoadedData={onReady}
@@ -389,6 +394,7 @@ export default function AdvancedCoverMedia({
   playbackRate,
   className,
   onReady,
+  audioPriorityReady = true,
 }: AdvancedCoverMediaProps) {
   const [syncEnabled, setSyncEnabled] = useState(
     DEFAULT_ADVANCED_COVER_SYNC,
@@ -417,6 +423,7 @@ export default function AdvancedCoverMedia({
         isPlaying={isPlaying}
         playbackRate={playbackRate}
         syncEnabled={syncEnabled}
+        audioPriorityReady={audioPriorityReady}
         className={className}
         onReady={onReady}
       />

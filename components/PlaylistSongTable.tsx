@@ -2,9 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDownIcon, ChevronUpIcon, GripVerticalIcon, LibraryIcon, MoreHorizontalIcon, PauseIcon, PlayIcon, ShareIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronUpIcon, GripVerticalIcon, LibraryIcon, ListMusicIcon, MoreHorizontalIcon, PauseIcon, PlayIcon, RadioIcon, ShareIcon } from "lucide-react";
 import SongArtwork from "@/components/SongArtwork";
-import type { MusicPlaylistSource, MusicTrack } from "@/components/MusicPlayerProvider";
+import { useMusicPlayer, type MusicPlaylistSource, type MusicTrack } from "@/components/MusicPlayerProvider";
 import type { PrivatePlaylist } from "@/lib/privatePlaylists";
 
 type SortKey = "index" | "title" | "addedAt" | "duration";
@@ -81,6 +81,7 @@ export default function PlaylistSongTable({
   allowAddToPlaylist = true,
   showActions = true,
 }: PlaylistSongTableProps) {
+  const { playerMode } = useMusicPlayer();
   const [sort, setSort] = useState<{ key: SortKey; direction: SortDirection }>({ key: "index", direction: "desc" });
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{ trackId: string; x: number; y: number } | null>(null);
@@ -234,6 +235,19 @@ export default function PlaylistSongTable({
           <ShareIcon size={14} /> Compartir
         </button>
       )}
+      {/* Part of the original menu render, not an async DOM insertion. */}
+      <button type="button" className="playlist-song-table__menu-item"
+        onClick={(event) => {
+          const rect = event.currentTarget.getBoundingClientRect();
+          setOpenMenuId(null);
+          setContextMenu(null);
+          window.dispatchEvent(new CustomEvent("farreo:open-song-queue-composer", {
+            detail: { song: track, source: source ?? null, x: rect.left, y: rect.top },
+          }));
+        }}>
+        {playerMode === "radio" ? <RadioIcon size={14} /> : <ListMusicIcon size={14} />}
+        {playerMode === "radio" ? "Añadir a la radio…" : "Añadir a la cola…"}
+      </button>
     </div>
   );
 
