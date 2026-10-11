@@ -54,10 +54,8 @@
   background: #253d2d; color: #d9ffe6; border: 1px solid rgba(30,215,96,.22);
   box-shadow: 0 10px 36px rgba(0,0,0,.5); font-size: 12px; font-weight: 750;
 }
-:global(.playlist-song-table__menu--fixed[data-farreo-flip="true"] .playlist-song-table__submenu) {
-  left: auto !important;
-  right: calc(100% + 4px) !important;
-}
+/* El submenu de PlaylistSongTable ya se coloca a la izquierda con un estilo inline
+   cuando data-farreo-flip es true. No usar selectores globales puros aqui. */
 
 /* Compact FARREO menu shared by the local queue and Radio. */
 .composerBackdrop { background: rgba(0, 0, 0, .06); }
