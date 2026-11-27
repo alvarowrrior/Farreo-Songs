@@ -39,6 +39,8 @@ export type OfflineSongMeta = Omit<OfflineSong, "audio" | "icon"> & { hasIcon: b
 export interface OfflinePlaylist {
   id: string;
   nombre: string;
+  /** "private" = playlist privada del usuario (Firestore); por defecto global. */
+  kind?: "global" | "private";
   songIds: string[];
   savedAt: number;
 }

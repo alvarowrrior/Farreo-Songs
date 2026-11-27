@@ -26,6 +26,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   if (pathname.startsWith("/offline")) {
     return (
       <>
+        {/* Firma las peticiones al servidor de musica con la sesion del usuario. */}
+        <BackendAuthBridge />
         <OfflineServiceWorker />
         {children}
       </>

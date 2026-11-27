@@ -12,6 +12,7 @@ import {
   HardDriveIcon,
   ListMusicIcon,
   LoaderCircleIcon,
+  LockIcon,
   MusicIcon,
   PauseIcon,
   PlayIcon,
@@ -45,6 +46,9 @@ import {
 } from "@/lib/offlineStore";
 import { cacheLoadedResources } from "@/components/OfflineServiceWorker";
 import { getNativeOfflineAudio, type FarreoNativeState } from "@/lib/nativeAudio";
+import { onAuthStateChanged, type User } from "firebase/auth";
+import { auth } from "@/lib/firebase";
+import { listOwnPrivatePlaylists, type PrivatePlaylist } from "@/lib/privatePlaylists";
 
 type NativePlugin = NonNullable<Awaited<ReturnType<typeof getNativeOfflineAudio>>>;
 const OFFLINE_SOURCE = { id: "offline", name: "Farreo sin conexion", type: "global" as const };
@@ -148,6 +152,11 @@ function OfflineContent() {
   const [remoteQuery, setRemoteQuery] = useState("");
   const [remoteError, setRemoteError] = useState<string | null>(null);
   const [job, setJob] = useState<DownloadJob | null>(null);
+  const [user, setUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [privatePlaylists, setPrivatePlaylists] = useState<PrivatePlaylist[] | null>(null);
+  const [privateError, setPrivateError] = useState<string | null>(null);
+  const catalogRef = useRef<ApiSong[] | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   // Reproductor
@@ -509,12 +518,72 @@ function OfflineContent() {
     }
   }, []);
 
+  // Sesion de Farreo (Firebase): necesaria para las playlists privadas.
+  useEffect(() => {
+    if (!auth) {
+      setAuthReady(true);
+      return;
+    }
+    return onAuthStateChanged(auth, (next) => {
+      setUser(next);
+      setAuthReady(true);
+    });
+  }, []);
+
+  const loadPrivatePlaylists = useCallback(async (owner: User) => {
+    setPrivateError(null);
+    try {
+      const list = await listOwnPrivatePlaylists(owner.uid);
+      setPrivatePlaylists([...list].sort((a, b) => a.nombre.localeCompare(b.nombre, "es")));
+    } catch {
+      setPrivateError("No se pudieron cargar tus playlists privadas.");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (view === "download" && online && user && !privatePlaylists) void loadPrivatePlaylists(user);
+  }, [view, online, user, privatePlaylists, loadPrivatePlaylists]);
+
+  /** Catalogo completo del servidor (una sola peticion por visita). */
+  const fetchCatalog = async () => {
+    if (catalogRef.current) return catalogRef.current;
+    const res = await fetch(`${MUSIC_API_URL}/canciones`);
+    if (!res.ok) throw new Error();
+    catalogRef.current = (await res.json()) as ApiSong[];
+    return catalogRef.current;
+  };
+
+  const savePlaylistAfterDownload = (id: string, nombre: string, order: string[], kind: "global" | "private") =>
+    async (okIds: string[]) => {
+      const existing = playlists.find((p) => p.id === id);
+      const ids = new Set([...(existing?.songIds || []), ...okIds]);
+      await saveOfflinePlaylist({ id, nombre, kind, songIds: order.filter((songId) => ids.has(songId)), savedAt: Date.now() });
+    };
+
+  const downloadPrivatePlaylist = async (pl: PrivatePlaylist) => {
+    try {
+      const byId = new Map((await fetchCatalog()).map((song) => [song.id, song]));
+      // Las de YouTube no estan en el catalogo: se pasan sin url para contarlas como no descargables.
+      const songsInOrder: ApiSong[] = pl.songIds
+        .map((id) => byId.get(id) ?? (id.startsWith("youtube:") ? { id, name: id, url: "" } : null))
+        .filter((song): song is ApiSong => Boolean(song));
+      if (songsInOrder.length === 0) {
+        setNotice({ type: "error", text: `"${pl.nombre}" no tiene canciones descargables.` });
+        return;
+      }
+      await runDownloads(
+        pl.nombre,
+        songsInOrder,
+        savePlaylistAfterDownload(`private:${pl.id}`, pl.nombre, pl.songIds, "private"),
+      );
+    } catch {
+      setNotice({ type: "error", text: `No se pudo abrir la playlist "${pl.nombre}".` });
+    }
+  };
+
   const loadRemoteSongs = async () => {
     try {
-      const res = await fetch(`${MUSIC_API_URL}/canciones`);
-      if (!res.ok) throw new Error();
-      const list = (await res.json()) as ApiSong[];
-      setRemoteSongs(list.filter(canDownloadSong));
+      setRemoteSongs((await fetchCatalog()).filter(canDownloadSong));
     } catch {
       setRemoteError("No se pudo cargar la lista de canciones.");
     }
@@ -568,17 +637,11 @@ function OfflineContent() {
       const res = await fetch(`${MUSIC_API_URL}/playlist/${encodeURIComponent(info.id)}`);
       if (!res.ok) throw new Error();
       const data = (await res.json()) as { id: string; nombre: string; canciones: ApiSong[] };
-      await runDownloads(data.nombre, data.canciones, async (okIds) => {
-        const existing = playlists.find((p) => p.id === data.id);
-        const order = data.canciones.map((c) => c.id);
-        const ids = new Set([...(existing?.songIds || []), ...okIds]);
-        await saveOfflinePlaylist({
-          id: data.id,
-          nombre: data.nombre,
-          songIds: order.filter((id) => ids.has(id)),
-          savedAt: Date.now(),
-        });
-      });
+      await runDownloads(
+        data.nombre,
+        data.canciones,
+        savePlaylistAfterDownload(data.id, data.nombre, data.canciones.map((c) => c.id), "global"),
+      );
     } catch {
       setNotice({ type: "error", text: `No se pudo abrir la playlist "${info.nombre}".` });
     }
@@ -648,7 +711,7 @@ function OfflineContent() {
               {playlists.map((pl) => (
                 <span key={pl.id} className={activePlaylist === pl.id ? styles.chipActive : styles.chip}>
                   <button type="button" onClick={() => setActivePlaylist(pl.id)}>
-                    <ListMusicIcon size={14} /> {pl.nombre} <small>{pl.songIds.length}</small>
+                    {pl.kind === "private" ? <LockIcon size={13} /> : <ListMusicIcon size={14} />} {pl.nombre} <small>{pl.songIds.length}</small>
                   </button>
                   {activePlaylist === pl.id && (
                     <button type="button" onClick={() => void removePlaylist(pl)} title="Quitar playlist del movil" className={styles.chipRemove}>
@@ -727,7 +790,57 @@ function OfflineContent() {
                 </div>
               )}
 
-              <h2 className={styles.sectionTitle}><ListMusicIcon size={18} /> Playlists</h2>
+              <h2 className={styles.sectionTitle}><LockIcon size={18} /> Mis playlists privadas</h2>
+              {!authReady ? (
+                <p className={styles.empty}>Comprobando tu sesion...</p>
+              ) : !user ? (
+                <div className={styles.emptyCard}>
+                  <LockIcon size={24} />
+                  <p>Inicia sesion en Farreo para ver y descargar tus playlists privadas.</p>
+                  <a href="/login" className={styles.primary}>Iniciar sesion</a>
+                </div>
+              ) : privateError ? (
+                <div className={styles.noticeError}>
+                  {privateError} <button type="button" className={styles.linkBtn} onClick={() => void loadPrivatePlaylists(user)}>Reintentar</button>
+                </div>
+              ) : !privatePlaylists ? (
+                <p className={styles.empty}>Cargando tus playlists...</p>
+              ) : privatePlaylists.length === 0 ? (
+                <p className={styles.empty}>Aun no tienes playlists privadas.</p>
+              ) : (
+                <ul className={styles.list}>
+                  {privatePlaylists.map((pl) => {
+                    const local = playlists.find((p) => p.id === `private:${pl.id}`);
+                    return (
+                      <li key={pl.id} className={styles.row}>
+                        <span className={styles.rowMain}>
+                          <span className={styles.artwork}>
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            {pl.iconUrl ? <img src={pl.iconUrl} alt="" /> : <LockIcon size={18} />}
+                          </span>
+                          <span className={styles.rowInfo}>
+                            <strong>{pl.nombre}</strong>
+                            <small>
+                              {pl.songIds.length} canciones · {pl.visibility === "public" ? "Publica" : "Privada"}
+                              {local ? ` · ${local.songIds.length} guardadas` : ""}
+                            </small>
+                          </span>
+                        </span>
+                        <button
+                          type="button"
+                          className={local ? styles.secondary : styles.primary}
+                          disabled={Boolean(job) || pl.songIds.length === 0}
+                          onClick={() => void downloadPrivatePlaylist(pl)}
+                        >
+                          {local ? <><CheckIcon size={14} /> Actualizar</> : <><DownloadIcon size={14} /> Descargar</>}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+
+              <h2 className={styles.sectionTitle}><ListMusicIcon size={18} /> Playlists de Farreo</h2>
               {!remotePlaylists && !remoteError ? (
                 <p className={styles.empty}>Cargando playlists...</p>
               ) : (
