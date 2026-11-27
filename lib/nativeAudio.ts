@@ -41,6 +41,15 @@ export interface FarreoNativeState {
   radioState?: RadioState | null;
 }
 
+export interface FarreoOfflineFile {
+  exists: boolean;
+  uri: string;
+  size: number;
+}
+
+/** Primera version de la APK que guarda canciones como archivos para el modo sin conexion. */
+export const NATIVE_OFFLINE_MIN_BUILD = 23;
+
 type ListenerHandle = {
   remove: () => Promise<void> | void;
 };
@@ -64,6 +73,10 @@ type NativePlugin = {
   getAppInfo: () => Promise<{ version: string; build: number }>;
   openExternalUrl?: (payload: { url: string }) => Promise<void>;
   enableVisualization: () => Promise<{ enabled: boolean }>;
+  // Modo sin conexion (APK build >= 23)
+  saveOfflineSong?: (payload: { id: string; url: string }) => Promise<FarreoOfflineFile>;
+  getOfflineSong?: (payload: { id: string }) => Promise<FarreoOfflineFile>;
+  deleteOfflineSong?: (payload: { id: string }) => Promise<{ deleted: boolean }>;
   addListener: (
     eventName: FarreoNativeEvent,
     listener: (payload: unknown) => void,
@@ -101,4 +114,19 @@ export async function addFarreoNativeListener(
   const plugin = getFarreoNativeAudio();
   if (!plugin) return null;
   return plugin.addListener(eventName, listener);
+}
+
+/**
+ * Devuelve el plugin nativo solo si la APK instalada sabe guardar canciones sin
+ * conexion (las APK antiguas no tienen esos metodos).
+ */
+export async function getNativeOfflineAudio(): Promise<NativePlugin | null> {
+  const plugin = getFarreoNativeAudio();
+  if (!plugin) return null;
+  try {
+    const info = await plugin.getAppInfo();
+    return Number(info.build) >= NATIVE_OFFLINE_MIN_BUILD ? plugin : null;
+  } catch {
+    return null;
+  }
 }

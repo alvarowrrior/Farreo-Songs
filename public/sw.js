@@ -7,14 +7,16 @@
  * - No toca las peticiones al servidor de musica ni a otros dominios.
  */
 
-const VERSION = "v1";
+const VERSION = "v2";
 const SHELL_CACHE = `farreo-shell-${VERSION}`;
 const STATIC_CACHE = `farreo-static-${VERSION}`;
 const OFFLINE_URL = "/offline";
+const FALLBACK_URL = "/offline-app.html";
 const NAV_TIMEOUT_MS = 9000;
 
 const PRECACHE = [
   OFFLINE_URL,
+  FALLBACK_URL,
   "/manifest.json",
   "/brand/farreo-app-icon-192.png",
   "/brand/farreo-f-favicon.png",
@@ -87,6 +89,9 @@ async function handleNavigation(request) {
     } else if (offlineCached) {
       return Response.redirect(`${OFFLINE_URL}?sinconexion=1`, 302);
     }
+    // Ultimo recurso: reproductor autonomo sin Next.js.
+    const fallback = await caches.match(FALLBACK_URL);
+    if (fallback) return fallback;
     return new Response(
       "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width'>" +
       "<body style='background:#171719;color:#fff;font-family:sans-serif;padding:2rem'>" +

@@ -911,6 +911,8 @@ public class FarreoAudioController {
     private String resolveUrl(String url) {
         if (url == null || url.isEmpty()) return "";
         if (url.startsWith("http://") || url.startsWith("https://")) return url;
+        // Canciones descargadas para el modo sin conexion.
+        if (url.startsWith("file://") || url.startsWith("content://")) return url;
         return radioApiUrl + url;
     }
 

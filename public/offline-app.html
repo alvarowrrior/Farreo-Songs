@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#171719">
+<title>Farreo sin conexion</title>
+<!--
+  Respaldo autonomo del modo sin conexion (sin Next.js ni red).
+  - En la APK se carga desde los archivos de la app cuando farreo.vercel.app no
+    responde (capacitor.config.ts -> server.errorPath).
+  - En el navegador el service worker la sirve si /offline no esta guardada.
+  Lee las mismas canciones que /offline (IndexedDB "farreo-offline").
+-->
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#171719;color:#f4f4f5;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  main{max-width:760px;margin:0 auto;padding:max(env(safe-area-inset-top),1rem) 1rem 12rem}
+  .pill{display:inline-block;font-size:.78rem;font-weight:600;padding:.3rem .65rem;border-radius:999px;background:rgba(248,113,113,.14);color:#f87171}
+  h1{font-size:1.7rem;margin:.6rem 0 .2rem}
+  .muted{color:#a1a1aa;font-size:.9rem;margin:0}
+  .retry{margin:1rem 0;display:inline-block;color:#1ed760;background:none;border:1px solid #2c2c31;border-radius:999px;padding:.5rem .9rem;font:inherit;font-weight:600}
+  input[type=search]{width:100%;margin:.5rem 0 .75rem;padding:.75rem .9rem;border-radius:12px;border:0;background:#222226;color:#f4f4f5;font-size:16px;outline:none}
+  ol{list-style:none;margin:0;padding:0}
+  li button{width:100%;display:flex;gap:.7rem;align-items:center;background:none;border:0;color:inherit;text-align:left;padding:.55rem .4rem;border-radius:12px;font:inherit}
+  li button.on{background:#222226}
+  li button.on b{color:#1ed760}
+  li span{width:1.6rem;text-align:center;color:#a1a1aa;font-size:.8rem;flex-shrink:0}
+  li b{font-weight:600;font-size:.95rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .empty{background:#222226;border-radius:16px;padding:1.5rem;text-align:center;color:#a1a1aa}
+  .player{position:fixed;left:0;right:0;bottom:0;background:rgba(23,23,25,.97);border-top:1px solid #2c2c31;padding:.8rem 1rem max(env(safe-area-inset-bottom),.8rem);text-align:center}
+  .now{font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:.5rem}
+  .ctrls{display:flex;justify-content:center;align-items:center;gap:1rem}
+  .ctrls button{background:none;border:0;color:#f4f4f5;font-size:1.3rem;width:44px;height:44px;border-radius:50%}
+  .ctrls .play{background:#1ed760;color:#08130c;width:54px;height:54px}
+  .ctrls .toggle{font-size:.8rem;color:#a1a1aa}
+  .ctrls .toggle.active{color:#1ed760}
+  .bar{display:flex;gap:.6rem;align-items:center;font-size:.72rem;color:#a1a1aa;margin-top:.4rem}
+  .bar input{flex:1;accent-color:#1ed760}
+</style>
+</head>
+<body>
+<main>
+  <span class="pill">Sin conexion</span>
+  <h1>Farreo sin conexion</h1>
+  <p class="muted" id="count">Cargando musica guardada...</p>
+  <button class="retry" id="retry" type="button">Reintentar con conexion</button>
+  <input type="search" id="q" placeholder="Buscar en tu musica guardada...">
+  <ol id="list"></ol>
+</main>
+<div class="player">
+  <div class="now" id="now">Elige una cancion</div>
+  <div class="ctrls">
+    <button class="toggle active" id="shuffle" type="button">ALEAT.</button>
+    <button id="prev" type="button" aria-label="Anterior">&#9198;</button>
+    <button class="play" id="play" type="button" aria-label="Reproducir">&#9654;</button>
+    <button id="next" type="button" aria-label="Siguiente">&#9197;</button>
+    <button class="toggle active" id="pitch" type="button">PITCH</button>
+  </div>
+  <div class="bar"><span id="t">0:00</span><input type="range" id="seek" min="0" max="0" step="0.5" value="0"><span id="d">0:00</span></div>
+</div>
+<audio id="audio" hidden></audio>
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var audio = $("audio");
+  var songs = [], view = [], current = null, objectUrl = null, nativeActive = false, playing = false;
+  var prefs = { volume: 0.8, shuffle: true, autoPitch: true };
+  try { var saved = JSON.parse(localStorage.getItem("farreo-offline-prefs") || "null"); if (saved) for (var k in saved) prefs[k] = saved[k]; } catch (e) {}
+
+  function native() {
+    var p = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.FarreoNativeAudio;
+    return p || null;
+  }
+  function fmt(s) { s = isFinite(s) && s > 0 ? s : 0; var m = Math.floor(s / 60), x = Math.floor(s % 60); return m + ":" + (x < 10 ? "0" : "") + x; }
+  function savePrefs() { try { localStorage.setItem("farreo-offline-prefs", JSON.stringify(prefs)); } catch (e) {} }
+
+  function openDb() {
+    return new Promise(function (resolve, reject) {
+      var req = indexedDB.open("farreo-offline", 1);
+      req.onupgradeneeded = function () {
+        var db = req.result;
+        if (!db.objectStoreNames.contains("songs")) db.createObjectStore("songs", { keyPath: "id" });
+        if (!db.objectStoreNames.contains("playlists")) db.createObjectStore("playlists", { keyPath: "id" });
+      };
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { reject(req.error); };
+    });
+  }
+  function getSong(id) {
+    return openDb().then(function (db) {
+      return new Promise(function (resolve) {
+        var r = db.transaction("songs", "readonly").objectStore("songs").get(id);
+        r.onsuccess = function () { resolve(r.result); };
+        r.onerror = function () { resolve(null); };
+      });
+    });
+  }
+  function loadSongs() {
+    return openDb().then(function (db) {
+      return new Promise(function (resolve) {
+        var out = [];
+        var cur = db.transaction("songs", "readonly").objectStore("songs").openCursor();
+        cur.onsuccess = function () {
+          var c = cur.result;
+          if (!c) { resolve(out.sort(function (a, b) { return a.name.localeCompare(b.name, "es"); })); return; }
+          var v = c.value;
+          out.push({ id: v.id, name: v.name, variantes: v.variantes || [], nativeUri: v.nativeUri || null });
+          c.continue();
+        };
+        cur.onerror = function () { resolve(out); };
+      });
+    });
+  }
+
+  function render() {
+    var q = $("q").value.trim().toLowerCase();
+    view = songs.filter(function (s) {
+      return !q || s.name.toLowerCase().indexOf(q) >= 0 || s.variantes.some(function (v) { return v.toLowerCase().indexOf(q) >= 0; });
+    });
+    var list = $("list");
+    list.innerHTML = "";
+    if (!songs.length) {
+      list.innerHTML = '<div class="empty">Aun no tienes musica sin conexion. Con internet, entra en Farreo &rarr; Cuenta &rarr; Musica sin conexion y descarga tus playlists.</div>';
+    }
+    view.forEach(function (s, i) {
+      var li = document.createElement("li");
+      var b = document.createElement("button");
+      b.type = "button";
+      if (current && current.id === s.id) b.className = "on";
+      var n = document.createElement("span"); n.textContent = String(i + 1);
+      var t = document.createElement("b"); t.textContent = s.name;
+      b.appendChild(n); b.appendChild(t);
+      b.onclick = function () { start(s); };
+      li.appendChild(b); list.appendChild(li);
+    });
+    $("count").textContent = songs.length + " canciones guardadas en este dispositivo";
+    $("now").textContent = current ? current.name : "Elige una cancion";
+    $("play").innerHTML = playing ? "&#10074;&#10074;" : "&#9654;";
+    $("shuffle").className = "toggle" + (prefs.shuffle ? " active" : "");
+    $("pitch").className = "toggle" + (prefs.autoPitch ? " active" : "");
+  }
+
+  function applyNative(st) {
+    if (!st || !st.currentTrack || String(st.currentTrack.url || "").indexOf("file://") !== 0) return;
+    nativeActive = true;
+    playing = !!st.isPlaying;
+    var s = songs.filter(function (x) { return x.id === st.currentTrack.id; })[0];
+    if (s) current = s;
+    $("seek").max = String(st.duration || 0);
+    $("seek").value = String(st.position || 0);
+    $("t").textContent = fmt(st.position); $("d").textContent = fmt(st.duration);
+    render();
+  }
+
+  function start(s) {
+    var p = native();
+    if (p && s.nativeUri) {
+      audio.pause();
+      var q = view.filter(function (x) { return x.nativeUri; });
+      if (!q.some(function (x) { return x.id === s.id; })) q = [s];
+      var tracks = q.map(function (x) { return { id: x.id, name: x.name, url: x.nativeUri, variantes: x.variantes }; });
+      var idx = 0; q.forEach(function (x, i) { if (x.id === s.id) idx = i; });
+      nativeActive = true; current = s;
+      p.loadQueue({ tracks: tracks, startIndex: idx, source: { id: "offline", name: "Farreo sin conexion", type: "global" },
+        shuffle: prefs.shuffle, autoRandomPitch: prefs.autoPitch, pitch: 1, volume: prefs.volume })
+        .then(applyNative).then(function () { return p.play(); }).then(applyNative)
+        .catch(function () { nativeActive = false; });
+      render();
+      return;
+    }
+    if (nativeActive && p) { nativeActive = false; p.pause().catch(function () {}); }
+    getSong(s.id).then(function (rec) {
+      if (!rec || !rec.audio || !rec.audio.size) return;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      objectUrl = URL.createObjectURL(rec.audio);
+      var rate = prefs.autoPitch ? 0.8 + Math.random() * 0.4 : 1;
+      audio.src = objectUrl;
+      audio.preservesPitch = false;
+      audio.defaultPlaybackRate = rate; audio.playbackRate = rate;
+      audio.volume = prefs.volume;
+      audio.play().catch(function () {});
+      current = s; render();
+      if ("mediaSession" in navigator) navigator.mediaSession.metadata = new MediaMetadata({ title: s.name, artist: "Farreo", album: "Farreo sin conexion" });
+    });
+  }
+
+  function step(dir) {
+    var p = native();
+    if (nativeActive && p) { (dir > 0 ? p.next() : p.previous()).then(applyNative).catch(function () {}); return; }
+    if (!view.length) return;
+    if (prefs.shuffle) {
+      var pool = view.length > 1 && current ? view.filter(function (x) { return x.id !== current.id; }) : view;
+      start(pool[Math.floor(Math.random() * pool.length)]);
+      return;
+    }
+    var i = -1; view.forEach(function (x, j) { if (current && x.id === current.id) i = j; });
+    start(view[(i + dir + view.length) % view.length]);
+  }
+
+  $("play").onclick = function () {
+    var p = native();
+    if (nativeActive && p) { (playing ? p.pause() : p.play()).then(applyNative).catch(function () {}); return; }
+    if (!audio.src) { if (current) start(current); else step(1); return; }
+    if (audio.paused) audio.play(); else audio.pause();
+  };
+  $("next").onclick = function () { step(1); };
+  $("prev").onclick = function () { step(-1); };
+  $("shuffle").onclick = function () {
+    prefs.shuffle = !prefs.shuffle; savePrefs(); render();
+    var p = native(); if (nativeActive && p) p.setShuffle({ shuffle: prefs.shuffle }).catch(function () {});
+  };
+  $("pitch").onclick = function () {
+    prefs.autoPitch = !prefs.autoPitch; savePrefs(); render();
+    var p = native(); if (nativeActive && p && p.setAutoRandomPitch) p.setAutoRandomPitch({ enabled: prefs.autoPitch }).catch(function () {});
+  };
+  $("seek").oninput = function () {
+    var v = Number(this.value), p = native();
+    if (nativeActive && p) p.seek({ position: v }).catch(function () {}); else audio.currentTime = v;
+  };
+  $("q").oninput = render;
+  $("retry").onclick = function () { location.href = "/mobile"; };
+
+  audio.onplay = function () { playing = true; render(); };
+  audio.onpause = function () { playing = false; render(); };
+  audio.onended = function () { step(1); };
+  audio.onloadedmetadata = function () { $("seek").max = String(audio.duration || 0); $("d").textContent = fmt(audio.duration); };
+  audio.ontimeupdate = function () { $("seek").value = String(audio.currentTime); $("t").textContent = fmt(audio.currentTime); };
+  if ("mediaSession" in navigator) {
+    navigator.mediaSession.setActionHandler("nexttrack", function () { step(1); });
+    navigator.mediaSession.setActionHandler("previoustrack", function () { step(-1); });
+  }
+  window.addEventListener("online", function () { $("retry").textContent = "Volver a Farreo (hay conexion)"; });
+
+  loadSongs().then(function (list) {
+    songs = list; render();
+    var p = native();
+    if (p) {
+      p.addListener("state", applyNative); p.addListener("trackChanged", applyNative);
+      p.addListener("progress", function (e) {
+        if (!nativeActive) return;
+        $("seek").max = String(e.duration || 0); $("seek").value = String(e.position || 0);
+        $("t").textContent = fmt(e.position); $("d").textContent = fmt(e.duration);
+      });
+      p.getState().then(applyNative).catch(function () {});
+    }
+  }).catch(function () { $("count").textContent = "No se pudo leer la musica guardada."; });
+})();
+</script>
+</body>
+</html>

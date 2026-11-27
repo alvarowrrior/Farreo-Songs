@@ -12,6 +12,8 @@ const config: CapacitorConfig = {
   server: {
     url: mobileUrl,
     cleartext: mobileUrl.startsWith("http://"),
+    // Sin red y sin service worker: pagina de musica descargada incluida en la APK.
+    errorPath: "offline-app.html",
   },
   android: {
     allowMixedContent: true,

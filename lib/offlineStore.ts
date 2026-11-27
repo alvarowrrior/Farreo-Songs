@@ -5,6 +5,16 @@
 // dispositivo. No depende del servidor de musica ni de Firebase.
 
 import { getMediaUrl, type ApiSong } from "@/lib/radioApi";
+import type { getFarreoNativeAudio } from "@/lib/nativeAudio";
+
+type NativePlugin = NonNullable<ReturnType<typeof getFarreoNativeAudio>>;
+
+// En la APK el audio se guarda como archivo de la app (lo reproduce Media3,
+// tambien con la pantalla bloqueada). En el navegador se guarda en IndexedDB.
+let nativeBackend: NativePlugin | null = null;
+export function setNativeOfflineBackend(plugin: NativePlugin | null) {
+  nativeBackend = plugin;
+}
 
 const DB_NAME = "farreo-offline";
 const DB_VERSION = 1;
@@ -18,6 +28,8 @@ export interface OfflineSong {
   duration: number | null;
   audio: Blob;
   icon: Blob | null;
+  /** file:// del audio guardado por la APK (si existe, `audio` va vacio). */
+  nativeUri?: string | null;
   size: number;
   savedAt: number;
 }
@@ -105,12 +117,20 @@ export async function deleteOfflinePlaylist(id: string, removeOrphanSongs = true
   if (!target || !removeOrphanSongs) return;
   const stillUsed = new Set(playlists.filter((p) => p.id !== id).flatMap((p) => p.songIds));
   for (const songId of target.songIds) {
-    if (!stillUsed.has(songId)) await run(SONGS, "readwrite", (s) => s.delete(songId));
+    if (!stillUsed.has(songId)) await removeSongRecord(songId);
   }
 }
 
-export async function deleteOfflineSong(id: string) {
+async function removeSongRecord(id: string) {
+  const record = await getOfflineSong(id);
+  if (record?.nativeUri && nativeBackend?.deleteOfflineSong) {
+    await nativeBackend.deleteOfflineSong({ id }).catch(() => undefined);
+  }
   await run(SONGS, "readwrite", (s) => s.delete(id));
+}
+
+export async function deleteOfflineSong(id: string) {
+  await removeSongRecord(id);
   const playlists = await listOfflinePlaylists();
   for (const pl of playlists) {
     if (pl.songIds.includes(id)) {
@@ -134,9 +154,20 @@ export async function downloadSong(song: ApiSong, signal?: AbortSignal): Promise
   if (!canDownloadSong(song)) throw new Error("Esta cancion no se puede descargar.");
   if (await hasOfflineSong(song.id)) return;
 
-  const res = await fetch(getMediaUrl(song.url), { signal });
-  if (!res.ok) throw new Error(`Error ${res.status} descargando "${song.name}".`);
-  const audio = await res.blob();
+  let audio: Blob;
+  let nativeUri: string | null = null;
+  let nativeSize = 0;
+  if (nativeBackend?.saveOfflineSong) {
+    const file = await nativeBackend.saveOfflineSong({ id: song.id, url: getMediaUrl(song.url) });
+    if (signal?.aborted) throw new DOMException("Cancelada", "AbortError");
+    audio = new Blob([]);
+    nativeUri = file.uri;
+    nativeSize = file.size;
+  } else {
+    const res = await fetch(getMediaUrl(song.url), { signal });
+    if (!res.ok) throw new Error(`Error ${res.status} descargando "${song.name}".`);
+    audio = await res.blob();
+  }
 
   let icon: Blob | null = null;
   if (song.iconUrl) {
@@ -155,7 +186,8 @@ export async function downloadSong(song: ApiSong, signal?: AbortSignal): Promise
     duration: song.duration ?? null,
     audio,
     icon,
-    size: audio.size + (icon?.size || 0),
+    nativeUri,
+    size: (nativeSize || audio.size) + (icon?.size || 0),
     savedAt: Date.now(),
   };
   await run(SONGS, "readwrite", (s) => s.put(record));

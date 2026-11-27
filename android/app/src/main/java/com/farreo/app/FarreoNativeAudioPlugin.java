@@ -30,6 +30,7 @@ import com.getcapacitor.annotation.PermissionCallback;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -48,6 +49,7 @@ public class FarreoNativeAudioPlugin extends Plugin implements FarreoAudioContro
 
     private FarreoAudioController controller;
     private final ExecutorService updateExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService offlineExecutor = Executors.newSingleThreadExecutor();
     private final AtomicBoolean updateInProgress = new AtomicBoolean(false);
     private final AtomicBoolean updateCancelled = new AtomicBoolean(false);
     private AlertDialog updateDialog;
@@ -77,7 +79,104 @@ public class FarreoNativeAudioPlugin extends Plugin implements FarreoAudioContro
         dismissUpdateDialog();
         if (controller != null) controller.removeListener(this);
         updateExecutor.shutdownNow();
+        offlineExecutor.shutdownNow();
         super.handleOnDestroy();
+    }
+
+    // ==========================================
+    // MODO SIN CONEXION: canciones guardadas como archivos de la app para que
+    // el reproductor nativo (Media3) las reproduzca sin red y en segundo plano.
+    // ==========================================
+
+    private File offlineSongsDir() {
+        File dir = new File(getContext().getFilesDir(), "offline-songs");
+        if (!dir.exists() && !dir.mkdirs()) Log.w("FarreoNativeAudio", "No se pudo crear la carpeta offline");
+        return dir;
+    }
+
+    private File offlineSongFile(String id) {
+        String safe = id.replaceAll("[^a-zA-Z0-9._-]", "_");
+        if (safe.length() > 80) safe = safe.substring(0, 80);
+        return new File(offlineSongsDir(), safe + "-" + Integer.toHexString(id.hashCode()) + ".audio");
+    }
+
+    private JSObject offlineSongResult(File file) {
+        JSObject result = new JSObject();
+        result.put("exists", file.exists() && file.length() > 0);
+        result.put("uri", Uri.fromFile(file).toString());
+        result.put("size", file.exists() ? file.length() : 0);
+        return result;
+    }
+
+    @PluginMethod
+    public void saveOfflineSong(PluginCall call) {
+        String id = call.getString("id", "");
+        String url = call.getString("url", "");
+        if (id.isEmpty() || !(url.startsWith("https://") || url.startsWith("http://"))) {
+            call.reject("Faltan los datos de la cancion.");
+            return;
+        }
+
+        offlineExecutor.execute(() -> {
+            File target = offlineSongFile(id);
+            File partial = new File(target.getPath() + ".part");
+            HttpURLConnection connection = null;
+            try {
+                if (target.exists() && target.length() > 0) {
+                    call.resolve(offlineSongResult(target));
+                    return;
+                }
+                connection = (HttpURLConnection) new URL(url).openConnection();
+                connection.setConnectTimeout(15000);
+                connection.setReadTimeout(30000);
+                connection.setInstanceFollowRedirects(true);
+                int status = connection.getResponseCode();
+                if (status < 200 || status >= 300) throw new IOException("HTTP " + status);
+
+                try (InputStream input = connection.getInputStream(); FileOutputStream output = new FileOutputStream(partial)) {
+                    byte[] buffer = new byte[64 * 1024];
+                    int read;
+                    while ((read = input.read(buffer)) != -1) {
+                        if (Thread.currentThread().isInterrupted()) throw new IOException("Descarga cancelada");
+                        output.write(buffer, 0, read);
+                    }
+                }
+                if (partial.length() == 0) throw new IOException("Archivo vacio");
+                if (target.exists() && !target.delete()) throw new IOException("No se pudo reemplazar el archivo");
+                if (!partial.renameTo(target)) throw new IOException("No se pudo guardar el archivo");
+                call.resolve(offlineSongResult(target));
+            } catch (Exception error) {
+                if (partial.exists() && !partial.delete()) Log.w("FarreoNativeAudio", "No se pudo borrar la descarga parcial");
+                Log.e("FarreoNativeAudio", "Fallo guardando cancion offline", error);
+                call.reject("No se pudo guardar la cancion en el movil: " + error.getMessage());
+            } finally {
+                if (connection != null) connection.disconnect();
+            }
+        });
+    }
+
+    @PluginMethod
+    public void getOfflineSong(PluginCall call) {
+        String id = call.getString("id", "");
+        if (id.isEmpty()) {
+            call.reject("Falta el id de la cancion.");
+            return;
+        }
+        call.resolve(offlineSongResult(offlineSongFile(id)));
+    }
+
+    @PluginMethod
+    public void deleteOfflineSong(PluginCall call) {
+        String id = call.getString("id", "");
+        if (id.isEmpty()) {
+            call.reject("Falta el id de la cancion.");
+            return;
+        }
+        File file = offlineSongFile(id);
+        boolean deleted = !file.exists() || file.delete();
+        JSObject result = new JSObject();
+        result.put("deleted", deleted);
+        call.resolve(result);
     }
 
     @PluginMethod

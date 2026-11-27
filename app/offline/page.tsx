@@ -39,10 +39,15 @@ import {
   listOfflineSongs,
   requestPersistentStorage,
   saveOfflinePlaylist,
+  setNativeOfflineBackend,
   type OfflinePlaylist,
   type OfflineSongMeta,
 } from "@/lib/offlineStore";
 import { cacheLoadedResources } from "@/components/OfflineServiceWorker";
+import { getNativeOfflineAudio, type FarreoNativeState } from "@/lib/nativeAudio";
+
+type NativePlugin = NonNullable<Awaited<ReturnType<typeof getNativeOfflineAudio>>>;
+const OFFLINE_SOURCE = { id: "offline", name: "Farreo sin conexion", type: "global" as const };
 import styles from "./Offline.module.scss";
 
 type View = "library" | "download";
@@ -156,6 +161,13 @@ function OfflineContent() {
   const [prefs, setPrefs] = useState<Prefs>({ volume: 0.8, shuffle: true, autoPitch: true });
   const historyRef = useRef<string[]>([]);
 
+  // En la APK (build >= 23) las canciones guardadas como archivo se reproducen
+  // con el reproductor nativo: sigue sonando con la pantalla bloqueada.
+  const nativeRef = useRef<NativePlugin | null>(null);
+  const nativeActiveRef = useRef(false);
+  const [hasNative, setHasNative] = useState(false);
+  const songsRef = useRef<OfflineSongMeta[]>([]);
+
   // ---------- Carga de la biblioteca local ----------
   const refreshLibrary = useCallback(async () => {
     try {
@@ -189,6 +201,12 @@ function OfflineContent() {
       /* almacenamiento lleno o bloqueado */
     }
     if (audioRef.current) audioRef.current.volume = prefs.volume;
+    const plugin = nativeRef.current;
+    if (plugin && nativeActiveRef.current) {
+      void plugin.setVolume({ volume: prefs.volume }).catch(() => undefined);
+      void plugin.setShuffle({ shuffle: prefs.shuffle }).catch(() => undefined);
+      void plugin.setAutoRandomPitch?.({ enabled: prefs.autoPitch }).catch(() => undefined);
+    }
   }, [prefs]);
 
   useEffect(() => {
@@ -211,6 +229,92 @@ function OfflineContent() {
     return base.filter((s) => matches(s, query));
   }, [songs, playlistSongIds, query]);
 
+  useEffect(() => {
+    songsRef.current = songs;
+  }, [songs]);
+
+  const applyNative = (state: FarreoNativeState | null | undefined) => {
+    if (!state) return;
+    const url = state.currentTrack?.url || "";
+    if (!url.startsWith("file://")) {
+      if (state.currentTrack) nativeActiveRef.current = false;
+      return;
+    }
+    nativeActiveRef.current = true;
+    setIsPlaying(Boolean(state.isPlaying));
+    setCurrentTime(state.position || 0);
+    setDuration(state.duration || 0);
+    if (state.pitch) setPitch(state.pitch);
+    const song = songsRef.current.find((s) => s.id === state.currentTrack?.id);
+    if (song) setCurrent(song);
+  };
+  const applyNativeRef = useRef(applyNative);
+  useEffect(() => {
+    applyNativeRef.current = applyNative;
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    const handles: Array<{ remove: () => unknown }> = [];
+    void (async () => {
+      const plugin = await getNativeOfflineAudio();
+      if (cancelled || !plugin) return;
+      nativeRef.current = plugin;
+      setNativeOfflineBackend(plugin);
+      setHasNative(true);
+      const onState = (payload: unknown) => applyNativeRef.current(payload as FarreoNativeState);
+      handles.push(await plugin.addListener("state", onState));
+      handles.push(await plugin.addListener("trackChanged", onState));
+      handles.push(await plugin.addListener("progress", (payload) => {
+        if (!nativeActiveRef.current) return;
+        const { position, duration: total } = payload as { position?: number; duration?: number };
+        setCurrentTime((prev) => (Math.floor(prev) === Math.floor(position || 0) ? prev : position || 0));
+        if (total) setDuration(total);
+      }));
+      // Si ya estaba sonando musica descargada (p. ej. al volver a la app), se muestra.
+      applyNativeRef.current(await plugin.getState().catch(() => null));
+    })();
+    return () => {
+      cancelled = true;
+      handles.forEach((handle) => void handle.remove());
+      setNativeOfflineBackend(null);
+    };
+  }, []);
+
+  const runNative = async (action: (plugin: NativePlugin) => Promise<FarreoNativeState>) => {
+    const plugin = nativeRef.current;
+    if (!plugin) return;
+    try {
+      applyNative(await action(plugin));
+    } catch {
+      setNotice({ type: "error", text: "El reproductor del movil no respondio." });
+    }
+  };
+
+  const startNative = async (plugin: NativePlugin, song: OfflineSongMeta) => {
+    audioRef.current?.pause();
+    const nativeQueue = queue.filter((s) => s.nativeUri);
+    const list = nativeQueue.some((s) => s.id === song.id) ? nativeQueue : [song];
+    const tracks = list.map((s) => ({ id: s.id, name: s.name, url: s.nativeUri || "", variantes: s.variantes }));
+    try {
+      nativeActiveRef.current = true;
+      applyNative(await plugin.loadQueue({
+        tracks,
+        startIndex: Math.max(0, list.findIndex((s) => s.id === song.id)),
+        source: OFFLINE_SOURCE,
+        shuffle: prefs.shuffle,
+        autoRandomPitch: prefs.autoPitch,
+        pitch,
+        volume: prefs.volume,
+      }));
+      applyNative(await plugin.play());
+      setCurrent(song);
+    } catch {
+      nativeActiveRef.current = false;
+      setNotice({ type: "error", text: `No se pudo reproducir "${song.name}".` });
+    }
+  };
+
   const totalSize = useMemo(() => songs.reduce((acc, s) => acc + s.size, 0), [songs]);
   const savedIds = useMemo(() => new Set(songs.map((s) => s.id)), [songs]);
 
@@ -222,6 +326,15 @@ function OfflineContent() {
   };
 
   const startSong = async (song: OfflineSongMeta) => {
+    const plugin = nativeRef.current;
+    if (plugin && song.nativeUri) {
+      await startNative(plugin, song);
+      return;
+    }
+    if (nativeActiveRef.current) {
+      nativeActiveRef.current = false;
+      void plugin?.pause().catch(() => undefined);
+    }
     const audio = audioRef.current;
     if (!audio) return;
     const record = await getOfflineSong(song.id);
@@ -256,6 +369,10 @@ function OfflineContent() {
   };
 
   const playSong = (song: OfflineSongMeta) => {
+    if (nativeActiveRef.current && current?.id === song.id) {
+      togglePlay();
+      return;
+    }
     const audio = audioRef.current;
     if (current?.id === song.id && audio?.src) {
       if (audio.paused) void audio.play();
@@ -266,6 +383,10 @@ function OfflineContent() {
   };
 
   const playNext = () => {
+    if (nativeActiveRef.current) {
+      void runNative((plugin) => plugin.next());
+      return;
+    }
     if (queue.length === 0) return;
     if (prefs.shuffle) {
       const pool = queue.length > 1 && current ? queue.filter((s) => s.id !== current.id) : queue;
@@ -277,6 +398,10 @@ function OfflineContent() {
   };
 
   const playPrev = () => {
+    if (nativeActiveRef.current) {
+      void runNative((plugin) => plugin.previous());
+      return;
+    }
     const audio = audioRef.current;
     if (audio && audio.currentTime > 4) {
       audio.currentTime = 0;
@@ -298,6 +423,10 @@ function OfflineContent() {
   };
 
   const togglePlay = () => {
+    if (nativeActiveRef.current) {
+      void runNative((plugin) => (isPlaying ? plugin.pause() : plugin.play()));
+      return;
+    }
     const audio = audioRef.current;
     if (!audio) return;
     if (!audio.src) {
@@ -337,6 +466,7 @@ function OfflineContent() {
 
   const changePitch = (value: number) => {
     setPitch(value);
+    if (nativeActiveRef.current) void nativeRef.current?.setPitch({ pitch: value }).catch(() => undefined);
     if (audioRef.current) {
       audioRef.current.preservesPitch = false;
       audioRef.current.playbackRate = value;
@@ -347,6 +477,11 @@ function OfflineContent() {
   const removeSong = async (song: OfflineSongMeta) => {
     if (!window.confirm(`¿Quitar "${song.name}" del movil? Podras volver a descargarla con conexion.`)) return;
     if (current?.id === song.id) {
+      if (nativeActiveRef.current) {
+        nativeActiveRef.current = false;
+        await nativeRef.current?.pause().catch(() => undefined);
+        setIsPlaying(false);
+      }
       audioRef.current?.pause();
       audioRef.current?.removeAttribute("src");
       setCurrent(null);
@@ -569,7 +704,10 @@ function OfflineContent() {
           )}
 
           <p className={styles.storage}>
-            <HardDriveIcon size={14} /> Farreo usa {formatBytes(storage.usage)}{quotaText} en este dispositivo.
+            <HardDriveIcon size={14} />
+            {hasNative
+              ? "Las canciones nuevas se guardan en la app y suenan tambien con la pantalla bloqueada."
+              : `Farreo usa ${formatBytes(storage.usage)}${quotaText} en este dispositivo.`}
           </p>
         </section>
       ) : (
@@ -716,7 +854,8 @@ function OfflineContent() {
             value={Math.min(currentTime, duration || 0)}
             onChange={(e) => {
               const t = Number(e.target.value);
-              if (audioRef.current) audioRef.current.currentTime = t;
+              if (nativeActiveRef.current) void nativeRef.current?.seek({ position: t }).catch(() => undefined);
+              else if (audioRef.current) audioRef.current.currentTime = t;
               setCurrentTime(t);
             }}
           />
