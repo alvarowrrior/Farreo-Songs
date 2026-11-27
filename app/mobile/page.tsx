@@ -37,6 +37,7 @@ import {
   SkipForwardIcon,
   TrashIcon,
   UserIcon,
+  WifiOffIcon,
   XIcon,
 } from "lucide-react";
 import SongArtwork from "@/components/SongArtwork";
@@ -2914,6 +2915,11 @@ export default function MobilePage() {
               <p>{user?.email || "Correo no disponible"}</p>
             </div>
           </article>
+          {/* Recarga completa a proposito: /offline funciona sin red y fuera del shell. */}
+          <a href="/offline" className="mobile-farreo__account-action">
+            <WifiOffIcon size={18} />
+            Musica sin conexion
+          </a>
           {user ? (
             <>
               <article className="mobile-farreo__profile-card">

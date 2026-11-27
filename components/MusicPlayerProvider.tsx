@@ -2883,7 +2883,7 @@ export default function MusicPlayerProvider({ children }: { children: ReactNode 
     currentLyric,
   }), [currentLyric, currentTime, visualCurrentTime]);
   const currentSourceHref = getSourceHref(currentSource);
-  const showDesktopPlayer = !pathname.startsWith("/admin") && !pathname.startsWith("/mobile");
+  const showDesktopPlayer = !pathname.startsWith("/admin") && !pathname.startsWith("/mobile") && !pathname.startsWith("/offline");
 
   return (
     <MusicPlayerContext.Provider value={contextValue}>

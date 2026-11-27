@@ -10,6 +10,7 @@ export function proxy(request: NextRequest) {
   if (
     !MOBILE_USER_AGENT.test(userAgent) ||
     pathname === "/mobile" ||
+    pathname.startsWith("/offline") ||
     pathname.startsWith("/tools") ||
     pathname.startsWith("/recommendation/")
   ) {

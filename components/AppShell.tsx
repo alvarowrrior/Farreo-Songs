@@ -15,14 +15,26 @@ import MobileThemeSearchEnhancer from "@/components/MobileThemeSearchEnhancer";
 import MusicWaveHeader from "@/components/MusicWaveHeader";
 import DesktopSongInfoSidebar from "@/components/DesktopSongInfoSidebar";
 import ThemeDiscoverySidebarEnhancer from "@/components/ThemeDiscoverySidebarEnhancer";
+import OfflineServiceWorker from "@/components/OfflineServiceWorker";
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const isMobilePage = pathname.startsWith("/mobile");
   const isSimplePage = pathname.startsWith("/login") || isMobilePage;
 
+  // El modo sin conexion es autonomo: nada del shell que dependa de la red.
+  if (pathname.startsWith("/offline")) {
+    return (
+      <>
+        <OfflineServiceWorker />
+        {children}
+      </>
+    );
+  }
+
   return (
     <>
+      <OfflineServiceWorker />
       <BackendAuthBridge />
       {!isSimplePage && <DesktopYoutubeVideoBackground />}
       {!isSimplePage && <DesktopYoutubeVideoToggle />}

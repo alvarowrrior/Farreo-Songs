@@ -22,6 +22,7 @@ import {
   ShareIcon,
   ShieldIcon,
   TrashIcon,
+  WifiOffIcon,
   WrenchIcon,
 } from "lucide-react";
 import { auth } from "@/lib/firebase";
@@ -621,6 +622,10 @@ export default function AppSidebar() {
             <WrenchIcon size={20} />
             <span>Herramientas</span>
           </Link>
+          <a href="/offline" className="app-sidebar__nav-item" title="Sin conexion">
+            <WifiOffIcon size={20} />
+            <span>Sin conexion</span>
+          </a>
         </div>
 
         <div className="app-sidebar__bottom">
